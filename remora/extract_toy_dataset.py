@@ -23,7 +23,7 @@ for read in tqdm(input_msf, smoothing=0):
     focus_pos = None
     int_motif = (
         int_mod_motif
-        if sum(read.Reference == int_mod_base) > 0
+        if (read.Reference == int_mod_base).sum() > 0
         else int_can_motif
     )
     # extract region around first modified base
