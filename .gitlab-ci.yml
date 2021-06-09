@@ -9,45 +9,21 @@ before_script:
    - python -V
    - python -m venv venv
    - source venv/bin/activate
-   - pip install --upgrade pip
-   - pip install numpy cython
+   - pip install -U pip
+   - pip install .[testing]
 
-
-.py36_install: &py36_install |
-   pip install -r requirements.txt
-   pip install .[testing]
-   pip freeze | grep -v remora > installed_requirements.txt
-
-
-.py_any_install: &py_any_install |
-   pip install .[testing]
-
-
-save_reqs:
-    image: python:3.6
-    stage: format
-    script:
-        - *py36_install
-        - if [[ `diff requirements.txt installed_requirements.txt | wc -l` -ne 0 ]]; then false; fi
-    artifacts:
-        paths:
-            - installed_requirements.txt
-        expire_in: 1 week
-        when: on_failure
 
 
 format:py36:
     image: python:3.6
     stage: format
     script:
-        - *py36_install
         - pytest . -m format
 
 unit_test:py36:
     image: python:3.6
     stage: test
     script:
-        - *py36_install
         - pytest . -m unit --durations 10
 
 
@@ -55,12 +31,10 @@ format:py37:
     image: python:3.7
     stage: format
     script:
-        - *py_any_install
         - pytest . -m format
 
 unit_test:py37:
     image: python:3.7
     stage: test
     script:
-        - *py_any_install
         - pytest . -m unit --durations 10
