@@ -50,13 +50,6 @@ unit_test:py36:
         - *py36_install
         - pytest . -m unit --durations 10
 
-acc_test:py36:
-    image: python:3.6
-    stage: test
-    script:
-        - *py36_install
-        - pytest . -m acc --durations 10
-
 
 format:py37:
     image: python:3.7
@@ -71,10 +64,3 @@ unit_test:py37:
     script:
         - *py_any_install
         - pytest . -m unit --durations 10
-
-acc_test:py37:
-    image: python:3.7
-    stage: test
-    script:
-        - *py_any_install
-        - pytest . -m acc --durations 10
