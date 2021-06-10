@@ -42,6 +42,9 @@ def sample_chunks(read_data, number_to_sample, bases_below, bases_above,MOD_OFFS
 
 
     extracted_signal = []
+    labels = []
+    refs = []
+    base_locations = []
     count = 0
 
     for read in read_data:
@@ -50,6 +53,7 @@ def sample_chunks(read_data, number_to_sample, bases_below, bases_above,MOD_OFFS
         sig = read.get_current(read.get_mapped_dacs_region())
         ref = ''.join(alphabet_info.collapse_alphabet[b] for b in read.Reference)
         base_locs = read.Ref_to_signal - read.Ref_to_signal[0]
+        is_mod = read.Reference[MOD_OFFSET] == 1
 
         signalPoint1 = MOD_OFFSET - bases_below
         signalPoint2 = MOD_OFFSET + bases_above
@@ -62,9 +66,12 @@ def sample_chunks(read_data, number_to_sample, bases_below, bases_above,MOD_OFFS
 
 
         extracted_signal.append(sig[base_locs[signalPoint1]:base_locs[signalPoint2]])
+        labels.append(is_mod)
+        refs.append(ref)
+        base_locations.append(base_locs)
 
         count+=1
         if count >= number_to_sample:
             break
 
-    return extracted_signal
+    return extracted_signal, labels, refs, base_locations
