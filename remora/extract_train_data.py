@@ -1,5 +1,4 @@
 from taiyaki.mapped_signal_files import MappedSignalReader
-import pdb
 
 def get_train_set(train_path, MOD_OFFSET,subset=[]):
     '''
