@@ -72,11 +72,6 @@ def get_parser():
     return parser
 
 
-np.random.seed(args.seed)
-torch.manual_seed(args.seed)
-torch.cuda.manual_seed_all(args.seed)
-
-
 class ModDataset(torch.utils.data.Dataset):
     def __init__(self, sigs, labels):
         self.sigs = sigs
@@ -109,6 +104,10 @@ def collate_fn_padd(batch):
 
 
 def main(args):
+
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
 
     out_dir = "/logs"
 
@@ -182,7 +181,6 @@ def main(args):
                 x.unsqueeze(2), len_x, enforce_sorted=False
             )
             m = model(x_pack.cuda())
-            pdb.set_trace()
             loss = criterion(m, y)
 
 
