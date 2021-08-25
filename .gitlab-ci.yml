@@ -5,7 +5,7 @@ stages:
 
 before_script:
    - apt-get update -qq && apt-get install -y -qq
-     python3-all-dev python-virtualenv
+     python3-all-dev python3-virtualenv
    - python -V
    - python -m venv venv
    - source venv/bin/activate
