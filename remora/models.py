@@ -2,8 +2,6 @@ from torch import nn
 import torch.nn.utils.rnn as rnn
 import torch
 
-import pdb
-
 
 class SimpleLSTM(nn.Module):
     def __init__(self):
