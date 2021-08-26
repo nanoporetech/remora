@@ -1,12 +1,17 @@
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn.utils.rnn as rnn
 from tqdm import tqdm
 
 from remora import models
+from remora.extract_train_data import get_train_set, get_centred_train_set
 from remora import util
 from remora.extract_train_data import get_train_set
-from remora.chunk_selection import sample_chunks
+from remora.chunk_selection import (
+    sample_chunks_bybase,
+    sample_chunks_bychunksize,
+)
 
 
 class ModDataset(torch.utils.data.Dataset):
@@ -65,49 +70,109 @@ def validate_model(model, dl):
         return acc.cpu().numpy()
 
 
+def validate_cnn_model(model, dl):
+    with torch.no_grad():
+        model.eval()
+        outputs = []
+        labels = []
+        for x, x_len, y in dl:
+            y = torch.tensor(y).unsqueeze(1).float()
+            x_pack = torch.from_numpy(np.expand_dims(x.T, 1))
+            output = model(x_pack.cuda())
+            output = output.to(torch.float32)
+            outputs.append(output)
+            labels.append(y)
+        pred = torch.cat(outputs)
+        y_pred = torch.argmax(pred, dim=1)
+        lbs = np.concatenate(labels)
+        acc = (
+            sum((y_pred == torch.tensor(lbs).cuda()).float()) / y_pred.shape[0]
+        )
+        return acc.cpu().numpy()
+
+
+def get_results(model, signals, labels, read_ids, positions):
+    with torch.no_grad():
+        model.eval()
+        # y_val = torch.tensor(labels).unsqueeze(1).float()
+        x_pack_val = torch.from_numpy(np.expand_dims(signals, 1)).float()
+        output = model(x_pack_val.cuda())
+        output = output.to(torch.float32)
+        # pred = torch.cat(output)
+        y_pred = torch.argmax(output, dim=1).cpu()
+
+        result = pd.DataFrame(
+            {"Read_IDs": read_ids, "Positions": positions, "mod score": y_pred}
+        )
+
+    return result
+
+
 def train_model(args):
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
 
+    out_dir = "/logs"
+
+    LOG_DIR = args.checkpoint_path + out_dir
+
+    rw = util.resultsWriter(args.results_path, args.output_file_type)
+
     if len(args.chunk_bases) == 0:
         sigs, labels, refs, base_locs = get_train_set(
-            args.dataset_path, args.MOD_OFFSET
+            args.dataset_path, args.mod_offset
         )
     elif len(args.chunk_bases) == 1:
-        if not isinstance(args.chunk_bases[0], int):
-            raise ValueError(
-                "Number of bases before and after mod base must be integer "
-                "values"
-            )
+        # if not isinstance(args.chunk_bases[0], int):
+        #    raise ValueError(
+        #        "number of bases before and after mod base must be integer values"
+        #    )
 
-        sigs, labels, refs, base_locs = sample_chunks(
+        (
+            sigs,
+            labels,
+            refs,
+            base_locs,
+            read_ids,
+            positions,
+        ) = get_centred_train_set(
             args.dataset_path,
-            args.number_to_sample,
+            args.num_chunks,
             args.chunk_bases[0],
             args.chunk_bases[0],
-            args.MOD_OFFSET,
+            args.mod.lower(),
+            args.mod_offset,
+            args.evenchunks,
         )
+
     else:
         if len(args.chunk_bases) > 2:
             print(
-                "Warning: chunk bases larger than 2, only using first and "
-                "second elements"
+                "Warning: chunk bases larger than 2, only using first and second elements"
             )
 
         if not all(isinstance(i, int) for i in args.chunk_bases):
             raise ValueError(
-                "number of bases before and after mod base must be integer "
-                "values"
+                "number of bases before and after mod base must be integer values"
             )
 
-        sigs, labels, refs, base_locs = sample_chunks(
+        (
+            sigs,
+            labels,
+            refs,
+            base_locs,
+            read_ids,
+            positions,
+        ) = get_centred_train_set(
             args.dataset_path,
-            args.number_to_sample,
+            args.num_chunks,
             args.chunk_bases[0],
             args.chunk_bases[1],
-            args.MOD_OFFSET,
+            args.mod.lower(),
+            args.mod_offset,
+            args.evenchunks,
         )
 
     idx = np.random.permutation(len(sigs))
@@ -125,7 +190,7 @@ def train_model(args):
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.nb_workers,
-        drop_last=True,
+        drop_last=False,
         collate_fn=collate_fn_padd,
         pin_memory=True,
     )
@@ -140,11 +205,17 @@ def train_model(args):
         pin_memory=True,
     )
 
-    model = models.SimpleLSTM()
+    if args.model == "lstm":
+        model = models.SimpleLSTM()
+    elif args.model == "cnn":
+        model = models.CNN()
+    else:
+        raise ValueError("Specify a valid model type to train with")
+
     model = model.cuda()
 
     if args.loss == "CrossEntropy":
-        criterion = torch.nn.CrossEntropyLoss().cuda()
+        criterion = torch.nn.BCELoss().cuda()
 
     if args.optimizer == "sgd":
         opt = torch.optim.SGD(
@@ -167,22 +238,32 @@ def train_model(args):
             weight_decay=args.weight_decay,
         )
 
-    # scheduler = torch.optim.lr_scheduler.StepLR(
-    #    opt, step_size=args.lr_decay_step, gamma=args.lr_decay_gamma
-    # )
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        opt, step_size=args.lr_decay_step, gamma=args.lr_decay_gamma
+    )
 
     for epoch in range(args.epochs):
         model.train()
         losses = []
         pbar = tqdm(total=len(dl_tr), leave=True, ncols=100)
+
         for i, (x, x_len, y) in enumerate(dl_tr):
-            x_pack = rnn.pack_padded_sequence(
-                x.unsqueeze(2), x_len, enforce_sorted=False
-            )
 
-            output = model(x_pack.cuda(), x_len)
-            loss = criterion(output, torch.tensor(y).cuda())
+            if args.model == "lstm":
+                x_pack = rnn.pack_padded_sequence(
+                    x.unsqueeze(2), x_len, enforce_sorted=False
+                )
 
+                output = model(x_pack.cuda(), x_len)
+
+            elif args.model == "cnn":
+                x_pack = torch.from_numpy(np.expand_dims(x.T, 1))
+                output = model(x_pack.cuda())
+                output = output.to(torch.float32)
+
+            target = torch.tensor(y).unsqueeze(1)
+            target = target.to(torch.float32)
+            loss = criterion(output, target.cuda())
             opt.zero_grad()
             loss.backward()
             losses.append(loss.detach().cpu().numpy())
@@ -193,7 +274,13 @@ def train_model(args):
             pbar.update(1)
 
         pbar.close()
-        acc = validate_model(model, dl_val)
+        if args.model == "lstm":
+            acc = validate_model(model, dl_val)
+        elif args.model == "cnn":
+            acc = validate_cnn_model(model, dl_val)
+
+        scheduler.step()
+
         print("Model validation accuracy: %s" % acc)
         if epoch % args.save_freq == 0:
             print("Saving model after epoch %s." % epoch)
@@ -204,10 +291,18 @@ def train_model(args):
                     "state_dict": model.state_dict(),
                     "optimizer": opt.state_dict(),
                     "val_accuracy": acc,
-                    "mod_offset": args.MOD_OFFSET,
+                    "mod_offset": args.mod_offset,
                 },
-                args.output_path,
+                args.checkpoint_path,
             )
+    result_table = get_results(
+        model,
+        sigs[:val_idx],
+        labels[:val_idx],
+        read_ids[:val_idx],
+        positions[:val_idx],
+    )
+    rw.write(result_table)
 
 
 if __name__ == "__main__":

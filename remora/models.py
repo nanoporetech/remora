@@ -1,5 +1,6 @@
 from torch import nn
 import torch.nn.utils.rnn as rnn
+import torch.nn.functional as F
 import torch
 
 
@@ -21,5 +22,59 @@ class SimpleLSTM(nn.Module):
         x = torch.transpose(torch.diagonal(x), 0, 1)
         x = self.fc1(x)
         # x = self.relu(x)
+
+        return x
+
+
+class MLP(nn.Module):
+    def __init__(self, input_shape, dropout_rate=0.3):
+        super().__init__()
+
+        if dropout_rate > 1 or dropout_rate < 0:
+            raise ValueError("dropout must be between 0 and 1")
+
+        self.dropout_rate = dropout_rate
+
+        if not isinstance(input_shape, int):
+            raise ValueError("input_shape must be an integer shape")
+
+        self.fc1 = nn.Linear(input_shape, 50)
+        self.fc2 = nn.Linear(50, 1)
+
+        self.dropout = nn.Dropout(p=self.dropout_rate)
+
+    def forward(self, x):
+
+        x = self.dropout(F.relu(self.fc1(x)))
+        x = self.dropout(F.sigmoid(self.fc2(x)))
+
+        return x
+
+
+class CNN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv1d(1, 10, 3)
+        self.conv2 = nn.Conv1d(10, 10, 3)
+        self.fc1 = nn.Linear(10, 10)
+        self.fc2 = nn.Linear(10, 10)
+        self.fc3 = nn.Linear(10, 10)
+        self.fc4 = nn.Linear(10, 10)
+        self.fc5 = nn.Linear(10, 1)
+
+        self.dropout = nn.Dropout(p=0.3)
+        self.pool = nn.MaxPool1d(3)
+
+    def forward(self, x):
+        x = self.dropout(F.relu(self.conv1(x)))
+        x = self.pool(x)
+        x = self.dropout(F.relu(self.conv2(x)))
+        x = self.pool(x)
+        x = torch.flatten(x, start_dim=1)
+        x = self.dropout(F.relu(self.fc1(x)))
+        x = self.dropout(F.relu(self.fc2(x)))
+        x = self.dropout(F.relu(self.fc3(x)))
+        x = self.dropout(F.relu(self.fc4(x)))
+        x = torch.sigmoid(self.fc5(x))
 
         return x
