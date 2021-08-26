@@ -43,6 +43,11 @@ def register_train_model(parser):
         help="Training dataset",
     )
     subparser.add_argument(
+        "--output-path",
+        default="./models",
+        help="Path to save the model and other auxiliary files",
+    )
+    subparser.add_argument(
         "--chunk_bases",
         default=[],
         type=tuple,
@@ -108,6 +113,12 @@ def register_train_model(parser):
         type=int,
         dest="MOD_OFFSET",
         help="Seed value",
+    )
+    subparser.add_argument(
+        "--save-freq",
+        default=10,
+        type=int,
+        help="After how many epochs to save the model. Default 10.",
     )
     subparser.add_argument("--seed", default=1, type=int, help="Seed value")
     subparser.add_argument("--remark", default="", help="Any reamrk")

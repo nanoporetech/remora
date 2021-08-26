@@ -4,6 +4,7 @@ import torch.nn.utils.rnn as rnn
 from tqdm import tqdm
 
 from remora import models
+from remora import util
 from remora.extract_train_data import get_train_set
 from remora.chunk_selection import sample_chunks
 
@@ -33,13 +34,14 @@ def collate_fn_padd(batch):
     """
     # get sequence lengths
     lengths = torch.tensor([t[0].shape[0] for t in batch])
+    mask = lengths.ne(0)
     # get labels
-    labels = [t[1] for t in batch]
+    labels = np.array([t[1] for t in batch])
     # padding
     batch = [torch.Tensor(t[0]) for t in batch]
     batch = torch.nn.utils.rnn.pad_sequence(batch)
 
-    return batch, lengths, labels
+    return batch[:, mask], lengths[mask], labels[mask]
 
 
 def validate_model(model, dl):
@@ -172,14 +174,13 @@ def train_model(args):
     for epoch in range(args.epochs):
         model.train()
         losses = []
-        pbar = tqdm(enumerate(dl_tr))
-        for i, (x, x_len, y) in pbar:
+        pbar = tqdm(total=len(dl_tr), leave=True, ncols=100)
+        for i, (x, x_len, y) in enumerate(dl_tr):
             x_pack = rnn.pack_padded_sequence(
                 x.unsqueeze(2), x_len, enforce_sorted=False
             )
 
             output = model(x_pack.cuda(), x_len)
-
             loss = criterion(output, torch.tensor(y).cuda())
 
             opt.zero_grad()
@@ -187,9 +188,26 @@ def train_model(args):
             losses.append(loss.detach().cpu().numpy())
             opt.step()
 
-        print("Loss: %s" % np.mean(losses))
+            pbar.refresh()
+            pbar.set_postfix(loss="%.4f" % loss)
+            pbar.update(1)
+
+        pbar.close()
         acc = validate_model(model, dl_val)
-        print("Model accuracy: %s" % acc)
+        print("Model validation accuracy: %s" % acc)
+        if epoch % args.save_freq == 0:
+            print("Saving model after epoch %s." % epoch)
+            util.save_checkpoint(
+                {
+                    "epoch": epoch,
+                    "model": args.model,
+                    "state_dict": model.state_dict(),
+                    "optimizer": opt.state_dict(),
+                    "val_accuracy": acc,
+                    "mod_offset": args.MOD_OFFSET,
+                },
+                args.output_path,
+            )
 
 
 if __name__ == "__main__":
