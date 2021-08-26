@@ -11,7 +11,10 @@ MOD_MOTIF = CAN_MOTIF[:MOTIF_OFFSET] + MOD_BASE + CAN_MOTIF[MOTIF_OFFSET + 1 :]
 CONTEXT_BASES = 20
 
 
-input_msf = MappedSignalReader("merged_map_sig.hdf5")
+# input_msf = MappedSignalReader("merged_map_sig.hdf5")
+input_msf = MappedSignalReader(
+    "/media/groups/res_algo/active/mstoiber/mods_wo_basecalling/merged_map_sig.hdf5"
+)
 alphabet_info = input_msf.get_alphabet_information()
 output_msf = MappedSignalWriter("toy_training_data.hdf5", alphabet_info)
 
