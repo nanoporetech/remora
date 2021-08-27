@@ -1,15 +1,49 @@
 import torch
 import os
+from os.path import join, isfile, exists
 import pandas as pd
 
 
 def save_checkpoint(state, out_path):
-    if not os.path.exists(out_path):
+    if not exists(out_path):
         os.makedirs(out_path)
-    filename = os.path.join(
-        out_path, "%s_%s.tar" % (state["model"], state["epoch"])
+    filename = join(
+        out_path, "%s_%s.tar" % (state["model_name"], state["epoch"])
     )
     torch.save(state, filename)
+
+
+def continue_from_checkpoint(dir_path, training_var=None, **kwargs):
+    if not exists(dir_path):
+        return
+
+    all_ckps = [
+        f
+        for f in os.listdir(dir_path)
+        if isfile(join(dir_path, f)) and ".tar" in f
+    ]
+    if all_ckps == []:
+        return
+
+    ckp_path = join(dir_path, max(all_ckps))
+    import pdb
+
+    pdb.set_trace()
+    print("Continuing training from %s" % ckp_path)
+
+    ckp = torch.load(ckp_path)
+
+    for key, value in kwargs.items():
+        if key in ckp:
+            try:
+                value.load_state_dict(ckp[key])
+            except AttributeError:
+                continue
+
+    if training_var is not None:
+        for var in training_var:
+            if var in ckp:
+                training_var[var] = ckp[var]
 
 
 class resultsWriter:
