@@ -215,7 +215,7 @@ def train_model(args):
     model = model.cuda()
 
     if args.loss == "CrossEntropy":
-        criterion = torch.nn.BCELoss().cuda()
+        criterion = torch.nn.CrossEntropyLoss().cuda()
 
     if args.optimizer == "sgd":
         opt = torch.optim.SGD(
@@ -238,31 +238,47 @@ def train_model(args):
             weight_decay=args.weight_decay,
         )
 
+    training_var = {
+        "epoch": 0,
+        "model_name": args.model,
+    }
+
+    util.continue_from_checkpoint(
+        args.checkpoint_path,
+        training_var=training_var,
+        opt=opt,
+        model=model,
+    )
+
+    start_epoch = training_var["epoch"]
+    model_name = training_var["model_name"]
+
     scheduler = torch.optim.lr_scheduler.StepLR(
         opt, step_size=args.lr_decay_step, gamma=args.lr_decay_gamma
     )
 
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         model.train()
         losses = []
         pbar = tqdm(total=len(dl_tr), leave=True, ncols=100)
 
         for i, (x, x_len, y) in enumerate(dl_tr):
 
-            if args.model == "lstm":
+            if model_name == "lstm":
                 x_pack = rnn.pack_padded_sequence(
                     x.unsqueeze(2), x_len, enforce_sorted=False
                 )
 
                 output = model(x_pack.cuda(), x_len)
 
-            elif args.model == "cnn":
+            elif model_name == "cnn":
                 x_pack = torch.from_numpy(np.expand_dims(x.T, 1))
                 output = model(x_pack.cuda())
                 output = output.to(torch.float32)
 
-            target = torch.tensor(y).unsqueeze(1)
-            target = target.to(torch.float32)
+            # target = torch.tensor(y).unsqueeze(1)
+            # target = target.to(torch.float32)
+            target = torch.tensor(y)
             loss = criterion(output, target.cuda())
             opt.zero_grad()
             loss.backward()
@@ -274,22 +290,22 @@ def train_model(args):
             pbar.update(1)
 
         pbar.close()
-        if args.model == "lstm":
+        if model_name == "lstm":
             acc = validate_model(model, dl_val)
-        elif args.model == "cnn":
+        elif model_name == "cnn":
             acc = validate_cnn_model(model, dl_val)
 
         scheduler.step()
 
         print("Model validation accuracy: %s" % acc)
-        if epoch % args.save_freq == 0:
-            print("Saving model after epoch %s." % epoch)
+        if int(epoch + 1) % args.save_freq == 0:
+            print("Saving model after epoch %s." % int(epoch + 1))
             util.save_checkpoint(
                 {
-                    "epoch": epoch,
-                    "model": args.model,
-                    "state_dict": model.state_dict(),
-                    "optimizer": opt.state_dict(),
+                    "epoch": int(epoch + 1),
+                    "model_name": model_name,
+                    "model": model.state_dict(),
+                    "opt": opt.state_dict(),
                     "val_accuracy": acc,
                     "mod_offset": args.mod_offset,
                 },

@@ -71,7 +71,7 @@ def register_train_model(parser):
         "--num-chunks",
         default=1000,
         type=int,
-        help="Number of samples per batch.",
+        help="Number of chunks used for training.",
     )
 
     subparser.add_argument(
