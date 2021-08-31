@@ -49,7 +49,7 @@ class resultsWriter:
 
         self.output_path = output_path
         self.output_filetype = output_filetype
-        self.output_filename = "results"
+        self.output_filename = 'results'
         self.initialise()
 
     def initialise(self):
@@ -63,9 +63,7 @@ class resultsWriter:
         elif self.output_filetype.lower() == "bam":
             self.extension = ".bam"
 
-        self.full_output = (
-            self.output_path + self.output_filename + self.extension
-        )
+        self.full_output = self.output_path + self.output_filename + self.extension
 
         column_names = ["Read ID", "Position", "Mod Score"]
         df = pd.DataFrame(columns=column_names)

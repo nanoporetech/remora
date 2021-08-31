@@ -145,7 +145,9 @@ def train_model(args):
 
     LOG_DIR = os.path.join(args.output_path, out_dir)
 
-    rw = util.resultsWriter(args.output_path, args.output_file_type)
+    rw = util.resultsWriter(
+        args.output_path, args.output_file_type
+    )
 
     if len(args.chunk_bases) == 0:
         sigs, labels, refs, base_locs = get_train_set(
@@ -296,7 +298,6 @@ def train_model(args):
         pbar = tqdm(total=len(dl_tr), leave=True, ncols=100)
 
         for i, (x, x_len, y) in enumerate(dl_tr):
-
             if model_name == "lstm":
                 x_pack = rnn.pack_padded_sequence(
                     x.unsqueeze(2), x_len, enforce_sorted=False
