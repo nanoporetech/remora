@@ -26,9 +26,7 @@ def continue_from_checkpoint(dir_path, training_var=None, **kwargs):
         return
 
     ckp_path = join(dir_path, max(all_ckps))
-    import pdb
 
-    pdb.set_trace()
     print("Continuing training from %s" % ckp_path)
 
     ckp = torch.load(ckp_path)
@@ -70,3 +68,23 @@ class resultsWriter:
 
         with open(self.output_filename + self.extension, "a") as f:
             results_table.to_csv(f, header=f.tell() == 0)
+
+
+class plotter:
+    def __init__(self, outdir):
+        self.outdir = outdir
+        self.losses = []
+        self.accuracy = []
+
+    def append_result(self, accuracy, loss):
+        self.losses.append(loss)
+        self.accuracy.append(accuracy)
+
+    def save_plots(self):
+        import matplotlib.pyplot as plt
+
+        fig1 = plt.plot(self.accuracy)
+        fig2 = plt.plot(self.losses)
+
+        fig1.savefig(os.path.join(outdir, "accuracy.png"), format="png")
+        fig2.savefig(os.path.join(outdir, "loss.png"), format="png")

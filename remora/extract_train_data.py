@@ -44,7 +44,7 @@ def get_centred_train_set(
     chunk_size_below=50,
     chunk_size_above=50,
     mod_offset=20,
-    evenchunks=True,
+    evenchunks=False,
 ):
     """
     Args:
@@ -97,7 +97,14 @@ def get_centred_train_set(
 
     else:
 
-        sigs, labels, refs, base_locs = sample_chunks_bybase(
+        (
+            sigs,
+            labels,
+            refs,
+            base_locs,
+            read_ids,
+            positions,
+        ) = sample_chunks_bybase(
             read_data_path=train_path,
             number_to_sample=number_to_sample,
             bases_below=bases_below,
@@ -111,6 +118,8 @@ def get_centred_train_set(
             control_labels,
             control_refs,
             control_base_locs,
+            control_read_ids,
+            control_positions,
         ) = sample_chunks_bybase(
             read_data_path=train_path,
             number_to_sample=number_to_sample,
