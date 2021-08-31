@@ -44,9 +44,9 @@ def register_train_model(parser):
     )
 
     subparser.add_argument(
-        "--results-path",
+        "--output-path",
         default="results",
-        help="Path to the output results file",
+        help="Path to the output files",
     )
 
     subparser.add_argument(
@@ -54,19 +54,24 @@ def register_train_model(parser):
         default="txt",
         help="The file type of the output results",
     )
-    subparser.add_argument(
-        "--checkpoint-path",
-        default="./models",
-        help="Path to save the model and other auxiliary files",
-    )
 
     subparser.add_argument(
         "--chunk_bases",
         default=[],
-        type=tuple,
+        type=int,
+        nargs="+",
         help="sample smaller chunks from the reads according to bases before "
         "and after mod",
     )
+    subparser.add_argument(
+        "--fixed-chunk-size",
+        default=100,
+        type=int,
+        nargs="+",
+        help="sample smaller chunks from the reads according to bases before "
+        "and after mod",
+    )
+
     subparser.add_argument(
         "--num-chunks",
         default=1000,
@@ -147,7 +152,6 @@ def register_train_model(parser):
     )
     subparser.add_argument(
         "--evenchunks",
-        default="store_false",
         action="store_true",
         help="make all chunk sizes the same",
     )

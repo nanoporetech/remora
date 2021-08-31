@@ -3,6 +3,7 @@ import pandas as pd
 import torch
 import torch.nn.utils.rnn as rnn
 from tqdm import tqdm
+import os
 
 from remora import models
 from remora.extract_train_data import get_train_set, get_centred_train_set
@@ -67,6 +68,7 @@ def validate_model(model, dl):
         acc = (y_pred == torch.tensor(lbs).cuda()).float().sum() / y_pred.shape[
             0
         ]
+
         return acc.cpu().numpy()
 
 
@@ -91,18 +93,43 @@ def validate_cnn_model(model, dl):
         return acc.cpu().numpy()
 
 
-def get_results(model, signals, labels, read_ids, positions):
+def get_results(model, model_type, signals, labels, read_ids, positions):
     with torch.no_grad():
         model.eval()
         # y_val = torch.tensor(labels).unsqueeze(1).float()
-        x_pack_val = torch.from_numpy(np.expand_dims(signals, 1)).float()
-        output = model(x_pack_val.cuda())
-        output = output.to(torch.float32)
-        # pred = torch.cat(output)
-        y_pred = torch.argmax(output, dim=1).cpu()
+        if model_type == "cnn":
+            x_pack_val = torch.from_numpy(np.expand_dims(signals, 1)).float()
+            output = model(x_pack_val.cuda())
+            output = output.to(torch.float32)
+            # pred = torch.cat(output)
+            y_pred = torch.argmax(output, dim=1).cpu()
+            y = labels
+        elif model_type == "lstm":
+            dataset = ModDataset(signals, labels)
+            dl = torch.utils.data.DataLoader(
+                dataset,
+                batch_size=len(signals),
+                shuffle=False,
+                num_workers=0,
+                drop_last=False,
+                collate_fn=collate_fn_padd,
+                pin_memory=True,
+            )
+            for i, (x, x_len, y) in enumerate(dl, 0):
+                x_pack = rnn.pack_padded_sequence(
+                    x.unsqueeze(2), x_len, enforce_sorted=False
+                )
 
+                output = model(x_pack.cuda(), x_len)
+
+        y_pred = torch.argmax(output, dim=1).cpu()
         result = pd.DataFrame(
-            {"Read_IDs": read_ids, "Positions": positions, "mod score": y_pred}
+            {
+                "Read_IDs": read_ids,
+                "Positions": positions,
+                "mod score": y_pred.detach().numpy().tolist(),
+                "label": y.tolist(),
+            }
         )
 
     return result
@@ -116,9 +143,11 @@ def train_model(args):
 
     out_dir = "/logs"
 
-    LOG_DIR = args.checkpoint_path + out_dir
+    LOG_DIR = os.path.join(args.output_path, out_dir)
 
-    rw = util.resultsWriter(args.results_path, args.output_file_type)
+    rw = util.resultsWriter(
+        os.path.join(args.output_path, "results"), args.output_file_type
+    )
 
     if len(args.chunk_bases) == 0:
         sigs, labels, refs, base_locs = get_train_set(
@@ -140,9 +169,11 @@ def train_model(args):
         ) = get_centred_train_set(
             args.dataset_path,
             args.num_chunks,
-            args.chunk_bases[0],
-            args.chunk_bases[0],
             args.mod.lower(),
+            args.chunk_bases[0],
+            args.chunk_bases[0],
+            args.fixed_chunk_size[0] // 2,
+            args.fixed_chunk_size[0] // 2,
             args.mod_offset,
             args.evenchunks,
         )
@@ -168,9 +199,11 @@ def train_model(args):
         ) = get_centred_train_set(
             args.dataset_path,
             args.num_chunks,
+            args.mod.lower(),
             args.chunk_bases[0],
             args.chunk_bases[1],
-            args.mod.lower(),
+            args.fixed_chunk_size[0] // 2,
+            args.fixed_chunk_size[0] // 2,
             args.mod_offset,
             args.evenchunks,
         )
@@ -208,7 +241,7 @@ def train_model(args):
     if args.model == "lstm":
         model = models.SimpleLSTM()
     elif args.model == "cnn":
-        model = models.CNN()
+        model = models.CNN(batch_size=args.batch_size, channel_size=32)
     else:
         raise ValueError("Specify a valid model type to train with")
 
@@ -238,25 +271,27 @@ def train_model(args):
             weight_decay=args.weight_decay,
         )
 
-    training_var = {
-        "epoch": 0,
-        "model_name": args.model,
-    }
+    # training_var = {
+    #        "epoch": 0,
+    #        "model_name": args.model,
+    #    }
 
-    util.continue_from_checkpoint(
-        args.checkpoint_path,
-        training_var=training_var,
-        opt=opt,
-        model=model,
-    )
+    # util.continue_from_checkpoint(
+    #        args.output_path,
+    #        training_var=training_var,
+    #        opt=opt,
+    #        model=model,
+    #    )
 
-    start_epoch = training_var["epoch"]
-    model_name = training_var["model_name"]
+    # start_epoch = training_var["epoch"]
+    # model_name = training_var["model_name"]
 
     scheduler = torch.optim.lr_scheduler.StepLR(
         opt, step_size=args.lr_decay_step, gamma=args.lr_decay_gamma
     )
 
+    start_epoch = 0
+    model_name = args.model
     for epoch in range(start_epoch, args.epochs):
         model.train()
         losses = []
@@ -276,9 +311,8 @@ def train_model(args):
                 output = model(x_pack.cuda())
                 output = output.to(torch.float32)
 
-            # target = torch.tensor(y).unsqueeze(1)
-            # target = target.to(torch.float32)
             target = torch.tensor(y)
+
             loss = criterion(output, target.cuda())
             opt.zero_grad()
             loss.backward()
@@ -309,10 +343,11 @@ def train_model(args):
                     "val_accuracy": acc,
                     "mod_offset": args.mod_offset,
                 },
-                args.checkpoint_path,
+                args.output_path,
             )
     result_table = get_results(
         model,
+        model_name,
         sigs[:val_idx],
         labels[:val_idx],
         read_ids[:val_idx],

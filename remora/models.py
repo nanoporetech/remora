@@ -52,15 +52,11 @@ class MLP(nn.Module):
 
 
 class CNN(nn.Module):
-    def __init__(self):
+    def __init__(self, batch_size, channel_size):
         super().__init__()
-        self.conv1 = nn.Conv1d(1, 10, 3)
-        self.conv2 = nn.Conv1d(10, 10, 3)
-        self.fc1 = nn.Linear(10, 10)
-        self.fc2 = nn.Linear(10, 10)
-        self.fc3 = nn.Linear(10, 10)
-        self.fc4 = nn.Linear(10, 10)
-        self.fc5 = nn.Linear(10, 1)
+        self.conv1 = nn.Conv1d(1, channel_size, 8)
+        self.conv2 = nn.Conv1d(32, 32, 2)
+        self.fc1 = nn.Linear(32, 2)
 
         self.dropout = nn.Dropout(p=0.3)
         self.pool = nn.MaxPool1d(3)
@@ -70,11 +66,12 @@ class CNN(nn.Module):
         x = self.pool(x)
         x = self.dropout(F.relu(self.conv2(x)))
         x = self.pool(x)
-        x = torch.flatten(x, start_dim=1)
-        x = self.dropout(F.relu(self.fc1(x)))
-        x = self.dropout(F.relu(self.fc2(x)))
-        x = self.dropout(F.relu(self.fc3(x)))
-        x = self.dropout(F.relu(self.fc4(x)))
-        x = torch.sigmoid(self.fc5(x))
+        x = torch.mean(x.view(x.size(0), x.size(1), -1), dim=2)
+        # x = torch.flatten(x, start_dim=0)
+        x = torch.sigmoid(self.fc1(x))
+        # x = self.dropout(F.relu(self.fc2(x)))
+        # x = self.dropout(F.relu(self.fc3(x)))
+        # x = self.dropout(F.relu(self.fc4(x)))
+        # x = torch.sigmoid(self.fc5(x))
 
         return x
