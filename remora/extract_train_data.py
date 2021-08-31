@@ -44,7 +44,7 @@ def get_centred_train_set(
     chunk_size_below=50,
     chunk_size_above=50,
     mod_offset=20,
-    evenchunks=False,
+    fixed_chunks=False,
 ):
     """
     Args:
@@ -53,7 +53,7 @@ def get_centred_train_set(
         bases_below: choose number of bases before modbase in sequence to include
         bases_above: choose number of bases after modbase in sequence to include
         mod_offset: index of modbase in reference
-        evenchunks: return all chunks evenly sized TODO include a padding option
+        fixed_chunks: return all chunks evenly sized TODO include a padding option
 
     Returns:
         sigs: list of signal chunks
@@ -62,7 +62,7 @@ def get_centred_train_set(
         base_locs: location for each base in the corersponing chunk
     """
 
-    if evenchunks:
+    if fixed_chunks:
 
         (
             sigs,
@@ -78,21 +78,6 @@ def get_centred_train_set(
             chunk_size_below=chunk_size_below,
             chunk_size_above=chunk_size_above,
             mod_offset=mod_offset,
-        )
-        (
-            control_sigs,
-            control_labels,
-            control_refs,
-            control_base_locs,
-            control_read_ids,
-            control_positions,
-        ) = sample_chunks_bychunksize(
-            read_data_path=train_path,
-            number_to_sample=number_to_sample,
-            mod=mod,
-            chunk_size_below=chunk_size_below,
-            chunk_size_above=chunk_size_above,
-            mod_offset=mod_offset + 10,
         )
 
     else:
@@ -113,44 +98,13 @@ def get_centred_train_set(
             mod=mod,
         )
 
-        (
-            control_sigs,
-            control_labels,
-            control_refs,
-            control_base_locs,
-            control_read_ids,
-            control_positions,
-        ) = sample_chunks_bybase(
-            read_data_path=train_path,
-            number_to_sample=number_to_sample,
-            bases_below=bases_below,
-            bases_above=bases_above,
-            mod_offset=mod_offset + 10,
-            mod=mod,
-        )
-
-    out_sigs = sigs + control_sigs
-    out_labels = labels + control_labels
-    out_refs = refs + control_refs
-    out_base_locs = base_locs + control_base_locs
-    out_read_ids = read_ids + control_read_ids
-    out_positions = positions + control_positions
-
-    out_labels = [int(x == True) for x in out_labels]
+    labels = [int(x == True) for x in labels]
 
     return (
-        out_sigs,
-        out_labels,
-        out_refs,
-        out_base_locs,
-        out_read_ids,
-        out_positions,
+        sigs,
+        labels,
+        refs,
+        base_locs,
+        read_ids,
+        positions,
     )
-
-    # TODO: write methods and robust API to train prediction model (for is_mod)
-    # from sig and ref.
-    # ref is fixed length (MOD_OFFSET * 2 + 1)
-    # signal in this case is assigned by megalodon (so essentially the coarse
-    # mapping from tombo2)
-    # The exact mapping from reference bases to signal is found in base_locs.
-    # base_locs need not be used in prediction, but may be used if desired.
