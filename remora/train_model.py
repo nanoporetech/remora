@@ -4,15 +4,24 @@ import torch
 import torch.nn.utils.rnn as rnn
 from tqdm import tqdm
 import os
+from sklearn.metrics import precision_recall_curve
+from shutil import rmtree
 
-from remora import models
-from remora.extract_train_data import get_train_set, get_centred_train_set
-from remora import util
-from remora.extract_train_data import get_train_set
+from remora import (
+    models,
+    util,
+    log,
+)
+from remora.extract_train_data import (
+    get_train_set,
+    get_centred_train_set,
+)
 from remora.chunk_selection import (
     sample_chunks_bybase,
     sample_chunks_bychunksize,
 )
+
+LOGGER = log.get_logger()
 
 
 class ModDataset(torch.utils.data.Dataset):
@@ -21,9 +30,6 @@ class ModDataset(torch.utils.data.Dataset):
         self.labels = labels
 
     def __getitem__(self, index):
-        # lbls_oh = F.one_hot(
-        #    torch.tensor(int(self.labels[index])), num_classes=2
-        # )
         return [self.sigs[index], int(self.labels[index])]
 
     def __len__(self):
@@ -50,43 +56,37 @@ def collate_fn_padd(batch):
     return batch[:, mask], lengths[mask], labels[mask]
 
 
-def validate_model(model, dl):
+def validate_model(model, dl, model_name):
     with torch.no_grad():
         model.eval()
         outputs = []
         labels = []
         for (x, x_len, y) in dl:
-            x_pack = rnn.pack_padded_sequence(
-                x.unsqueeze(2), x_len, enforce_sorted=False
-            )
-            output = model(x_pack.cuda(), x_len)
+            if model_name == "lstm":
+                x_pack = rnn.pack_padded_sequence(
+                    x.unsqueeze(2), x_len, enforce_sorted=False
+                )
+                output = model(x_pack.cuda(), x_len)
+            else:
+                x_pack = torch.from_numpy(np.expand_dims(x.T, 1))
+                output = model(x_pack.cuda())
+                output = output.to(torch.float32)
             outputs.append(output)
             labels.append(y)
         pred = torch.cat(outputs)
-        y_pred = torch.argmax(pred, dim=1)
-        lbs = np.concatenate(labels)
-        acc = (y_pred == torch.tensor(lbs).cuda()).float().sum() / y_pred.shape[
-            0
-        ]
-        return acc.cpu().numpy()
-
-
-def validate_cnn_model(model, dl):
-    with torch.no_grad():
-        model.eval()
-        outputs = []
-        labels = []
-        for x, x_len, y in dl:
-            x_pack = torch.from_numpy(np.expand_dims(x.T, 1))
-            output = model(x_pack.cuda())
-            output = output.to(torch.float32)
-            outputs.append(output)
-            labels.append(y)
-        pred = torch.cat(outputs)
-        y_pred = torch.argmax(pred, dim=1)
         lbs = torch.tensor(np.concatenate(labels))
+        precision, recall, thresholds = precision_recall_curve(
+            lbs.cpu().numpy(), pred[:, 1].cpu().numpy()
+        )
+        f1_scores = 2 * recall * precision / (recall + precision)
+        LOGGER.info(
+            f"F1: {np.max(f1_scores):.4f}, "
+            f"prec: {precision[np.argmax(f1_scores)]:.4f}, "
+            f"recall: {recall[np.argmax(f1_scores)]:.4f}"
+        )
+        y_pred = torch.argmax(pred, dim=1)
         acc = (y_pred == lbs.cuda()).float().sum() / y_pred.shape[0]
-        print(
+        LOGGER.info(
             f"Nr pred mods {y_pred.sum()}; nr mods {lbs.sum()}; val size {len(lbs)}"
         )
         return acc.cpu().numpy()
@@ -100,7 +100,6 @@ def get_results(model, model_type, signals, labels, read_ids, positions):
             x_pack_val = torch.from_numpy(np.expand_dims(signals, 1)).float()
             output = model(x_pack_val.cuda())
             output = output.to(torch.float32)
-            # pred = torch.cat(output)
             y_pred = torch.argmax(output, dim=1).cpu()
             y = labels
         elif model_type == "lstm":
@@ -140,10 +139,18 @@ def train_model(args):
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
 
-    out_dir = "/logs"
+    torch.cuda.set_device(args.gpu_id)
+    if args.overwrite:
+        if os.path.exists(args.output_path):
+            rmtree(args.output_path)
 
-    LOG_DIR = os.path.join(args.output_path, out_dir)
-    plotting_device = util.plotter(LOG_DIR)
+    if not os.path.exists(args.output_path):
+        os.makedirs(args.output_path)
+
+    out_dir = "log.txt"
+    log_filename = os.path.join(args.output_path, out_dir)
+    log.init_logger(log_filename)
+    plotting_device = util.plotter(args.output_path)
 
     rw = util.resultsWriter(args.output_path, args.output_file_type)
 
@@ -169,8 +176,8 @@ def train_model(args):
             )
         else:
             if len(args.chunk_bases) > 2:
-                print(
-                    "Warning: chunk sizes larger than 2, only using first and second elements"
+                LOGGER.warning(
+                    "chunk sizes larger than 2, only using first and second elements"
                 )
             if not all(isinstance(i, int) for i in args.chunk_bases):
                 raise ValueError(
@@ -226,8 +233,8 @@ def train_model(args):
 
         else:
             if len(args.chunk_bases) > 2:
-                print(
-                    "Warning: chunk bases larger than 2, only using first and second elements"
+                LOGGER.warning(
+                    "chunk bases larger than 2, only using first and second elements"
                 )
 
             if not all(isinstance(i, int) for i in args.chunk_bases):
@@ -315,26 +322,27 @@ def train_model(args):
             weight_decay=args.weight_decay,
         )
 
-    # training_var = {
-    #        "epoch": 0,
-    #        "model_name": args.model,
-    #    }
+    training_var = {
+        "epoch": 0,
+        "model_name": args.model,
+    }
 
-    # util.continue_from_checkpoint(
-    #        args.output_path,
-    #        training_var=training_var,
-    #        opt=opt,
-    #        model=model,
-    #    )
+    start_epoch = 0
 
-    # start_epoch = training_var["epoch"]
-    # model_name = training_var["model_name"]
+    util.continue_from_checkpoint(
+        args.output_path,
+        training_var=training_var,
+        opt=opt,
+        model=model,
+    )
+
+    start_epoch = training_var["epoch"]
+    model_name = training_var["model_name"]
 
     scheduler = torch.optim.lr_scheduler.StepLR(
         opt, step_size=args.lr_decay_step, gamma=args.lr_decay_gamma
     )
 
-    start_epoch = 0
     model_name = args.model
 
     for epoch in range(start_epoch, args.epochs):
@@ -342,7 +350,6 @@ def train_model(args):
         pbar = tqdm(total=len(dl_tr), leave=True, ncols=100)
         losses = []
         for i, (x, x_len, y) in enumerate(dl_tr):
-
             if model_name == "lstm":
                 x_pack = rnn.pack_padded_sequence(
                     x.unsqueeze(2), x_len, enforce_sorted=False
@@ -363,22 +370,20 @@ def train_model(args):
             opt.step()
 
             pbar.refresh()
-            pbar.set_postfix(loss="%.4f" % loss)
+            pbar.set_postfix(epoch=f"{epoch}", loss=f"{loss:.4f}")
             pbar.update(1)
 
         pbar.close()
-        if model_name == "lstm":
-            acc = validate_model(model, dl_val)
-        elif model_name == "cnn":
-            acc = validate_cnn_model(model, dl_val)
+
+        acc = validate_model(model, dl_val, model_name)
 
         scheduler.step()
 
-        print(
+        LOGGER.info(
             f"Model validation accuracy: {acc:.4f}; mean loss: {np.mean(losses):.4f}"
         )
         if int(epoch + 1) % args.save_freq == 0:
-            print("Saving model after epoch %s." % int(epoch + 1))
+            LOGGER.info(f"Saving model after epoch {int(epoch + 1)}.")
             util.save_checkpoint(
                 {
                     "epoch": int(epoch + 1),

@@ -26,7 +26,7 @@ class SubcommandHelpFormatter(argparse.RawDescriptionHelpFormatter):
 
 
 #####################
-# betta match_pairs #
+# remora train_model #
 #####################
 
 
@@ -155,12 +155,16 @@ def register_train_model(parser):
         action="store_true",
         help="make all chunk sizes the same",
     )
-
     subparser.add_argument(
         "--save-freq",
         default=10,
         type=int,
         help="After how many epochs to save the model. Default 10.",
+    )
+    subparser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing output directory if existing.",
     )
 
     subparser.add_argument("--seed", default=1, type=int, help="Seed value")
@@ -173,3 +177,33 @@ def run_train_model(args):
     from remora.train_model import train_model
 
     train_model(args)
+
+
+#####################
+# remora infer #
+#####################
+
+
+def register_infer(parser):
+    subparser = parser.add_parser(
+        "infer",
+        description="Run a model for inference on a given dataset.",
+        help="Use modified base model for inference.",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    subparser.add_argument(
+        "--dataset-path",
+        default="toy_training_data.hdf5",
+        help="Dataset to detect modified bases.",
+    )
+    subparser.add_argument(
+        "--checkpoint-path",
+        default="./models",
+        help="Path to a pretrained modified base model",
+    )
+
+
+def run_infer(args):
+    from remora.inference import infer
+
+    infer(args)
