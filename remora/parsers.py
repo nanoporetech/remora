@@ -161,6 +161,11 @@ def register_train_model(parser):
         type=int,
         help="After how many epochs to save the model. Default 10.",
     )
+    subparser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing output directory if existing.",
+    )
 
     subparser.add_argument("--seed", default=1, type=int, help="Seed value")
     subparser.add_argument("--remark", default="", help="Any reamrk")

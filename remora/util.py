@@ -2,14 +2,15 @@ import torch
 import os
 from os.path import join, isfile, exists
 import pandas as pd
+from remora import log
+
+LOGGER = log.get_logger()
 
 
 def save_checkpoint(state, out_path):
     if not exists(out_path):
         os.makedirs(out_path)
-    filename = join(
-        out_path, "%s_%s.tar" % (state["model_name"], state["epoch"])
-    )
+    filename = join(out_path, f"{state['model_name']}_{state['epoch']}.tar")
     torch.save(state, filename)
 
 
@@ -27,7 +28,7 @@ def continue_from_checkpoint(dir_path, training_var=None, **kwargs):
 
     ckp_path = join(dir_path, max(all_ckps))
 
-    print("Continuing training from %s" % ckp_path)
+    LOGGER.info(f"Continuing training from {ckp_path}")
 
     ckp = torch.load(ckp_path)
 
