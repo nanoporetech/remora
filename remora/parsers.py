@@ -56,7 +56,7 @@ def register_train_model(parser):
     )
 
     subparser.add_argument(
-        "--chunk_bases",
+        "--chunk-bases",
         default=[],
         type=int,
         nargs="+",
@@ -151,7 +151,7 @@ def register_train_model(parser):
         help="The motif being considered",
     )
     subparser.add_argument(
-        "--evenchunks",
+        "--fixed-chunks",
         action="store_true",
         help="make all chunk sizes the same",
     )

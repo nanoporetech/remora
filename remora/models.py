@@ -18,7 +18,7 @@ class SimpleLSTM(nn.Module):
         x = self.lstm(x)
 
         x, hn = self.pps(x[0])
-        x = x[x_len - 1]
+        # x = x[x_len - 1]
         x = torch.transpose(torch.diagonal(x), 0, 1)
         x = self.fc1(x)
         # x = self.relu(x)
