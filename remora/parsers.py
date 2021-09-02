@@ -65,7 +65,7 @@ def register_train_model(parser):
     )
     subparser.add_argument(
         "--fixed-chunk-size",
-        default=100,
+        default=[],
         type=int,
         nargs="+",
         help="sample smaller chunks from the reads according to bases before "
