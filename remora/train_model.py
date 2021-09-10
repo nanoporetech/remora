@@ -21,6 +21,8 @@ from remora.chunk_selection import (
     sample_chunks_bychunksize,
 )
 
+from remora.reference_functions import referenceEncoder
+
 LOGGER = log.get_logger()
 
 
@@ -34,6 +36,26 @@ class ModDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.sigs)
+
+
+class chunkInfo:
+    def __init__(self, args):
+        self.fixed_chunks = args.fixed_chunks
+
+        if len(args.fixed_chunk_size) == 1:
+            self.fixed_chunk_size = (
+                args.fixed_chunk_size,
+                args.fixed_chunk_size,
+            )
+        else:
+            self.fixed_chunk_size = args.fixed_chunk_size
+
+        if len(args.chunk_bases) == 1:
+            self.chunk_bases = (args.chunk_bases, args.chunk_bases)
+        else:
+            self.chunk_bases = args.chunk_bases
+
+        self.mod_offset = args.mod_offset
 
 
 def collate_fn_padd(batch):
@@ -151,6 +173,7 @@ def train_model(args):
     log_filename = os.path.join(args.output_path, out_dir)
     log.init_logger(log_filename)
     plotting_device = util.plotter(args.output_path)
+    chunk_info = chunkInfo(args)
 
     rw = util.resultsWriter(
         args.output_path, args.output_file_type
@@ -234,6 +257,7 @@ def train_model(args):
             )
 
         else:
+
             if len(args.chunk_bases) > 2:
                 LOGGER.warning(
                     "chunk bases larger than 2, only using first and second elements"
@@ -261,6 +285,10 @@ def train_model(args):
                 args.mod_offset,
                 args.fixed_chunks,
             )
+
+    re = referenceEncoder(chunk_info)
+    enc_refs = re.get_reference_encoding(sigs, refs, base_locs, kmer_size=3)
+
     idx = np.random.permutation(len(sigs))
 
     sigs = np.array(sigs)[idx]
