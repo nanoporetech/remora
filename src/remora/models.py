@@ -52,11 +52,11 @@ class MLP(nn.Module):
 
 
 class CNN(nn.Module):
-    def __init__(self, batch_size, channel_size):
+    def __init__(self, batch_size, channel_size, out_size=2):
         super().__init__()
         self.conv1 = nn.Conv1d(1, channel_size, 8)
         self.conv2 = nn.Conv1d(32, 32, 2)
-        self.fc1 = nn.Linear(32, 2)
+        self.fc1 = nn.Linear(32, out_size)
 
         self.dropout = nn.Dropout(p=0.3)
         self.pool = nn.MaxPool1d(3)
