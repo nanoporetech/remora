@@ -175,9 +175,7 @@ def train_model(args):
     plotting_device = util.plotter(args.output_path)
     chunk_info = chunkInfo(args)
 
-    rw = util.resultsWriter(
-        args.output_path, args.output_file_type
-    )
+    rw = util.resultsWriter(args.output_path, args.output_file_type)
 
     if args.fixed_chunks:
         if len(args.fixed_chunk_size) == 1:
