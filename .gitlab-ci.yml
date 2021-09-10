@@ -2,39 +2,34 @@ stages:
     - format
     - test
 
-
 before_script:
-   - apt-get update -qq && apt-get install -y -qq
-     python3-all-dev python3-virtualenv
    - python -V
    - python -m venv venv
    - source venv/bin/activate
    - pip install -U pip
    - pip install .[testing]
 
-
-
 format:py36:
     image: python:3.6
     stage: format
     script:
-        - pytest . -m format
+        - pytest -m format
 
 unit_test:py36:
     image: python:3.6
     stage: test
     script:
-        - pytest . -m unit --durations 10
+        - pytest -m unit --durations 10
 
 
 format:py37:
     image: python:3.7
     stage: format
     script:
-        - pytest . -m format
+        - pytest -m format
 
 unit_test:py37:
     image: python:3.7
     stage: test
     script:
-        - pytest . -m unit --durations 10
+        - pytest -m unit --durations 10
