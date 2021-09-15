@@ -31,7 +31,6 @@ def get_train_set(train_path, mod_offset, base_pred=False):
         refs.append(ref)
         base_locs.append(read.Ref_to_signal - read.Ref_to_signal[0])
 
-
         is_mod = read.Reference[mod_offset] == 1
         labels.append(is_mod)
     return sigs, labels, refs, base_locs
@@ -82,7 +81,7 @@ def get_centred_train_set(
             chunk_size_above=chunk_size_above,
             mod_offset=mod_offset,
             base_pred=base_pred,
-            select_randomly=True
+            select_randomly=True,
         )
 
     else:
@@ -102,7 +101,7 @@ def get_centred_train_set(
             mod_offset=mod_offset,
             mod=mod,
             base_pred=base_pred,
-            select_randomly=True
+            select_randomly=True,
         )
 
     if not base_pred:

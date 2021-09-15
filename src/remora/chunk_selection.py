@@ -35,9 +35,7 @@ def sample_chunks_bybase(
     n_reads = len(read_data.get_read_ids())
 
     alphabet_info = read_data.get_alphabet_information()
-    can_alphabet = 'ACGT'
-
-
+    can_alphabet = "ACGT"
 
     if (
         number_to_sample is None
@@ -80,10 +78,14 @@ def sample_chunks_bybase(
         )
         base_locs = read.Ref_to_signal - read.Ref_to_signal[0]
         if base_pred:
-            can_base = alphabet_info.alphabet[read.Reference[mod_offset]].upper()
+            can_base = alphabet_info.alphabet[
+                read.Reference[mod_offset]
+            ].upper()
             label = can_alphabet.find(can_base)
         else:
-            label = read.Reference[mod_offset] == alphabet_info.alphabet.find(mod)
+            label = read.Reference[mod_offset] == alphabet_info.alphabet.find(
+                mod
+            )
         labels.append(label)
 
         signalPoint1 = mod_offset - bases_below
@@ -146,7 +148,7 @@ def sample_chunks_bychunksize(
 
     alphabet_info = read_data.get_alphabet_information()
 
-    can_alphabet = 'ACGT'
+    can_alphabet = "ACGT"
 
     if select_randomly:
         mod_offset += random.randint(-rand_range, rand_range)
@@ -193,10 +195,14 @@ def sample_chunks_bychunksize(
         base_locs = read.Ref_to_signal - read.Ref_to_signal[0]
 
         if base_pred:
-            can_base = alphabet_info.alphabet[read.Reference[mod_offset]].upper()
+            can_base = alphabet_info.alphabet[
+                read.Reference[mod_offset]
+            ].upper()
             label = can_alphabet.find(can_base)
         else:
-            label = read.Reference[mod_offset] == alphabet_info.alphabet.find(mod)
+            label = read.Reference[mod_offset] == alphabet_info.alphabet.find(
+                mod
+            )
 
         labels.append(label)
 

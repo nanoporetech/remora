@@ -181,23 +181,23 @@ def train_model(args):
     if args.fixed_chunks:
         if len(args.fixed_chunk_size) == 1:
             (
-                    sigs,
-                    labels,
-                    refs,
-                    base_locs,
-                    read_ids,
-                    positions,
+                sigs,
+                labels,
+                refs,
+                base_locs,
+                read_ids,
+                positions,
             ) = get_centred_train_set(
-                    args.dataset_path,
-                    args.num_chunks,
-                    args.mod.lower(),
-                    0,
-                    0,
-                    args.fixed_chunk_size[0] // 2,
-                    args.fixed_chunk_size[0] // 2,
-                    args.mod_offset,
-                    args.fixed_chunks,
-                    args.base_pred,
+                args.dataset_path,
+                args.num_chunks,
+                args.mod.lower(),
+                0,
+                0,
+                args.fixed_chunk_size[0] // 2,
+                args.fixed_chunk_size[0] // 2,
+                args.mod_offset,
+                args.fixed_chunks,
+                args.base_pred,
             )
         else:
             if len(args.chunk_bases) > 2:
@@ -209,23 +209,23 @@ def train_model(args):
                     "number of bases before and after mod base must be integer values"
                 )
             (
-                    sigs,
-                    labels,
-                    refs,
-                    base_locs,
-                    read_ids,
-                    positions,
+                sigs,
+                labels,
+                refs,
+                base_locs,
+                read_ids,
+                positions,
             ) = get_centred_train_set(
-                    args.dataset_path,
-                    args.num_chunks,
-                    args.mod.lower(),
-                    0,
-                    0,
-                    args.fixed_chunk_size[0],
-                    args.fixed_chunk_size[1],
-                    args.mod_offset,
-                    args.fixed_chunks,
-                    args.base_pred,
+                args.dataset_path,
+                args.num_chunks,
+                args.mod.lower(),
+                0,
+                0,
+                args.fixed_chunk_size[0],
+                args.fixed_chunk_size[1],
+                args.mod_offset,
+                args.fixed_chunks,
+                args.base_pred,
             )
 
     else:
@@ -239,23 +239,23 @@ def train_model(args):
                     "number of bases before and after mod base must be integer values"
                 )
             (
-                    sigs,
-                    labels,
-                    refs,
-                    base_locs,
-                    read_ids,
-                    positions,
+                sigs,
+                labels,
+                refs,
+                base_locs,
+                read_ids,
+                positions,
             ) = get_centred_train_set(
-                    args.dataset_path,
-                    args.num_chunks,
-                    args.mod.lower(),
-                    args.chunk_bases[0],
-                    args.chunk_bases[0],
-                    0,
-                    0,
-                    args.mod_offset,
-                    args.fixed_chunks,
-                    args.base_pred,
+                args.dataset_path,
+                args.num_chunks,
+                args.mod.lower(),
+                args.chunk_bases[0],
+                args.chunk_bases[0],
+                0,
+                0,
+                args.mod_offset,
+                args.fixed_chunks,
+                args.base_pred,
             )
 
         else:
@@ -270,23 +270,23 @@ def train_model(args):
                     "number of bases before and after mod base must be integer values"
                 )
             (
-                    sigs,
-                    labels,
-                    refs,
-                    base_locs,
-                    read_ids,
-                    positions,
+                sigs,
+                labels,
+                refs,
+                base_locs,
+                read_ids,
+                positions,
             ) = get_centred_train_set(
-                    args.dataset_path,
-                    args.num_chunks,
-                    args.mod.lower(),
-                    args.chunk_bases[0],
-                    args.chunk_bases[1],
-                    0,
-                    0,
-                    args.mod_offset,
-                    args.fixed_chunks,
-                    args.base_pred,
+                args.dataset_path,
+                args.num_chunks,
+                args.mod.lower(),
+                args.chunk_bases[0],
+                args.chunk_bases[1],
+                0,
+                0,
+                args.mod_offset,
+                args.fixed_chunks,
+                args.base_pred,
             )
 
     re = referenceEncoder(chunk_info)
@@ -329,7 +329,9 @@ def train_model(args):
             model = models.SimpleLSTM()
     elif args.model == "cnn":
         if args.base_pred:
-            model = models.CNN(batch_size=args.batch_size, channel_size=32, out_size=4)
+            model = models.CNN(
+                batch_size=args.batch_size, channel_size=32, out_size=4
+            )
         else:
             model = models.CNN(batch_size=args.batch_size, channel_size=32)
     else:
