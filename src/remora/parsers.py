@@ -166,6 +166,11 @@ def register_train_model(parser):
         action="store_true",
         help="Overwrite existing output directory if existing.",
     )
+    subparser.add_argument(
+        "--base-pred",
+        action="store_true",
+        help="Train to predict bases and not mods.",
+    )
 
     subparser.add_argument("--seed", default=1, type=int, help="Seed value")
     subparser.add_argument("--remark", default="", help="Any reamrk")

@@ -1,6 +1,5 @@
 from taiyaki.mapped_signal_files import MappedSignalReader
-
-import pdb
+import random
 
 
 def sample_chunks_bybase(
@@ -10,8 +9,10 @@ def sample_chunks_bybase(
     bases_above,
     mod_offset,
     mod,
+    base_pred=False,
     standardise=True,
-    select_strands_randomly=True,
+    select_randomly=False,
+    rand_range=5,
     first_strand_index=0,
 ):
 
@@ -34,6 +35,9 @@ def sample_chunks_bybase(
     n_reads = len(read_data.get_read_ids())
 
     alphabet_info = read_data.get_alphabet_information()
+    can_alphabet = 'ACGT'
+
+
 
     if (
         number_to_sample is None
@@ -75,7 +79,12 @@ def sample_chunks_bybase(
             alphabet_info.collapse_alphabet[b] for b in read.Reference
         )
         base_locs = read.Ref_to_signal - read.Ref_to_signal[0]
-        is_mod = read.Reference[mod_offset] == alphabet_info.alphabet.find(mod)
+        if base_pred:
+            can_base = alphabet_info.alphabet[read.Reference[mod_offset]].upper()
+            label = can_alphabet.find(can_base)
+        else:
+            label = read.Reference[mod_offset] == alphabet_info.alphabet.find(mod)
+        labels.append(label)
 
         signalPoint1 = mod_offset - bases_below
         signalPoint2 = mod_offset + bases_above
@@ -91,7 +100,6 @@ def sample_chunks_bybase(
         extracted_signal.append(
             sig[base_locs[signalPoint1] : base_locs[signalPoint2]]
         )
-        labels.append(is_mod)
         refs.append(ref)
         base_locations.append(base_locs)
         read_ids.append(read.read_id)
@@ -100,7 +108,6 @@ def sample_chunks_bybase(
         count += 1
         if count >= number_to_sample:
             break
-
     return extracted_signal, labels, refs, base_locations, read_ids, positions
 
 
@@ -111,8 +118,10 @@ def sample_chunks_bychunksize(
     chunk_size_above,
     mod_offset,
     mod,
+    base_pred=False,
     standardise=True,
-    select_strands_randomly=True,
+    select_randomly=False,
+    rand_range=5,
     first_strand_index=0,
 ):
 
@@ -136,6 +145,11 @@ def sample_chunks_bychunksize(
     n_reads = len(read_data.get_read_ids())
 
     alphabet_info = read_data.get_alphabet_information()
+
+    can_alphabet = 'ACGT'
+
+    if select_randomly:
+        mod_offset += random.randint(-rand_range, rand_range)
 
     if (
         number_to_sample is None
@@ -177,7 +191,14 @@ def sample_chunks_bychunksize(
             alphabet_info.collapse_alphabet[b] for b in read.Reference
         )
         base_locs = read.Ref_to_signal - read.Ref_to_signal[0]
-        is_mod = read.Reference[mod_offset] == alphabet_info.alphabet.find(mod)
+
+        if base_pred:
+            can_base = alphabet_info.alphabet[read.Reference[mod_offset]].upper()
+            label = can_alphabet.find(can_base)
+        else:
+            label = read.Reference[mod_offset] == alphabet_info.alphabet.find(mod)
+
+        labels.append(label)
 
         signalPoint1 = base_locs[mod_offset] - chunk_size_below
         signalPoint2 = base_locs[mod_offset] + chunk_size_above
@@ -189,7 +210,6 @@ def sample_chunks_bychunksize(
             continue
 
         extracted_signal.append(sig[signalPoint1:signalPoint2])
-        labels.append(is_mod)
         refs.append(ref)
         base_locations.append(base_locs)
         read_ids.append(read.read_id)

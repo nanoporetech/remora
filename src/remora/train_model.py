@@ -78,7 +78,7 @@ def collate_fn_padd(batch):
     return batch[:, mask], lengths[mask], labels[mask]
 
 
-def validate_model(model, dl, model_name):
+def validate_model(model, dl, model_name, base_pred=False):
     with torch.no_grad():
         model.eval()
         outputs = []
@@ -97,15 +97,16 @@ def validate_model(model, dl, model_name):
             labels.append(y)
         pred = torch.cat(outputs)
         lbs = torch.tensor(np.concatenate(labels))
-        precision, recall, thresholds = precision_recall_curve(
-            lbs.cpu().numpy(), pred[:, 1].cpu().numpy()
-        )
-        f1_scores = 2 * recall * precision / (recall + precision)
-        LOGGER.info(
-            f"F1: {np.max(f1_scores):.4f}, "
-            f"prec: {precision[np.argmax(f1_scores)]:.4f}, "
-            f"recall: {recall[np.argmax(f1_scores)]:.4f}"
-        )
+        if not base_pred:
+            precision, recall, thresholds = precision_recall_curve(
+                lbs.cpu().numpy(), pred[:, 1].cpu().numpy()
+            )
+            f1_scores = 2 * recall * precision / (recall + precision)
+            LOGGER.info(
+                f"F1: {np.max(f1_scores):.4f}, "
+                f"prec: {precision[np.argmax(f1_scores)]:.4f}, "
+                f"recall: {recall[np.argmax(f1_scores)]:.4f}"
+            )
         y_pred = torch.argmax(pred, dim=1)
         acc = (y_pred == lbs.cuda()).float().sum() / y_pred.shape[0]
         LOGGER.info(
@@ -180,22 +181,23 @@ def train_model(args):
     if args.fixed_chunks:
         if len(args.fixed_chunk_size) == 1:
             (
-                sigs,
-                labels,
-                refs,
-                base_locs,
-                read_ids,
-                positions,
+                    sigs,
+                    labels,
+                    refs,
+                    base_locs,
+                    read_ids,
+                    positions,
             ) = get_centred_train_set(
-                args.dataset_path,
-                args.num_chunks,
-                args.mod.lower(),
-                0,
-                0,
-                args.fixed_chunk_size[0] // 2,
-                args.fixed_chunk_size[0] // 2,
-                args.mod_offset,
-                args.fixed_chunks,
+                    args.dataset_path,
+                    args.num_chunks,
+                    args.mod.lower(),
+                    0,
+                    0,
+                    args.fixed_chunk_size[0] // 2,
+                    args.fixed_chunk_size[0] // 2,
+                    args.mod_offset,
+                    args.fixed_chunks,
+                    args.base_pred,
             )
         else:
             if len(args.chunk_bases) > 2:
@@ -207,22 +209,23 @@ def train_model(args):
                     "number of bases before and after mod base must be integer values"
                 )
             (
-                sigs,
-                labels,
-                refs,
-                base_locs,
-                read_ids,
-                positions,
+                    sigs,
+                    labels,
+                    refs,
+                    base_locs,
+                    read_ids,
+                    positions,
             ) = get_centred_train_set(
-                args.dataset_path,
-                args.num_chunks,
-                args.mod.lower(),
-                0,
-                0,
-                args.fixed_chunk_size[0],
-                args.fixed_chunk_size[1],
-                args.mod_offset,
-                args.fixed_chunks,
+                    args.dataset_path,
+                    args.num_chunks,
+                    args.mod.lower(),
+                    0,
+                    0,
+                    args.fixed_chunk_size[0],
+                    args.fixed_chunk_size[1],
+                    args.mod_offset,
+                    args.fixed_chunks,
+                    args.base_pred,
             )
 
     else:
@@ -236,22 +239,23 @@ def train_model(args):
                     "number of bases before and after mod base must be integer values"
                 )
             (
-                sigs,
-                labels,
-                refs,
-                base_locs,
-                read_ids,
-                positions,
+                    sigs,
+                    labels,
+                    refs,
+                    base_locs,
+                    read_ids,
+                    positions,
             ) = get_centred_train_set(
-                args.dataset_path,
-                args.num_chunks,
-                args.mod.lower(),
-                args.chunk_bases[0],
-                args.chunk_bases[0],
-                0,
-                0,
-                args.mod_offset,
-                args.fixed_chunks,
+                    args.dataset_path,
+                    args.num_chunks,
+                    args.mod.lower(),
+                    args.chunk_bases[0],
+                    args.chunk_bases[0],
+                    0,
+                    0,
+                    args.mod_offset,
+                    args.fixed_chunks,
+                    args.base_pred,
             )
 
         else:
@@ -266,22 +270,23 @@ def train_model(args):
                     "number of bases before and after mod base must be integer values"
                 )
             (
-                sigs,
-                labels,
-                refs,
-                base_locs,
-                read_ids,
-                positions,
+                    sigs,
+                    labels,
+                    refs,
+                    base_locs,
+                    read_ids,
+                    positions,
             ) = get_centred_train_set(
-                args.dataset_path,
-                args.num_chunks,
-                args.mod.lower(),
-                args.chunk_bases[0],
-                args.chunk_bases[1],
-                0,
-                0,
-                args.mod_offset,
-                args.fixed_chunks,
+                    args.dataset_path,
+                    args.num_chunks,
+                    args.mod.lower(),
+                    args.chunk_bases[0],
+                    args.chunk_bases[1],
+                    0,
+                    0,
+                    args.mod_offset,
+                    args.fixed_chunks,
+                    args.base_pred,
             )
 
     re = referenceEncoder(chunk_info)
@@ -318,9 +323,15 @@ def train_model(args):
     )
 
     if args.model == "lstm":
-        model = models.SimpleLSTM()
+        if args.base_pred:
+            model = models.SimpleLSTM(out_size=4)
+        else:
+            model = models.SimpleLSTM()
     elif args.model == "cnn":
-        model = models.CNN(batch_size=args.batch_size, channel_size=32)
+        if args.base_pred:
+            model = models.CNN(batch_size=args.batch_size, channel_size=32, out_size=4)
+        else:
+            model = models.CNN(batch_size=args.batch_size, channel_size=32)
     else:
         raise ValueError("Specify a valid model type to train with")
 
@@ -390,7 +401,6 @@ def train_model(args):
                 output = output.to(torch.float32)
 
             target = torch.tensor(y)
-
             loss = criterion(output, target.cuda())
             opt.zero_grad()
             loss.backward()
@@ -403,7 +413,7 @@ def train_model(args):
 
         pbar.close()
 
-        acc = validate_model(model, dl_val, model_name)
+        acc = validate_model(model, dl_val, model_name, args.base_pred)
 
         scheduler.step()
 

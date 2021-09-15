@@ -5,12 +5,12 @@ import torch
 
 
 class SimpleLSTM(nn.Module):
-    def __init__(self):
+    def __init__(self, out_size=2):
         super().__init__()
 
         self.lstm = nn.LSTM(1, 32, 1)
         self.pps = rnn.pad_packed_sequence
-        self.fc1 = nn.Linear(32, 2)
+        self.fc1 = nn.Linear(32, out_size)
         self.relu = nn.ReLU()
         self.flatten = nn.Flatten()
 
