@@ -53,9 +53,11 @@ def load_chunks(
     # TODO allow multiple modified bases
     alphabet_info = read_data.get_alphabet_information()
 
-    if base_pred:
-        if alphabet_info.alphabet != "ACGT":
-            raise ValueError("Alphabet is not canonical.")
+    if base_pred and  alphabet_info.alphabet != "ACGT":
+        raise ValueError(
+            "Base prediction is not compatible with modified base "
+            "training data. It requires a canonical alphabet."
+        )
 
     mod_idx = alphabet_info.alphabet.find(mod)
 
@@ -125,4 +127,4 @@ def load_chunks(
     )
     LOGGER.info(f"Chunk selection summary:\n{rej_summ}\n")
 
-    return sigs, labels, refs, base_locations, read_ids, positions
+    return sigs, labels, refs, base_locs, read_ids, positions
