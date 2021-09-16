@@ -150,6 +150,8 @@ def train_model(
     base_pred,
     epochs,
     save_freq,
+    plot,
+    references,
 ):
 
     np.random.seed(seed)
@@ -159,6 +161,7 @@ def train_model(
     torch.cuda.set_device(device)
 
     rw = util.resultsWriter(out_path / "results.txt")
+    plot = util.plotter(out_path)
 
     sigs, labels, refs, base_locs, read_ids, positions = load_chunks(
         dataset_path,
@@ -169,6 +172,11 @@ def train_model(
         fixed_seq_len_chunks,
         base_pred,
     )
+    if references:
+        from remora.reference_functions import referenceEncoder
+
+        re = referenceEncoder(mod_offset, chunk_context, fixed_seq_len_chunks)
+        enc_refs = re.get_reference_encoding(sigs, refs, base_locs, kmer_size=3)
 
     LOGGER.info(f"Label distribution: {Counter(labels)}")
 
@@ -293,6 +301,7 @@ def train_model(
         pbar.close()
 
         acc = validate_model(model, dl_val, fixed_seq_len_chunks, base_pred)
+        plot.append_result(acc, np.mean(losses))
 
         scheduler.step()
 
@@ -313,6 +322,7 @@ def train_model(
                 },
                 out_path,
             )
+    plot.save_plots()
     result_table = get_results(
         model,
         fixed_seq_len_chunks,
