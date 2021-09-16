@@ -115,6 +115,11 @@ def register_train_model(parser):
         action="store_true",
         help="Save accuracy and loss plots from training.",
     )
+    out_grp.add_argument(
+        "--references",
+        action="store_true",
+        help="Include encoding of references for use in training",
+    )
 
     mdl_grp = subparser.add_argument_group("Model Arguments")
     # TODO convert to file input specifying the model (see taiyaki)
@@ -220,6 +225,8 @@ def run_train_model(args):
         args.lr_decay_gamma,
         args.epochs,
         args.save_freq,
+        args.plot,
+        args.references,
     )
 
 

@@ -86,3 +86,42 @@ class CNN(nn.Module):
         x = torch.sigmoid(self.fc1(x))
 
         return x
+
+
+class double_headed_CNN(nn.Module):
+    def __init__(self, batch_size, channel_size):
+        super().__init__()
+        self.conv1 = nn.Conv1d(1, channel_size, 8)
+        self.conv2 = nn.Conv1d(32, 32, 2)
+        self.fc1 = nn.Linear(32, 32)
+
+        self.conv3 = nn.Conv1d(1, channel_size, 8)
+        self.conv4 = nn.Conv1d(32, 32, 2)
+        self.fc2 = nn.Linear(32, 32)
+
+        self.dropout = nn.Dropout(p=0.3)
+        self.pool = nn.MaxPool1d(3)
+
+    def forward(self, x, y):
+        x = self.dropout(F.relu(self.conv1(x)))
+        x = self.pool(x)
+        x = self.dropout(F.relu(self.conv2(x)))
+        x = self.pool(x)
+        x = torch.mean(x.view(x.size(0), x.size(1), -1), dim=2)
+
+        y = self.dropout(F.relu(self.conv3(y)))
+        y = self.pool(y)
+        y = self.dropout(F.relu(self.conv4(y)))
+        y = self.pool(y)
+        y = torch.mean(y.view(y.size(0), x.size(1), -1), dim=2)
+        # x = torch.flatten(x, start_dim=0)
+        x = self.fc1(x)
+        y = self.fc2(y)
+
+        z = torch.sigmoid(torch.cat((x, y), 0))
+        # x = self.dropout(F.relu(self.fc2(x)))
+        # x = self.dropout(F.relu(self.fc3(x)))
+        # x = self.dropout(F.relu(self.fc4(x)))
+        # x = torch.sigmoid(self.fc5(x))
+
+        return z
