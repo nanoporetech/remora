@@ -148,6 +148,8 @@ def train_model(
     lr_decay_gamma,
     epochs,
     save_freq,
+    plot,
+    references,
 ):
 
     np.random.seed(seed)
@@ -167,6 +169,12 @@ def train_model(
         chunk_context,
         fixed_seq_len_chunks,
     )
+    if references:
+        from remora.reference_functions import referenceEncoder
+
+        re = referenceEncoder(mod_offset, chunk_context, fixed_seq_len_chunks)
+        enc_refs = re.get_reference_encoding(sigs, refs, base_locs, kmer_size=3)
+
     LOGGER.info(f"Label distribution: {Counter(labels)}")
 
     idx = np.random.permutation(len(sigs))
