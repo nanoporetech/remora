@@ -264,7 +264,7 @@ def train_model(
         opt, step_size=lr_decay_step, gamma=lr_decay_gamma
     )
 
-    acc = validate_model(model, dl_val, fixed_seq_len_chunks)
+    acc = validate_model(model, dl_val, fixed_seq_len_chunks, base_pred)
     for epoch in range(start_epoch, epochs):
         model.train()
         pbar = tqdm(total=len(dl_tr), leave=True, ncols=100)

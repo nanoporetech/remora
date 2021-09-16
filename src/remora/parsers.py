@@ -218,6 +218,7 @@ def run_train_model(args):
         args.weight_decay,
         args.lr_decay_step,
         args.lr_decay_gamma,
+        args.base_pred,
         args.epochs,
         args.save_freq,
     )

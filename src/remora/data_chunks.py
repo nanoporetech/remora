@@ -16,6 +16,7 @@ def load_chunks(
     mod_offset,
     chunk_context,
     fixed_seq_len_chunks=False,
+    base_pred=False,
 ):
     """
     Args:
@@ -51,6 +52,7 @@ def load_chunks(
 
     # TODO allow multiple modified bases
     alphabet_info = read_data.get_alphabet_information()
+    can_alphabet = "ACGT"
     mod_idx = alphabet_info.alphabet.find(mod)
 
     sigs = []
@@ -70,7 +72,13 @@ def load_chunks(
             alphabet_info.collapse_alphabet[b] for b in read.Reference
         )
         base_locs = read.Ref_to_signal - read.Ref_to_signal[0]
-        is_mod = int(read.Reference[mod_offset] == mod_idx)
+        if base_pred:
+            can_base = alphabet_info.alphabet[
+                read.Reference[mod_offset]
+            ].upper()
+            label = can_alphabet.find(can_base)
+        else:
+            label = int(read.Reference[mod_offset] == mod_idx)
 
         if fixed_seq_len_chunks:
             base_start = mod_offset - chunk_context[0]
@@ -98,7 +106,7 @@ def load_chunks(
                 continue
 
         sigs.append(sig[sig_start:sig_end])
-        labels.append(is_mod)
+        labels.append(label)
         refs.append(ref)
         base_locations.append(base_locs)
         read_ids.append(read.read_id)
