@@ -53,7 +53,7 @@ def load_chunks(
     # TODO allow multiple modified bases
     alphabet_info = read_data.get_alphabet_information()
 
-    if base_pred and  alphabet_info.alphabet != "ACGT":
+    if base_pred and alphabet_info.alphabet != "ACGT":
         raise ValueError(
             "Base prediction is not compatible with modified base "
             "training data. It requires a canonical alphabet."
