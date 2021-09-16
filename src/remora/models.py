@@ -3,25 +3,41 @@ import torch.nn.utils.rnn as rnn
 import torch.nn.functional as F
 import torch
 
+from remora import log
 
-class SimpleLSTM(nn.Module):
-    def __init__(self, out_size=2):
+LOGGER = log.get_logger()
+
+DEFAULT_SIZE = 64
+
+
+class SimpleFWLSTM(nn.Module):
+    def __init__(self, size=DEFAULT_SIZE, num_out=2):
         super().__init__()
 
-        self.lstm = nn.LSTM(1, 32, 1)
-        self.pps = rnn.pad_packed_sequence
-        self.fc1 = nn.Linear(32, out_size)
-        self.relu = nn.ReLU()
-        self.flatten = nn.Flatten()
+        self.lstm = nn.LSTM(1, size, 1)
+        self.fc1 = nn.Linear(size, num_out)
+
+    def forward(self, x):
+        x, hx = self.lstm(x.permute(2, 0, 1))
+        x = x[-1].permute(0, 1)
+        x = self.fc1(x)
+
+        return x
+
+
+class SimpleLSTM(nn.Module):
+    def __init__(self, size=DEFAULT_SIZE, num_out=2):
+        super().__init__()
+
+        self.lstm = nn.LSTM(1, size, 1)
+        self.fc1 = nn.Linear(size, num_out)
 
     def forward(self, x, x_len):
         x = self.lstm(x)
-
-        x, hn = self.pps(x[0])
+        x, hn = rnn.pad_packed_sequence(x[0])
         x = x[x_len - 1]
         x = torch.transpose(torch.diagonal(x), 0, 1)
         x = self.fc1(x)
-        # x = self.relu(x)
 
         return x
 
@@ -52,11 +68,11 @@ class MLP(nn.Module):
 
 
 class CNN(nn.Module):
-    def __init__(self, batch_size, channel_size, out_size=2):
+    def __init__(self, size=DEFAULT_SIZE, num_out=2):
         super().__init__()
-        self.conv1 = nn.Conv1d(1, channel_size, 8)
-        self.conv2 = nn.Conv1d(32, 32, 2)
-        self.fc1 = nn.Linear(32, out_size)
+        self.conv1 = nn.Conv1d(1, size, 8)
+        self.conv2 = nn.Conv1d(size, size, 2)
+        self.fc1 = nn.Linear(size, num_out)
 
         self.dropout = nn.Dropout(p=0.3)
         self.pool = nn.MaxPool1d(3)
