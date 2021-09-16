@@ -83,11 +83,6 @@ class CNN(nn.Module):
         x = self.dropout(F.relu(self.conv2(x)))
         x = self.pool(x)
         x = torch.mean(x.view(x.size(0), x.size(1), -1), dim=2)
-        # x = torch.flatten(x, start_dim=0)
         x = torch.sigmoid(self.fc1(x))
-        # x = self.dropout(F.relu(self.fc2(x)))
-        # x = self.dropout(F.relu(self.fc3(x)))
-        # x = self.dropout(F.relu(self.fc4(x)))
-        # x = torch.sigmoid(self.fc5(x))
 
         return x

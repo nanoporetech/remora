@@ -157,6 +157,7 @@ def train_model(
     torch.cuda.set_device(device)
 
     rw = util.resultsWriter(out_path / "results.txt")
+    plot = util.plotter(out_path)
 
     sigs, labels, refs, base_locs, read_ids, positions = load_chunks(
         dataset_path,
@@ -166,7 +167,6 @@ def train_model(
         chunk_context,
         fixed_seq_len_chunks,
     )
-
     LOGGER.info(f"Label distribution: {Counter(labels)}")
 
     idx = np.random.permutation(len(sigs))
@@ -276,7 +276,6 @@ def train_model(
                 output = output.to(torch.float32)
 
             target = torch.tensor(y)
-
             loss = criterion(output, target.cuda())
             opt.zero_grad()
             loss.backward()
@@ -290,6 +289,7 @@ def train_model(
         pbar.close()
 
         acc = validate_model(model, dl_val, fixed_seq_len_chunks)
+        plot.append_result(acc, np.mean(losses))
 
         scheduler.step()
 
@@ -310,6 +310,7 @@ def train_model(
                 },
                 out_path,
             )
+    plot.save_plots()
     result_table = get_results(
         model,
         fixed_seq_len_chunks,
