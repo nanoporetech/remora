@@ -41,7 +41,6 @@ class referenceEncoder:
     def reference_encoding_bybase(
         self, signals, references, base_locs, kmer_size=3
     ):
-
         encodings = []
         for sig, ref, bl in zip(signals, references, base_locs):
             extracted_bl = bl[

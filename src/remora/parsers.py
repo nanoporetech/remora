@@ -183,6 +183,11 @@ def register_train_model(parser):
         dest="nb_workers",
         help="Number of workers for dataloader. Default: %(default)d",
     )
+    subparser.add_argument(
+        "--base-pred",
+        action="store_true",
+        help="Train to predict bases and not mods.",
+    )
 
     subparser.set_defaults(func=run_train_model)
 
@@ -223,6 +228,7 @@ def run_train_model(args):
         args.weight_decay,
         args.lr_decay_step,
         args.lr_decay_gamma,
+        args.base_pred,
         args.epochs,
         args.save_freq,
         args.plot,

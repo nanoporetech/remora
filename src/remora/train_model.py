@@ -45,7 +45,7 @@ def collate_fn_padd(batch):
     return batch[:, mask], lengths[mask], labels[mask]
 
 
-def validate_model(model, dl, fixed_seq_len_chunks):
+def validate_model(model, dl, fixed_seq_len_chunks, base_pred=False):
     with torch.no_grad():
         model.eval()
         outputs = []
@@ -64,16 +64,17 @@ def validate_model(model, dl, fixed_seq_len_chunks):
             labels.append(y)
         pred = torch.cat(outputs)
         lbs = torch.tensor(np.concatenate(labels))
-        precision, recall, thresholds = precision_recall_curve(
-            lbs.cpu().numpy(), pred[:, 1].cpu().numpy()
-        )
-        with np.errstate(invalid="ignore"):
-            f1_scores = 2 * recall * precision / (recall + precision)
-        LOGGER.info(
-            f"F1: {np.max(f1_scores):.4f}, "
-            f"prec: {precision[np.argmax(f1_scores)]:.4f}, "
-            f"recall: {recall[np.argmax(f1_scores)]:.4f}"
-        )
+        if not base_pred:
+            precision, recall, thresholds = precision_recall_curve(
+                lbs.cpu().numpy(), pred[:, 1].cpu().numpy()
+            )
+            with np.errstate(invalid="ignore"):
+                f1_scores = 2 * recall * precision / (recall + precision)
+                LOGGER.info(
+                    f"F1: {np.max(f1_scores):.4f}, "
+                    f"prec: {precision[np.argmax(f1_scores)]:.4f}, "
+                    f"recall: {recall[np.argmax(f1_scores)]:.4f}"
+                )
         y_pred = torch.argmax(pred, dim=1)
         acc = (y_pred == lbs.cuda()).float().sum() / y_pred.shape[0]
         LOGGER.info(
@@ -146,6 +147,7 @@ def train_model(
     weight_decay,
     lr_decay_step,
     lr_decay_gamma,
+    base_pred,
     epochs,
     save_freq,
     plot,
@@ -168,6 +170,7 @@ def train_model(
         mod_offset,
         chunk_context,
         fixed_seq_len_chunks,
+        base_pred,
     )
     if references:
         from remora.reference_functions import referenceEncoder
@@ -207,18 +210,19 @@ def train_model(
         pin_memory=True,
     )
 
+    num_out = 4 if base_pred else 2
     if model_name == "lstm":
         if fixed_seq_len_chunks:
-            model = models.SimpleLSTM(size=size)
+            model = models.SimpleLSTM(size=size, num_out=num_out)
         else:
-            model = models.SimpleFWLSTM(size=size)
+            model = models.SimpleFWLSTM(size=size, num_out=num_out)
     elif model_name == "cnn":
         if fixed_seq_len_chunks:
             raise RemoraError(
-                "Convolutional network not compatoble with variable signal "
+                "Convolutional network not compatible with variable signal "
                 "length chunks."
             )
-        model = models.CNN(size=size)
+        model = models.CNN(size=size, num_out=num_out)
     else:
         raise ValueError("Specify a valid model type to train with")
     model = model.cuda()
@@ -267,7 +271,7 @@ def train_model(
         opt, step_size=lr_decay_step, gamma=lr_decay_gamma
     )
 
-    acc = validate_model(model, dl_val, fixed_seq_len_chunks)
+    acc = validate_model(model, dl_val, fixed_seq_len_chunks, base_pred)
     for epoch in range(start_epoch, epochs):
         model.train()
         pbar = tqdm(total=len(dl_tr), leave=True, ncols=100)
@@ -296,7 +300,7 @@ def train_model(
 
         pbar.close()
 
-        acc = validate_model(model, dl_val, fixed_seq_len_chunks)
+        acc = validate_model(model, dl_val, fixed_seq_len_chunks, base_pred)
         plot.append_result(acc, np.mean(losses))
 
         scheduler.step()
