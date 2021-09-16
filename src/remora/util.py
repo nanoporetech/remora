@@ -46,35 +46,14 @@ def continue_from_checkpoint(dir_path, training_var=None, **kwargs):
 
 
 class resultsWriter:
-    def __init__(self, output_path, output_filetype):
-
+    def __init__(self, output_path):
         self.output_path = output_path
-        self.output_filetype = output_filetype
-        self.output_filename = "results"
-        self.initialise()
-
-    def initialise(self):
-
-        if not exists(self.output_path):
-            os.makedirs(self.output_path)
-        if self.output_filetype == None or self.output_filetype == "txt":
-            self.extension = ".txt"
-        elif self.output_filetype.lower() == "sam":
-            self.extension = ".sam"
-        elif self.output_filetype.lower() == "bam":
-            self.extension = ".bam"
-
-        self.full_output = (
-            self.output_path + self.output_filename + self.extension
-        )
-
         column_names = ["Read ID", "Position", "Mod Score"]
         df = pd.DataFrame(columns=column_names)
-        df.to_csv(self.full_output, sep="\t")
+        df.to_csv(self.output_path, sep="\t")
 
     def write(self, results_table):
-
-        with open(self.full_output, "a") as f:
+        with open(self.output_path, "a") as f:
             results_table.to_csv(f, header=f.tell() == 0)
 
 
