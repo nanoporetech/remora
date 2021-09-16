@@ -70,8 +70,20 @@ class plotter:
     def save_plots(self):
         import matplotlib.pyplot as plt
 
-        fig1 = plt.plot(self.accuracy)
-        fig2 = plt.plot(self.losses)
+        fig1 = plt.figure()
+        ax1 = plt.subplot(111)
+        ax1.plot(list(range(len(self.accuracy))), self.accuracy)
+        ax1.set_ylabel("Validation accuracy")
+        ax1.set_xlabel("Epochs")
 
-        fig1.savefig(os.path.join(outdir, "accuracy.png"), format="png")
-        fig2.savefig(os.path.join(outdir, "loss.png"), format="png")
+        fig2 = plt.figure()
+        ax2 = plt.subplot(111)
+        ax2.plot(list(range(len(self.losses))), self.losses)
+        ax2.set_ylabel("Validation loss")
+        ax2.set_xlabel("Epochs")
+
+        if not os.path.isdir(self.outdir):
+            os.mkdir(self.outdir)
+
+        fig1.savefig(os.path.join(self.outdir, "accuracy.png"), format="png")
+        fig2.savefig(os.path.join(self.outdir, "loss.png"), format="png")

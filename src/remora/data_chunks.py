@@ -116,4 +116,4 @@ def load_chunks(
     )
     LOGGER.info(f"Chunk selection summary:\n{rej_summ}\n")
 
-    return sigs, labels, refs, base_locs, read_ids, positions
+    return sigs, labels, refs, base_locations, read_ids, positions
