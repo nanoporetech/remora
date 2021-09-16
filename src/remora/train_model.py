@@ -201,7 +201,7 @@ def train_model(
         collate_fn=collate_fn_padd,
         pin_memory=True,
     )
-    
+
     num_out = 4 if base_pred else 2
     if model_name == "lstm":
         if fixed_seq_len_chunks:

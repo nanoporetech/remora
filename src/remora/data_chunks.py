@@ -55,9 +55,7 @@ def load_chunks(
 
     if base_pred:
         if alphabet_info.alphabet != "ACGT":
-            raise ValueError(
-                "Alphabet is not canonical."
-            )
+            raise ValueError("Alphabet is not canonical.")
 
     mod_idx = alphabet_info.alphabet.find(mod)
 
