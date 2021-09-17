@@ -15,6 +15,23 @@ DEFAULT_SIZE = 64
 ################################
 
 
+def swish(x):
+    """Swish activation
+
+    Swish is self-gated linear activation :math:`x sigma(x)`
+
+    For details see: https://arxiv.org/abs/1710.05941
+
+    Note:
+        Original definition has a scaling parameter for the gating value,
+        making it a generalisation of the (logistic approximation to) the GELU.
+        Evidence presented, e.g. https://arxiv.org/abs/1908.08681 that swish-1
+        performs comparable to tuning the parameter.
+
+    """
+    return x * torch.sigmoid(x)
+
+
 class SimpleLSTM(nn.Module):
     def __init__(self, size=DEFAULT_SIZE, num_out=2):
         super().__init__()
@@ -100,43 +117,61 @@ class CNN(nn.Module):
 
 
 class double_headed_CNN(nn.Module):
-    def __init__(self, batch_size, channel_size):
+    def __init__(self, channel_size):
         super().__init__()
-        self.conv1 = nn.Conv1d(1, channel_size, 8)
-        self.conv2 = nn.Conv1d(32, 32, 2)
-        self.fc1 = nn.Linear(32, 32)
+        self.conv1 = nn.Conv1d(1, channel_size, 3)
+        self.conv2 = nn.Conv2d(1, channel_size, (12, 3))
+        self.conv3 = nn.Conv2d(1, 4, (channel_size * 2, 3))
 
-        self.conv3 = nn.Conv1d(1, channel_size, 8)
-        self.conv4 = nn.Conv1d(32, 32, 2)
-        self.fc2 = nn.Linear(32, 32)
+        self.fc1 = nn.Linear(144, 2)
 
         self.dropout = nn.Dropout(p=0.3)
-        self.pool = nn.MaxPool1d(3)
 
     def forward(self, sigs, seqs):
-        # Tensor is stored in TBF order, but `conv` requires BFT order
-        x = sigs.permute(1, 2, 0)
-        x = self.dropout(F.relu(self.conv1(sigs)))
-        x = self.pool(x)
-        x = self.dropout(F.relu(self.conv2(x)))
-        x = self.pool(x)
-        x = torch.mean(x.view(x.size(0), x.size(1), -1), dim=2)
+        sigs = sigs.permute(1, 2, 0)
+        sigs = self.dropout(F.relu(self.conv1(sigs)))
 
-        # Tensor is stored in TBF order, but `conv` requires BFT order
-        y = seqs.permute(1, 2, 0)
-        y = self.dropout(F.relu(self.conv3(seqs)))
-        y = self.pool(y)
-        y = self.dropout(F.relu(self.conv4(y)))
-        y = self.pool(y)
-        y = torch.mean(y.view(y.size(0), x.size(1), -1), dim=2)
-        # x = torch.flatten(x, start_dim=0)
-        x = self.fc1(x)
-        y = self.fc2(y)
+        seqs = seqs.permute(1, 2, 0)
+        seqs = self.dropout(F.relu(self.conv2(seqs.unsqueeze(1))))
+        seqs = seqs.squeeze(2)
+        z = torch.cat((sigs, seqs), 1)
+        z = self.dropout(F.relu(self.conv3(z.unsqueeze(1))))
+        z = z.squeeze(2)
+        z = torch.flatten(z, start_dim=1)
+        z = torch.softmax(self.fc1(z), dim=1)
 
-        z = torch.sigmoid(torch.cat((x, y), 0))
-        # x = self.dropout(F.relu(self.fc2(x)))
-        # x = self.dropout(F.relu(self.fc3(x)))
-        # x = self.dropout(F.relu(self.fc4(x)))
-        # x = torch.sigmoid(self.fc5(x))
+        return z
+
+
+class double_headed_ConvLSTM(nn.Module):
+    def __init__(self, channel_size):
+        super().__init__()
+        self.conv1 = nn.Conv1d(1, 4, 5)
+        self.conv2 = nn.Conv1d(8, 16, 5)
+        self.conv3 = nn.Conv1d(16, channel_size, 9, 3)
+        self.lstm = nn.LSTM(channel_size, channel_size, 1)
+
+        self.conv4 = nn.Conv2d(1, 4, (12, 5))
+
+        self.fc = nn.Linear(64, 2)
+
+        self.dropout = nn.Dropout(p=0.3)
+
+    def forward(self, sigs, seqs):
+        sigs = sigs.permute(1, 2, 0)
+        sigs = swish(self.conv1(sigs))
+
+        seqs = seqs.permute(1, 2, 0)
+        seqs = self.dropout(F.relu(self.conv4(seqs.unsqueeze(1))))
+        seqs = seqs.squeeze(2)
+
+        z = torch.cat((sigs, seqs), 1)
+
+        z = swish(self.conv2(z))
+        z = swish(self.conv3(z))
+        z, hz = self.lstm(z.permute(2, 0, 1))
+        z = z[-1].permute(0, 1)
+
+        z = self.fc(z)
 
         return z

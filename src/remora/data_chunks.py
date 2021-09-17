@@ -200,7 +200,7 @@ def load_datasets(
     num_chunks=None,
     fixed_seq_len_chunks=False,
     mod=None,
-    base_pred=True,
+    base_pred=False,
     val_prop=0.0,
     num_data_workers=0,
     kmer_size=3,
