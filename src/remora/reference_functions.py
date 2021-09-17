@@ -10,7 +10,7 @@ class referenceEncoder:
             "C": [0, 1, 0, 0],
             "G": [0, 0, 1, 0],
             "T": [0, 0, 0, 1],
-            "P": [0, 0, 0, 0],
+            "N": [0, 0, 0, 0],
         }
 
         self.focus_offset = focus_offset
@@ -21,12 +21,14 @@ class referenceEncoder:
 
         encodings = []
         for sig, ref, bl in zip(signals, references, base_locs):
+            if len(sig) == 0:
+                continue
             encoding = np.zeros((kmer_size * (len(self.alphabet) - 1), bl[-1]))
             for i in range(len(bl) - 1):
                 code = []
                 for k in range(i - kmer_size // 2, i + kmer_size // 2 + 1):
                     if k < 0 or k >= len(ref):
-                        code += self.alphabet["P"]
+                        code += self.alphabet["N"]
                     else:
                         code += self.alphabet[ref[k]]
 
@@ -43,6 +45,8 @@ class referenceEncoder:
     ):
         encodings = []
         for sig, ref, bl in zip(signals, references, base_locs):
+            if len(sig) == 0:
+                continue
             extracted_bl = bl[
                 self.focus_offset
                 - self.chunk_context[0] : self.focus_offset
@@ -62,7 +66,7 @@ class referenceEncoder:
                 code = []
                 for k in range(i - kmer_size // 2, i + kmer_size // 2 + 1):
                     if k < 0 or k >= len(ref):
-                        code += self.alphabet["P"]
+                        code += self.alphabet["N"]
                     else:
                         code += self.alphabet[extracted_ref[k]]
 
@@ -83,6 +87,8 @@ class referenceEncoder:
 
         encodings = []
         for sig, ref, bl in zip(signals, references, base_locs):
+            if len(sig) == 0:
+                continue
             index_below = (
                 bisect.bisect(
                     bl,
@@ -122,7 +128,7 @@ class referenceEncoder:
                     index_below + kmer_size // 2 + 1,
                 ):
                     if k < 0 or k >= len(ref):
-                        code += self.alphabet["P"]
+                        code += self.alphabet["N"]
                     else:
                         code += self.alphabet[ref[k]]
 
