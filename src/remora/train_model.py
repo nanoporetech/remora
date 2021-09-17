@@ -69,7 +69,7 @@ def train_model(
                 "Convolutional network not compatible with variable signal "
                 "length chunks."
             )
-        model = models.CNN(size=size, num_out=num_out)
+        model = models.double_headed_ConvLSTM(channel_size=size)
     else:
         raise ValueError("Specify a valid model type to train with")
     model = model.cuda()
