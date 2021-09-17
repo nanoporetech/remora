@@ -1,10 +1,16 @@
-from collections import defaultdict
+from collections import Counter, defaultdict
 
+import numpy as np
 from taiyaki.mapped_signal_files import MappedSignalReader
+import torch
+import torch.nn.utils.rnn as rnn
 
 from remora import log
+from remora.reference_functions import referenceEncoder
 
 LOGGER = log.get_logger()
+
+DEFAULT_BATCH_SIZE = 1000
 
 # TODO convert module to be a batch generator
 
@@ -127,4 +133,154 @@ def load_chunks(
     )
     LOGGER.info(f"Chunk selection summary:\n{rej_summ}\n")
 
-    return sigs, labels, refs, base_locs, read_ids, positions
+    return sigs, labels, refs, base_locations, read_ids, positions
+
+
+def collate_var_len_input(batch):
+    """
+    Pads batch of variable sequence lengths
+
+    note: the output is passed to the pack_padded_sequence,
+        so that variable sequence lenghts can be handled by
+        the RNN
+    """
+    # get sequence lengths
+    lens = torch.tensor([t[0].shape[0] for t in batch], dtype=np.long)
+    mask = lens.ne(0)
+    lens = lens[mask]
+
+    # padding
+    sigs = torch.nn.utils.rnn.pad_sequence(
+        [torch.Tensor(t[0]).unsqueeze(1) for mt, t in zip(mask, batch) if mt]
+    )
+    sigs = rnn.pack_padded_sequence(sigs, lens, enforce_sorted=False)
+    seqs = torch.nn.utils.rnn.pad_sequence(
+        [torch.Tensor(t[1]).permute(1, 0) for mt, t in zip(mask, batch) if mt]
+    )
+    seqs = rnn.pack_padded_sequence(seqs, lens, enforce_sorted=False)
+    # get labels
+    labels = torch.tensor(
+        np.array([t[2] for mt, t in zip(mask, batch) if mt], dtype=np.long)
+    )
+
+    return (sigs, seqs, lens), labels
+
+
+def collate_fixed_len_input(batch):
+    """Collate data with fixed width inputs
+
+    Note that inputs with be in Time x Batch x Features (TBH) dimension order
+    """
+    # convert inputs to TBH
+    sigs = torch.Tensor([t[0] for t in batch]).permute(1, 0).unsqueeze(2)
+    seqs = torch.Tensor([t[1] for t in batch]).permute(2, 0, 1)
+    labels = torch.tensor(np.array([t[2] for t in batch], dtype=np.long))
+
+    return (sigs, seqs), labels
+
+
+class RemoraDataset(torch.utils.data.Dataset):
+    def __init__(self, sigs, seqs, labels):
+        self.sigs = sigs
+        self.seqs = seqs
+        self.labels = labels
+
+    def __getitem__(self, index):
+        return self.sigs[index], self.seqs[index], self.labels[index]
+
+    def __len__(self):
+        return len(self.sigs)
+
+
+def load_datasets(
+    dataset_path,
+    focus_offset,
+    chunk_context,
+    batch_size=DEFAULT_BATCH_SIZE,
+    num_chunks=None,
+    fixed_seq_len_chunks=False,
+    mod=None,
+    base_pred=True,
+    val_prop=0.0,
+    num_data_workers=0,
+    kmer_size=3,
+):
+    sigs, labels, refs, base_locs, read_ids, positions = load_chunks(
+        dataset_path,
+        num_chunks,
+        mod,
+        focus_offset,
+        chunk_context,
+        fixed_seq_len_chunks,
+        base_pred,
+    )
+    label_counts = Counter(labels)
+    if len(label_counts) <= 1:
+        raise RemoraError(
+            "One or fewer output labels found. Ensure --focus-offset and "
+            "--mod are specified correctly"
+        )
+    LOGGER.info(f"Label distribution: {label_counts}")
+
+    tmp = list(zip(sigs, labels, refs, base_locs, read_ids, positions))
+    np.random.shuffle(tmp)
+    sigs, labels, refs, base_locs, read_ids, positions = zip(*tmp)
+    ref_encoder = referenceEncoder(
+        focus_offset, chunk_context, fixed_seq_len_chunks
+    )
+    enc_refs = ref_encoder.get_reference_encoding(
+        sigs, refs, base_locs, kmer_size=kmer_size
+    )
+
+    collate_fn = (
+        collate_var_len_input
+        if fixed_seq_len_chunks
+        else collate_fixed_len_input
+    )
+
+    if val_prop <= 0.0:
+        dl_val = dl_val_trn = None
+        trn_set = RemoraDataset(sigs, enc_refs, labels)
+    else:
+        val_idx = int(len(sigs) * val_prop)
+        val_set = RemoraDataset(
+            sigs[:val_idx], enc_refs[:val_idx], labels[:val_idx]
+        )
+        val_trn_set = RemoraDataset(
+            sigs[val_idx : val_idx + val_idx],
+            enc_refs[val_idx : val_idx + val_idx],
+            labels[val_idx : val_idx + val_idx],
+        )
+        trn_set = RemoraDataset(
+            sigs[val_idx:], enc_refs[val_idx:], labels[val_idx:]
+        )
+        dl_val = torch.utils.data.DataLoader(
+            val_set,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_data_workers,
+            drop_last=False,
+            collate_fn=collate_fn,
+            pin_memory=True,
+        )
+        dl_val_trn = torch.utils.data.DataLoader(
+            val_trn_set,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_data_workers,
+            drop_last=False,
+            collate_fn=collate_fn,
+            pin_memory=True,
+        )
+
+    dl_trn = torch.utils.data.DataLoader(
+        trn_set,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_data_workers,
+        drop_last=True,
+        collate_fn=collate_fn,
+        pin_memory=True,
+    )
+
+    return dl_trn, dl_val, dl_val_trn

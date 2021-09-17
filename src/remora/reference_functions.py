@@ -3,7 +3,7 @@ import bisect
 
 
 class referenceEncoder:
-    def __init__(self, mod_offset, chunk_context, fixed_seq_len_chunks):
+    def __init__(self, focus_offset, chunk_context, fixed_seq_len_chunks):
 
         self.alphabet = {
             "A": [1, 0, 0, 0],
@@ -13,7 +13,7 @@ class referenceEncoder:
             "P": [0, 0, 0, 0],
         }
 
-        self.mod_offset = mod_offset
+        self.focus_offset = focus_offset
         self.chunk_context = chunk_context
         self.fixed_seq_len_chunks = fixed_seq_len_chunks
 
@@ -44,14 +44,14 @@ class referenceEncoder:
         encodings = []
         for sig, ref, bl in zip(signals, references, base_locs):
             extracted_bl = bl[
-                self.mod_offset
-                - self.chunk_context[0] : self.mod_offset
+                self.focus_offset
+                - self.chunk_context[0] : self.focus_offset
                 + self.chunk_context[1]
                 + 1
             ]
             extracted_ref = ref[
-                self.mod_offset
-                - self.chunk_context[0] : self.mod_offset
+                self.focus_offset
+                - self.chunk_context[0] : self.focus_offset
                 + self.chunk_context[1]
                 + 1
             ]
@@ -86,21 +86,21 @@ class referenceEncoder:
             index_below = (
                 bisect.bisect(
                     bl,
-                    bl[self.mod_offset] - self.chunk_context[0],
+                    bl[self.focus_offset] - self.chunk_context[0],
                 )
                 - 1
             )
             index_above = (
                 bisect.bisect(
                     bl,
-                    bl[self.mod_offset] + self.chunk_context[1],
+                    bl[self.focus_offset] + self.chunk_context[1],
                 )
                 - 1
             )
             encoding = np.zeros(
                 (kmer_size * (len(self.alphabet) - 1), len(sig))
             )
-            origin = bl[self.mod_offset] - self.chunk_context[0]
+            origin = bl[self.focus_offset] - self.chunk_context[0]
 
             counter = 0
 
@@ -111,8 +111,8 @@ class referenceEncoder:
                     curr = next
 
                 next = bl[np.argmax(bl > curr)]
-                if next > bl[self.mod_offset] + self.chunk_context[1]:
-                    next = bl[self.mod_offset] + self.chunk_context[1]
+                if next > bl[self.focus_offset] + self.chunk_context[1]:
+                    next = bl[self.focus_offset] + self.chunk_context[1]
 
                 gap = next - curr
 
