@@ -61,7 +61,7 @@ def register_train_model(parser):
         "Default: %(default)f",
     )
     data_grp.add_argument(
-        "--mod-offset",
+        "--focus-offset",
         default=50,
         type=int,
         help="Offset into stored chunks to be predicted. Default: %(default)d",
@@ -109,16 +109,6 @@ def register_train_model(parser):
         "--overwrite",
         action="store_true",
         help="Overwrite existing output directory if existing.",
-    )
-    out_grp.add_argument(
-        "--plot",
-        action="store_true",
-        help="Save accuracy and loss plots from training.",
-    )
-    out_grp.add_argument(
-        "--references",
-        action="store_true",
-        help="Include encoding of references for use in training",
     )
 
     mdl_grp = subparser.add_argument_group("Model Arguments")
@@ -215,7 +205,7 @@ def run_train_model(args):
         args.dataset_path,
         args.num_chunks,
         args.mod,
-        args.mod_offset,
+        args.focus_offset,
         args.chunk_context,
         args.fixed_sequence_length_chunks,
         args.val_prop,
@@ -231,8 +221,6 @@ def run_train_model(args):
         args.base_pred,
         args.epochs,
         args.save_freq,
-        args.plot,
-        args.references,
     )
 
 

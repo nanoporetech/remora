@@ -10,19 +10,9 @@ LOGGER = log.get_logger()
 DEFAULT_SIZE = 64
 
 
-class SimpleFWLSTM(nn.Module):
-    def __init__(self, size=DEFAULT_SIZE, num_out=2):
-        super().__init__()
-
-        self.lstm = nn.LSTM(1, size, 1)
-        self.fc1 = nn.Linear(size, num_out)
-
-    def forward(self, x):
-        x, hx = self.lstm(x.permute(2, 0, 1))
-        x = x[-1].permute(0, 1)
-        x = self.fc1(x)
-
-        return x
+################################
+# Variable length input models #
+################################
 
 
 class SimpleLSTM(nn.Module):
@@ -32,11 +22,31 @@ class SimpleLSTM(nn.Module):
         self.lstm = nn.LSTM(1, size, 1)
         self.fc1 = nn.Linear(size, num_out)
 
-    def forward(self, x, x_len):
-        x = self.lstm(x)
+    def forward(self, sigs, seqs, lens):
+        x = self.lstm(sigs)
         x, hn = rnn.pad_packed_sequence(x[0])
-        x = x[x_len - 1]
+        x = x[lens - 1]
         x = torch.transpose(torch.diagonal(x), 0, 1)
+        x = self.fc1(x)
+
+        return x
+
+
+#############################
+# Fixed length input models #
+#############################
+
+
+class SimpleFWLSTM(nn.Module):
+    def __init__(self, size=DEFAULT_SIZE, num_out=2):
+        super().__init__()
+
+        self.lstm = nn.LSTM(1, size, 1)
+        self.fc1 = nn.Linear(size, num_out)
+
+    def forward(self, sigs, seqs):
+        x, hx = self.lstm(sigs)
+        x = x[-1].permute(0, 1)
         x = self.fc1(x)
 
         return x
@@ -59,9 +69,8 @@ class MLP(nn.Module):
 
         self.dropout = nn.Dropout(p=self.dropout_rate)
 
-    def forward(self, x):
-
-        x = self.dropout(F.relu(self.fc1(x)))
+    def forward(self, sigs, seqs):
+        x = self.dropout(F.relu(self.fc1(sigs)))
         x = self.dropout(F.sigmoid(self.fc2(x)))
 
         return x
@@ -77,7 +86,9 @@ class CNN(nn.Module):
         self.dropout = nn.Dropout(p=0.3)
         self.pool = nn.MaxPool1d(3)
 
-    def forward(self, x):
+    def forward(self, sigs, seqs):
+        # Tensor is stored in TBF order, but `conv` requires BFT order
+        x = sigs.permute(1, 2, 0)
         x = self.dropout(F.relu(self.conv1(x)))
         x = self.pool(x)
         x = self.dropout(F.relu(self.conv2(x)))
@@ -102,14 +113,18 @@ class double_headed_CNN(nn.Module):
         self.dropout = nn.Dropout(p=0.3)
         self.pool = nn.MaxPool1d(3)
 
-    def forward(self, x, y):
-        x = self.dropout(F.relu(self.conv1(x)))
+    def forward(self, sigs, seqs):
+        # Tensor is stored in TBF order, but `conv` requires BFT order
+        x = sigs.permute(1, 2, 0)
+        x = self.dropout(F.relu(self.conv1(sigs)))
         x = self.pool(x)
         x = self.dropout(F.relu(self.conv2(x)))
         x = self.pool(x)
         x = torch.mean(x.view(x.size(0), x.size(1), -1), dim=2)
 
-        y = self.dropout(F.relu(self.conv3(y)))
+        # Tensor is stored in TBF order, but `conv` requires BFT order
+        y = seqs.permute(1, 2, 0)
+        y = self.dropout(F.relu(self.conv3(seqs)))
         y = self.pool(y)
         y = self.dropout(F.relu(self.conv4(y)))
         y = self.pool(y)
