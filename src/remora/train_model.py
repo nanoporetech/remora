@@ -43,6 +43,8 @@ def train_model(
 
     val_fp = util.ValidationLogger(out_path, base_pred)
     atexit.register(val_fp.close)
+    batch_fp = util.BatchLogger(out_path)
+    atexit.register(batch_fp.close)
 
     dl_trn, dl_val, dl_val_trn = load_datasets(
         dataset_path,
@@ -115,8 +117,10 @@ def train_model(
     )
 
     # assess accuracy before first iteration
-    val_acc = val_fp.validate_model(model, dl_val, 0)
-    trn_acc = val_fp.validate_model(model, dl_val_trn, 0, "train")
+    val_acc, val_loss = val_fp.validate_model(model, criterion, dl_val, 0)
+    trn_acc, trn_loss = val_fp.validate_model(
+        model, criterion, dl_val_trn, 0, "trn"
+    )
     ebar = tqdm(
         total=epochs,
         smoothing=0,
@@ -134,13 +138,19 @@ def train_model(
         leave=True,
         bar_format="{desc}: {percentage:3.0f}%|{bar}| " "{n_fmt}/{total_fmt}",
     )
-    ebar.set_postfix(acc=f"{val_acc:.4f}", acc_train=f"{trn_acc:.4f}")
+    ebar.set_postfix(
+        acc_val=f"{val_acc:.4f}",
+        acc_train=f"{trn_acc:.4f}",
+        loss_val=f"{val_loss:.6f}",
+        loss_train=f"{trn_loss:.6f}",
+    )
+    atexit.register(ebar.close)
+    atexit.register(pbar.close)
     for epoch in range(start_epoch, epochs):
         model.train()
         pbar.n = 0
         pbar.refresh()
-        losses = []
-        for inputs, labels in dl_trn:
+        for epoch_i, (inputs, labels) in enumerate(dl_trn):
             if torch.cuda.is_available():
                 inputs = (ip.cuda() for ip in inputs)
                 labels = labels.cuda()
@@ -150,15 +160,17 @@ def train_model(
             loss.backward()
             opt.step()
 
-            losses.append(loss.detach().cpu().numpy())
+            batch_fp.log_batch(
+                loss.detach().cpu(), (epoch * len(dl_trn)) + epoch_i
+            )
             pbar.update()
             pbar.refresh()
 
-        val_acc = val_fp.validate_model(
-            model, dl_val, (epoch + 1) * len(dl_trn)
+        val_acc, val_loss = val_fp.validate_model(
+            model, criterion, dl_val, (epoch + 1) * len(dl_trn)
         )
-        trn_acc = val_fp.validate_model(
-            model, dl_val_trn, (epoch + 1) * len(dl_trn), "train"
+        trn_acc, trn_loss = val_fp.validate_model(
+            model, criterion, dl_val_trn, (epoch + 1) * len(dl_trn), "trn"
         )
 
         scheduler.step()
@@ -175,11 +187,12 @@ def train_model(
                 out_path,
             )
         ebar.set_postfix(
-            loss=f"{loss:.6f}", acc=f"{val_acc:.4f}", acc_train=f"{trn_acc:.4f}"
+            acc_val=f"{val_acc:.4f}",
+            acc_train=f"{trn_acc:.4f}",
+            loss_val=f"{val_loss:.6f}",
+            loss_train=f"{trn_loss:.6f}",
         )
         ebar.update()
-    ebar.close()
-    pbar.close()
 
 
 if __name__ == "__main__":

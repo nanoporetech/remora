@@ -82,12 +82,12 @@ class plotter:
 
 class ValidationLogger:
     def __init__(self, out_path, base_pred):
-        self.fp = open(out_path / "validation.log", "w")
+        self.fp = open(out_path / "validation.log", "w", buffering=1)
         self.base_pred = base_pred
         if base_pred:
             self.fp.write(
                 "\t".join(
-                    ("Validation_Type", "Iteration", "Accuracy", "Num_Calls")
+                    ("Val_Type", "Iteration", "Accuracy", "Loss", "Num_Calls")
                 )
                 + "\n"
             )
@@ -95,9 +95,10 @@ class ValidationLogger:
             self.fp.write(
                 "\t".join(
                     (
-                        "Validation_Type",
+                        "Val_Type",
                         "Iteration",
                         "Accuracy",
+                        "Loss",
                         "F1",
                         "Precision",
                         "Recall",
@@ -110,24 +111,31 @@ class ValidationLogger:
     def close(self):
         self.fp.close()
 
-    def validate_model(self, model, dl, niter, val_type="validation"):
+    def validate_model(self, model, criterion, dl, niter, val_type="val"):
         with torch.no_grad():
             model.eval()
-            all_outputs = []
             all_labels = []
+            all_outputs = []
+            all_loss = []
             for inputs, labels in dl:
+                all_labels.append(labels)
                 if torch.cuda.is_available():
                     inputs = (input.cuda() for input in inputs)
-                all_outputs.append(model(*inputs).detach().cpu())
-                all_labels.append(labels)
+                output = model(*inputs).detach().cpu()
+                all_outputs.append(output)
+                loss = criterion(output, labels)
+                all_loss.append(loss.detach().cpu().numpy())
             all_outputs = torch.cat(all_outputs)
-            preds = torch.argmax(all_outputs, dim=1)
             all_labels = torch.cat(all_labels)
-            acc = (preds == all_labels).float().sum() / preds.shape[0]
+            acc = (
+                torch.argmax(all_outputs, dim=1) == all_labels
+            ).float().sum() / all_outputs.shape[0]
             acc = acc.cpu().numpy()
+            mean_loss = np.mean(all_loss)
             if self.base_pred:
                 self.fp.write(
-                    f"{val_type}\t{niter}\t{acc:.6f}\t{len(all_labels)}\n"
+                    f"{val_type}\t{niter}\t{acc:.6f}\t{mean_loss:.6f}\t"
+                    f"{len(all_labels)}\n"
                 )
             else:
                 precision, recall, thresholds = precision_recall_curve(
@@ -137,8 +145,20 @@ class ValidationLogger:
                     f1_scores = 2 * recall * precision / (recall + precision)
                 f1_idx = np.argmax(f1_scores)
                 self.fp.write(
-                    f"{val_type}\t{niter}\t{acc:.6f}\t{f1_scores[f1_idx]}\t"
-                    f"{precision[f1_idx]}\t{recall[f1_idx]}\t"
-                    f"{len(all_labels)}\n"
+                    f"{val_type}\t{niter}\t{acc:.6f}\t{mean_loss:.6f}\t"
+                    f"{f1_scores[f1_idx]}\t{precision[f1_idx]}\t"
+                    f"{recall[f1_idx]}\t{len(all_labels)}\n"
                 )
-        return acc
+        return acc, mean_loss
+
+
+class BatchLogger:
+    def __init__(self, out_path):
+        self.fp = open(out_path / "batch.log", "w", buffering=1)
+        self.fp.write("\t".join(("Iteration", "Loss")) + "\n")
+
+    def close(self):
+        self.fp.close()
+
+    def log_batch(self, loss, niter):
+        self.fp.write(f"{niter}\t{loss:.6f}\n")
