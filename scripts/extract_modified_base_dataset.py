@@ -80,6 +80,7 @@ def extract_motif_dataset(
             # on-the-fly-chunk extraction)
             if sig_en - sig_st < ref_en - ref_st:
                 continue
+            chunk_dict["read_id"] = f"{read.read_id}:::pos{center_loc}"
             chunk_dict["Dacs"] = read.Dacs[sig_st:sig_en]
             chunk_dict["Ref_to_signal"] = (
                 read.Ref_to_signal[ref_st:ref_en] - sig_st
