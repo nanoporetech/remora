@@ -35,6 +35,7 @@ def train_model(
     base_pred,
     epochs,
     save_freq,
+    kmer_size,
 ):
 
     np.random.seed(seed)
@@ -59,6 +60,7 @@ def train_model(
         base_pred,
         val_prop,
         num_data_workers,
+        kmer_size,
     )
     model = util._load_python_model(model_name)
     if (fixed_seq_len_chunks and not model._variable_width_possible) or (
