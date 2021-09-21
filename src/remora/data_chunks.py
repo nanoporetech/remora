@@ -21,6 +21,7 @@ def load_chunks(
     mod,
     focus_offset,
     chunk_context,
+    kmer_size,
     fixed_seq_len_chunks=False,
     base_pred=False,
 ):
@@ -44,7 +45,6 @@ def load_chunks(
     """
 
     # TODO include a padding option
-
     read_data = MappedSignalReader(dataset_path)
     n_reads = len(read_data.get_read_ids())
     if num_chunks is None or num_chunks == 0 or num_chunks > n_reads:
@@ -67,9 +67,14 @@ def load_chunks(
 
     mod_idx = alphabet_info.alphabet.find(mod)
 
+    ref_encoder = referenceEncoder(
+        focus_offset, chunk_context, fixed_seq_len_chunks, kmer_size
+    )
+
     sigs = []
     labels = []
     refs = []
+    enc_refs = []
     base_locations = []
     read_ids = []
     positions = []
@@ -113,10 +118,18 @@ def load_chunks(
             if sig_end > base_locs[-1]:
                 reject_reasons["invalid_signal_end"] += 1
                 continue
+            if len(sig[sig_start:sig_end]) == 0:
+                reject_reasons["empty signal"] += 1
+                continue
+
+        enc_ref = ref_encoder.get_reference_encoding(
+            sig[sig_start:sig_end], ref, base_locs
+        )
 
         sigs.append(sig[sig_start:sig_end])
         labels.append(label)
         refs.append(ref)
+        enc_refs.append(enc_ref)
         base_locations.append(base_locs)
         read_ids.append(read.read_id)
         positions.append(read.Ref_to_signal[focus_offset])
@@ -133,7 +146,7 @@ def load_chunks(
     )
     LOGGER.info(f"Chunk selection summary:\n{rej_summ}\n")
 
-    return sigs, labels, refs, base_locations, read_ids, positions
+    return sigs, labels, refs, enc_refs, base_locations, read_ids, positions
 
 
 def collate_var_len_input(batch):
@@ -205,15 +218,17 @@ def load_datasets(
     num_data_workers=0,
     kmer_size=3,
 ):
-    sigs, labels, refs, base_locs, read_ids, positions = load_chunks(
+    sigs, labels, refs, enc_refs, base_locs, read_ids, positions = load_chunks(
         dataset_path,
         num_chunks,
         mod,
         focus_offset,
         chunk_context,
+        kmer_size,
         fixed_seq_len_chunks,
         base_pred,
     )
+
     label_counts = Counter(labels)
     if len(label_counts) <= 1:
         raise RemoraError(
@@ -222,15 +237,11 @@ def load_datasets(
         )
     LOGGER.info(f"Label distribution: {label_counts}")
 
-    tmp = list(zip(sigs, labels, refs, base_locs, read_ids, positions))
+    tmp = list(
+        zip(sigs, labels, refs, enc_refs, base_locs, read_ids, positions)
+    )
     np.random.shuffle(tmp)
-    sigs, labels, refs, base_locs, read_ids, positions = zip(*tmp)
-    ref_encoder = referenceEncoder(
-        focus_offset, chunk_context, fixed_seq_len_chunks
-    )
-    enc_refs = ref_encoder.get_reference_encoding(
-        sigs, refs, base_locs, kmer_size=kmer_size
-    )
+    sigs, labels, refs, enc_refs, base_locs, read_ids, positions = zip(*tmp)
 
     collate_fn = (
         collate_var_len_input

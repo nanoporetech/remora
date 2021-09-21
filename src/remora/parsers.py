@@ -87,6 +87,12 @@ def register_train_model(parser):
         "central position. Default: %(default)s",
     )
     data_grp.add_argument(
+        "--kmer-size",
+        default=3,
+        type=int,
+        help="The kmer size around the base of interest that is to be considered for reference encoding",
+    )
+    data_grp.add_argument(
         "--batch-size",
         default=200,
         type=int,
@@ -225,6 +231,7 @@ def run_train_model(args):
         args.base_pred,
         args.epochs,
         args.save_freq,
+        args.kmer_size,
     )
 
 
