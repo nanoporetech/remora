@@ -21,8 +21,6 @@ class referenceEncoder:
 
         encodings = []
         for sig, ref, bl in zip(signals, references, base_locs):
-            if len(sig) == 0:
-                continue
             encoding = np.zeros((kmer_size * (len(self.alphabet) - 1), bl[-1]))
             for i in range(len(bl) - 1):
                 code = []
@@ -84,11 +82,8 @@ class referenceEncoder:
     def reference_encoding_bychunk(
         self, signals, references, base_locs, kmer_size=3
     ):
-
         encodings = []
         for sig, ref, bl in zip(signals, references, base_locs):
-            if len(sig) == 0:
-                continue
             index_below = (
                 bisect.bisect(
                     bl,
@@ -115,7 +110,6 @@ class referenceEncoder:
                     curr = origin
                 else:
                     curr = next
-
                 next = bl[np.argmax(bl > curr)]
                 if next > bl[self.focus_offset] + self.chunk_context[1]:
                     next = bl[self.focus_offset] + self.chunk_context[1]
@@ -135,6 +129,7 @@ class referenceEncoder:
                 encoding[:, curr - origin : next - origin] = np.tile(
                     np.array(code), (gap, 1)
                 ).T
+
                 index_below += 1
                 counter += 1
 
