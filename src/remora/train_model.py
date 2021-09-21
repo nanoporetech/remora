@@ -18,7 +18,7 @@ def train_model(
     out_path,
     dataset_path,
     num_chunks,
-    mod,
+    mod_motif,
     focus_offset,
     chunk_context,
     fixed_seq_len_chunks,
@@ -37,7 +37,6 @@ def train_model(
     save_freq,
     kmer_size,
 ):
-
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -51,12 +50,12 @@ def train_model(
 
     dl_trn, dl_val, dl_val_trn = load_datasets(
         dataset_path,
-        focus_offset,
         chunk_context,
+        focus_offset,
         batch_size,
         num_chunks,
         fixed_seq_len_chunks,
-        mod,
+        mod_motif,
         base_pred,
         val_prop,
         num_data_workers,
@@ -100,6 +99,7 @@ def train_model(
     training_var = {
         "epoch": 0,
         "model_name": model_name,
+        "state_dict": {},
     }
     util.continue_from_checkpoint(
         out_path,
@@ -108,6 +108,9 @@ def train_model(
         model=model,
     )
     start_epoch = training_var["epoch"]
+    state_dict = training_var["state_dict"]
+    if state_dict != {}:
+        model.load_state_dict(state_dict)
 
     scheduler = torch.optim.lr_scheduler.StepLR(
         opt, step_size=lr_decay_step, gamma=lr_decay_gamma
@@ -177,9 +180,13 @@ def train_model(
                 {
                     "epoch": int(epoch + 1),
                     "model_name": model_name,
-                    "model": model.state_dict(),
+                    "state_dict": model.state_dict(),
                     "opt": opt.state_dict(),
                     "focus_offset": focus_offset,
+                    "chunk_context": chunk_context,
+                    "fixed_seq_len_chunks": fixed_seq_len_chunks,
+                    "mod_motif": mod_motif,
+                    "base_pred": base_pred,
                 },
                 out_path,
             )

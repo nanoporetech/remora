@@ -3,9 +3,7 @@ import bisect
 
 
 class referenceEncoder:
-    def __init__(
-        self, focus_offset, chunk_context, fixed_seq_len_chunks, kmer_size=3
-    ):
+    def __init__(self, chunk_context, fixed_seq_len_chunks, kmer_size=3):
 
         self.alphabet = {
             "A": [1, 0, 0, 0],
@@ -15,7 +13,6 @@ class referenceEncoder:
             "N": [0, 0, 0, 0],
         }
 
-        self.focus_offset = focus_offset
         self.chunk_context = chunk_context
         self.fixed_seq_len_chunks = fixed_seq_len_chunks
         self.kmer_size = kmer_size
@@ -42,16 +39,18 @@ class referenceEncoder:
 
         return encoding
 
-    def reference_encoding_bybase(self, signals, references, base_locs):
+    def reference_encoding_by_base(
+        self, signals, references, base_locs, focus_offset
+    ):
         extracted_bl = base_locs[
-            self.focus_offset
-            - self.chunk_context[0] : self.focus_offset
+            focus_offset
+            - self.chunk_context[0] : focus_offset
             + self.chunk_context[1]
             + 1
         ]
         extracted_ref = references[
-            self.focus_offset
-            - self.chunk_context[0] : self.focus_offset
+            focus_offset
+            - self.chunk_context[0] : focus_offset
             + self.chunk_context[1]
             + 1
         ]
@@ -78,26 +77,28 @@ class referenceEncoder:
 
         return encoding
 
-    def reference_encoding_bychunk(self, signals, references, base_locs):
+    def reference_encoding_by_chunk(
+        self, signals, references, base_locs, focus_offset
+    ):
 
         index_below = (
             bisect.bisect(
                 base_locs,
-                base_locs[self.focus_offset] - self.chunk_context[0],
+                base_locs[focus_offset] - self.chunk_context[0],
             )
             - 1
         )
         index_above = (
             bisect.bisect(
                 base_locs,
-                base_locs[self.focus_offset] + self.chunk_context[1],
+                base_locs[focus_offset] + self.chunk_context[1],
             )
             - 1
         )
         encoding = np.zeros(
             (self.kmer_size * (len(self.alphabet) - 1), len(signals))
         )
-        origin = base_locs[self.focus_offset] - self.chunk_context[0]
+        origin = base_locs[focus_offset] - self.chunk_context[0]
 
         counter = 0
 
@@ -107,9 +108,9 @@ class referenceEncoder:
             else:
                 curr = next
 
-            next = base_locs[np.argmax(base_locs > curr)]
-            if next > base_locs[self.focus_offset] + self.chunk_context[1]:
-                next = base_locs[self.focus_offset] + self.chunk_context[1]
+            next = base_locs[np.argmax(base_locs >= curr)]
+            if next > base_locs[focus_offset] + self.chunk_context[1]:
+                next = base_locs[focus_offset] + self.chunk_context[1]
 
             gap = next - curr
 
@@ -133,16 +134,18 @@ class referenceEncoder:
                 break
         return encoding
 
-    def get_reference_encoding(self, signals, references, base_locs):
+    def get_reference_encoding(
+        self, signals, references, base_locs, focus_offset
+    ):
 
         if self.fixed_seq_len_chunks:
-            encodings = self.reference_encoding_bybase(
-                signals, references, base_locs
+            encodings = self.reference_encoding_by_base(
+                signals, references, base_locs, focus_offset
             )
 
         else:
-            encodings = self.reference_encoding_bychunk(
-                signals, references, base_locs
+            encodings = self.reference_encoding_by_chunk(
+                signals, references, base_locs, focus_offset
             )
 
         return encodings

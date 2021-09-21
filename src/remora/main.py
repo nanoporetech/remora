@@ -6,6 +6,7 @@ from remora import __version__
 # from remora.common import logging
 from remora.parsers import (
     register_train_model,
+    register_infer,
     SubcommandHelpFormatter,
 )
 
@@ -42,6 +43,7 @@ def run():
 
     subparsers = parser.add_subparsers(title="sub-commands")
     register_train_model(subparsers)
+    register_infer(subparsers)
 
     args = parser.parse_args()
     cmd_func = args.func
