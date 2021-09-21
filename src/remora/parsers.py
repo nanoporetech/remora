@@ -67,10 +67,14 @@ def register_train_model(parser):
         help="Offset into stored chunks to be predicted. Default: %(default)d",
     )
     data_grp.add_argument(
-        "--mod",
-        default="a",
-        type=str,
-        help="The mod base being considered. Default: %(default)s",
+        "--mod-motif",
+        nargs=3,
+        metavar=("BASE", "MOTIF", "REL_POSITION"),
+        default=["m", "CG", 0],
+        help="Extract training chunks centered on a defined motif. Argument "
+        "takes 3 values representing 1) the single letter modified base(s), 2) "
+        "sequence motif and 3) relative modified base position. For "
+        'example to restrict to CpG sites use "--mod-motif m CG 0" (default).',
     )
     data_grp.add_argument(
         "--fixed-sequence-length-chunks",
@@ -119,11 +123,7 @@ def register_train_model(parser):
 
     mdl_grp = subparser.add_argument_group("Model Arguments")
     # TODO convert to file input specifying the model (see taiyaki)
-    mdl_grp.add_argument(
-        "--model",
-        help="Location of model to be used for training",
-        required=True,
-    )
+    mdl_grp.add_argument("--model", default="lstm", help="Model for training")
     mdl_grp.add_argument(
         "--size", default=64, help="Model layer size. Default: %(default)d"
     )
@@ -206,7 +206,6 @@ def run_train_model(args):
         raise RemoraError("Refusing to overwrite existing table.")
     out_path.mkdir(parents=True, exist_ok=True)
     log.init_logger(os.path.join(out_path, "log.txt"))
-
     # TODO preprocess some step to reduce args to train_model
     train_model(
         args.seed,
@@ -214,7 +213,7 @@ def run_train_model(args):
         out_path,
         args.dataset_path,
         args.num_chunks,
-        args.mod,
+        args.mod_motif,
         args.focus_offset,
         args.chunk_context,
         args.fixed_sequence_length_chunks,
@@ -257,9 +256,65 @@ def register_infer(parser):
         default="./models",
         help="Path to a pretrained modified base model",
     )
+    subparser.add_argument(
+        "--full",
+        action="store_true",
+        help="Detect mods only on the position given by the offset or everywhere the motif matches.",
+    )
+    subparser.add_argument(
+        "--output-path",
+        default="remora_results",
+        help="Path to the output files",
+    )
+    subparser.add_argument(
+        "--device",
+        default=0,
+        type=int,
+        help="ID of GPU that is used for inference.",
+    )
+    subparser.add_argument(
+        "--batch-size",
+        default=200,
+        type=int,
+        help="Number of samples per batch.",
+    )
+    subparser.add_argument(
+        "--workers",
+        default=0,
+        type=int,
+        dest="nb_workers",
+        help="Number of workers for dataloader.",
+    )
+    subparser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing output directory if existing.",
+    )
+
+    subparser.set_defaults(func=run_infer)
 
 
 def run_infer(args):
+    from remora import RemoraError, log
     from remora.inference import infer
 
-    infer(args)
+    out_path = Path(args.output_path)
+    if args.overwrite:
+        if out_path.is_dir():
+            rmtree(out_path)
+        elif out_path.exists():
+            out_path.unlink()
+    elif out_path.exists():
+        raise RemoraError("Refusing to overwrite existing table.")
+    out_path.mkdir(parents=True, exist_ok=True)
+    log.init_logger(os.path.join(out_path, "log.txt"))
+
+    infer(
+        out_path,
+        args.dataset_path,
+        args.checkpoint_path,
+        args.batch_size,
+        args.nb_workers,
+        args.device,
+        args.full,
+    )

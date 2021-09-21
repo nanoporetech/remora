@@ -21,7 +21,8 @@ def _load_python_model(model_file, **model_kwargs):
 def save_checkpoint(state, out_path):
     if not exists(out_path):
         os.makedirs(out_path)
-    filename = join(out_path, f"{state['model_name']}_{state['epoch']}.tar")
+    model_name = os.path.basename(state["model_name"]).split(".")[0]
+    filename = join(out_path, f"{model_name}_{state['epoch']}.tar")
     torch.save(state, filename)
 
 
@@ -39,7 +40,7 @@ def continue_from_checkpoint(dir_path, training_var=None, **kwargs):
 
     ckp_path = join(dir_path, max(all_ckps))
 
-    LOGGER.info(f"Continuing training from {ckp_path}")
+    LOGGER.info(f"Loading trained model from {ckp_path}")
 
     ckp = torch.load(ckp_path)
 
