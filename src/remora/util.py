@@ -1,3 +1,4 @@
+import imp
 import os
 from os.path import join, isfile, exists
 
@@ -8,6 +9,13 @@ from sklearn.metrics import precision_recall_curve
 from remora import log
 
 LOGGER = log.get_logger()
+
+
+def _load_python_model(model_file, **model_kwargs):
+
+    netmodule = imp.load_source("netmodule", model_file)
+    network = netmodule.network(**model_kwargs)
+    return network
 
 
 def save_checkpoint(state, out_path):

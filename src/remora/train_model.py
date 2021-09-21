@@ -1,10 +1,12 @@
 import atexit
+import os
+from shutil import copyfile
 
 import numpy as np
 import torch
 from tqdm import tqdm
 
-from remora import models, util, log, RemoraError
+from remora import util, log, RemoraError
 from remora.data_chunks import load_datasets
 
 LOGGER = log.get_logger()
@@ -58,22 +60,15 @@ def train_model(
         val_prop,
         num_data_workers,
     )
+    model = util._load_python_model(model_name)
+    if (fixed_seq_len_chunks and not model._variable_width_possible) or (
+        not fixed_seq_len_chunks and model._variable_width_possible
+    ):
+        raise RemoraError(
+            "Trying to use variable chunk sizes with a fixed chunk-size model"
+        )
 
-    num_out = 4 if base_pred else 2
-    if model_name == "lstm":
-        if fixed_seq_len_chunks:
-            model = models.SimpleLSTM(size=size, num_out=num_out)
-        else:
-            model = models.SimpleFWLSTM(size=size, num_out=num_out)
-    elif model_name == "cnn":
-        if fixed_seq_len_chunks:
-            raise RemoraError(
-                "Convolutional network not compatible with variable signal "
-                "length chunks."
-            )
-        model = models.double_headed_ConvLSTM(channel_size=size)
-    else:
-        raise ValueError("Specify a valid model type to train with")
+    copyfile(model_name, os.path.join(out_path, "model.py"))
     model = model.cuda()
     LOGGER.info(f"Model structure:\n{model}")
 

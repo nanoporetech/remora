@@ -113,7 +113,11 @@ def register_train_model(parser):
 
     mdl_grp = subparser.add_argument_group("Model Arguments")
     # TODO convert to file input specifying the model (see taiyaki)
-    mdl_grp.add_argument("--model", default="lstm", help="Model for training")
+    mdl_grp.add_argument(
+        "--model",
+        help="Location of model to be used for training",
+        required=True,
+    )
     mdl_grp.add_argument(
         "--size", default=64, help="Model layer size. Default: %(default)d"
     )
