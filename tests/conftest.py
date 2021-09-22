@@ -100,7 +100,9 @@ def train_cli_args():
         "--batch-size",
         "10",
         "--epochs",
-        "5",
+        "4",
         "--size",
         "16",
+        "--save-freq",
+        "2",
     ]

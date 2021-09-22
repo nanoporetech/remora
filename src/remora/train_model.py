@@ -202,6 +202,21 @@ def train_model(
         ebar.update()
     ebar.close()
     pbar.close()
+    LOGGER.info("Saving final model checkpoint")
+    util.save_checkpoint(
+        {
+            "epoch": int(epoch + 1),
+            "model_path": model_path,
+            "state_dict": model.state_dict(),
+            "opt": opt.state_dict(),
+            "focus_offset": focus_offset,
+            "chunk_context": chunk_context,
+            "fixed_seq_len_chunks": model._variable_width_possible,
+            "mod_motif": mod_motif,
+            "base_pred": base_pred,
+        },
+        out_path,
+    )
     LOGGER.info("Training complete")
 
 
