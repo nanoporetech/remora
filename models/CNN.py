@@ -1,14 +1,19 @@
 from torch import nn
-import torch.nn.utils.rnn as rnn
+from torch.nn import functional as F
 import torch
 
 from remora import constants
 
 
 class network(nn.Module):
-    _variable_width_possible = True
+    _variable_width_possible = False
 
-    def __init__(self, size=constants.DEFAULT_SIZE, num_out=2):
+    def __init__(
+        self,
+        size=constants.DEFAULT_SIZE,
+        kmer_len=constants.DEFAULT_KMER_LEN,
+        num_out=2,
+    ):
         super().__init__()
         self.conv1 = nn.Conv1d(1, size, 8)
         self.conv2 = nn.Conv1d(size, size, 2)

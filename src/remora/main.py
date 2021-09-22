@@ -5,6 +5,7 @@ from remora import __version__
 
 # from remora.common import logging
 from remora.parsers import (
+    register_prepare_taiyaki_train_data,
     register_train_model,
     register_infer,
     SubcommandHelpFormatter,
@@ -42,6 +43,7 @@ def run():
     parser.set_defaults(func=lambda x: parser.print_help())
 
     subparsers = parser.add_subparsers(title="sub-commands")
+    register_prepare_taiyaki_train_data(subparsers)
     register_train_model(subparsers)
     register_infer(subparsers)
 

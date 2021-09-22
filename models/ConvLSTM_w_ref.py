@@ -1,5 +1,4 @@
 from torch import nn
-import torch.nn.utils.rnn as rnn
 import torch
 
 from remora.activations import swish
@@ -12,7 +11,7 @@ class network(nn.Module):
     def __init__(
         self,
         size=constants.DEFAULT_SIZE,
-        kmer_size=constants.DEFAULT_KMER_SIZE,
+        kmer_len=constants.DEFAULT_KMER_LEN,
         num_out=2,
     ):
         super().__init__()
@@ -20,7 +19,7 @@ class network(nn.Module):
         self.sig_conv2 = nn.Conv1d(4, 16, 5)
         self.sig_conv3 = nn.Conv1d(16, size, 9, 3)
 
-        self.seq_conv1 = nn.Conv1d(kmer_size * 4, 16, 5)
+        self.seq_conv1 = nn.Conv1d(kmer_len * 4, 16, 5)
         self.seq_conv2 = nn.Conv1d(16, size, 13, 3)
 
         self.merge_conv1 = nn.Conv1d(size * 2, size, 5)
@@ -40,7 +39,7 @@ class network(nn.Module):
         self.merge_bn = nn.BatchNorm1d(size)
 
     def forward(self, sigs, seqs):
-        # inputs are TBH, conv wants BH
+        # inputs are TBF, conv wants BFT
         sigs = sigs.permute(1, 2, 0)
         sigs_x = swish(self.sig_conv1(sigs))
         sigs_x = self.bn1(sigs_x)
