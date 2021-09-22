@@ -19,10 +19,13 @@ def _load_python_model(model_file, **model_kwargs):
 
 
 def save_checkpoint(state, out_path):
+    raise NotImplementedError(
+        "Restarting from saved checkpoint currently defunct."
+    )
     if not exists(out_path):
         os.makedirs(out_path)
-    model_name = os.path.basename(state["model_name"]).split(".")[0]
-    filename = join(out_path, f"{model_name}_{state['epoch']}.tar")
+    model_path = os.path.basename(state["model_path"]).split(".")[0]
+    filename = join(out_path, f"{model_path}_{state['epoch']}.tar")
     torch.save(state, filename)
 
 
@@ -147,10 +150,10 @@ class ValidationLogger:
                     f"{len(all_labels)}\n"
                 )
             else:
-                precision, recall, thresholds = precision_recall_curve(
-                    all_labels.numpy(), all_outputs[:, 1].numpy()
-                )
                 with np.errstate(invalid="ignore"):
+                    precision, recall, thresholds = precision_recall_curve(
+                        all_labels.numpy(), all_outputs[:, 1].numpy()
+                    )
                     f1_scores = 2 * recall * precision / (recall + precision)
                 f1_idx = np.argmax(f1_scores)
                 self.fp.write(

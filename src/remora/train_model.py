@@ -1,15 +1,19 @@
 import atexit
 import os
 from shutil import copyfile
+import warnings
 
 import numpy as np
 import torch
 from tqdm import tqdm
 
-from remora import util, log, RemoraError
+from remora import util, log
 from remora.data_chunks import load_datasets
 
 LOGGER = log.get_logger()
+
+# filter warnings about GPU on environments without a GPU
+warnings.filterwarnings(action="ignore", category=UserWarning, module="torch")
 
 
 def train_model(
@@ -21,11 +25,10 @@ def train_model(
     mod_motif,
     focus_offset,
     chunk_context,
-    fixed_seq_len_chunks,
     val_prop,
     batch_size,
     num_data_workers,
-    model_name,
+    model_path,
     size,
     optimizer,
     lr,
@@ -35,45 +38,47 @@ def train_model(
     base_pred,
     epochs,
     save_freq,
-    kmer_size,
+    context_bases,
 ):
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-    torch.cuda.set_device(device)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.cuda.set_device(device)
+    elif device is not None:
+        LOGGER.warning(
+            "Device option specified, but CUDA is not available from torch."
+        )
 
     val_fp = util.ValidationLogger(out_path, base_pred)
     atexit.register(val_fp.close)
     batch_fp = util.BatchLogger(out_path)
     atexit.register(batch_fp.close)
 
+    copyfile(model_path, os.path.join(out_path, "model.py"))
+    num_out = 4 if base_pred else 2
+    model = util._load_python_model(
+        model_path, size=size, kmer_len=sum(context_bases) + 1, num_out=num_out
+    )
     dl_trn, dl_val, dl_val_trn = load_datasets(
         dataset_path,
         chunk_context,
         focus_offset,
         batch_size,
         num_chunks,
-        fixed_seq_len_chunks,
-        mod_motif,
-        base_pred,
-        val_prop,
-        num_data_workers,
-        kmer_size,
+        fixed_seq_len_chunks=model._variable_width_possible,
+        mod_motif=mod_motif,
+        base_pred=base_pred,
+        val_prop=val_prop,
+        num_data_workers=num_data_workers,
+        context_bases=context_bases,
     )
-    model = util._load_python_model(model_name)
-    if (fixed_seq_len_chunks and not model._variable_width_possible) or (
-        not fixed_seq_len_chunks and model._variable_width_possible
-    ):
-        raise RemoraError(
-            "Trying to use variable chunk sizes with a fixed chunk-size model"
-        )
 
-    copyfile(model_name, os.path.join(out_path, "model.py"))
-    model = model.cuda()
+    criterion = torch.nn.CrossEntropyLoss()
+    if torch.cuda.is_available():
+        model = model.cuda()
+        criterion = criterion.cuda()
     LOGGER.info(f"Model structure:\n{model}")
-
-    criterion = torch.nn.CrossEntropyLoss().cuda()
 
     if optimizer == "sgd":
         opt = torch.optim.SGD(
@@ -98,7 +103,7 @@ def train_model(
 
     training_var = {
         "epoch": 0,
-        "model_name": model_name,
+        "model_path": model_path,
         "state_dict": {},
     }
     util.continue_from_checkpoint(
@@ -144,8 +149,8 @@ def train_model(
         loss_val=f"{val_loss:.6f}",
         loss_train=f"{trn_loss:.6f}",
     )
-    atexit.register(ebar.close)
     atexit.register(pbar.close)
+    atexit.register(ebar.close)
     for epoch in range(start_epoch, epochs):
         model.train()
         pbar.n = 0
@@ -179,12 +184,12 @@ def train_model(
             util.save_checkpoint(
                 {
                     "epoch": int(epoch + 1),
-                    "model_name": model_name,
+                    "model_path": model_path,
                     "state_dict": model.state_dict(),
                     "opt": opt.state_dict(),
                     "focus_offset": focus_offset,
                     "chunk_context": chunk_context,
-                    "fixed_seq_len_chunks": fixed_seq_len_chunks,
+                    "fixed_seq_len_chunks": model._variable_width_possible,
                     "mod_motif": mod_motif,
                     "base_pred": base_pred,
                 },

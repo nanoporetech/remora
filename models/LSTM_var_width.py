@@ -8,7 +8,12 @@ from remora import constants
 class network(nn.Module):
     _variable_width_possible = True
 
-    def __init__(self, size=constants.DEFAULT_SIZE, num_out=2):
+    def __init__(
+        self,
+        size=constants.DEFAULT_SIZE,
+        kmer_len=constants.DEFAULT_KMER_LEN,
+        num_out=2,
+    ):
         super().__init__()
 
         self.lstm = nn.LSTM(1, size, 1)

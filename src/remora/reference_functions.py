@@ -1,10 +1,16 @@
 import numpy as np
 import bisect
 
+from remora import constants
+
 
 class referenceEncoder:
-    def __init__(self, chunk_context, fixed_seq_len_chunks, kmer_size=3):
-
+    def __init__(
+        self,
+        chunk_context,
+        fixed_seq_len_chunks,
+        context_bases=constants.DEFAULT_CONTEXT_BASES,
+    ):
         self.alphabet = {
             "A": [1, 0, 0, 0],
             "C": [0, 1, 0, 0],
@@ -15,32 +21,11 @@ class referenceEncoder:
 
         self.chunk_context = chunk_context
         self.fixed_seq_len_chunks = fixed_seq_len_chunks
-        self.kmer_size = kmer_size
-
-    def reference_encoding(self, signals, references, base_locs):
-
-        encoding = np.zeros(
-            (self.kmer_size * (len(self.alphabet) - 1), base_locs[-1])
-        )
-        for i in range(len(base_locs) - 1):
-            code = []
-            for k in range(
-                i - self.kmer_size // 2, i + self.kmer_size // 2 + 1
-            ):
-                if k < 0 or k >= len(ref):
-                    code += self.alphabet["N"]
-                else:
-                    code += self.alphabet[references[k]]
-
-            gap = base_locs[i + 1] - base_locs[i]
-            encoding[:, base_locs[i] : base_locs[i + 1]] = np.tile(
-                np.array(code), (gap, 1)
-            ).T
-
-        return encoding
+        self.before_bases, self.after_bases = context_bases
+        self.kmer_len = sum(context_bases) + 1
 
     def reference_encoding_by_base(
-        self, signals, references, base_locs, focus_offset
+        self, sig_len, references, base_locs, focus_offset
     ):
         extracted_bl = base_locs[
             focus_offset
@@ -54,14 +39,10 @@ class referenceEncoder:
             + self.chunk_context[1]
             + 1
         ]
-        encoding = np.zeros(
-            (self.kmer_size * (len(self.alphabet) - 1), len(signals))
-        )
+        encoding = np.zeros((self.kmer_len * (len(self.alphabet) - 1), sig_len))
         for i in range(len(extracted_bl) - 1):
             code = []
-            for k in range(
-                i - self.kmer_size // 2, i + self.kmer_size // 2 + 1
-            ):
+            for k in range(i - self.before_bases, i + self.after_bases + 1):
                 if k < 0 or k >= len(references):
                     code += self.alphabet["N"]
                 else:
@@ -78,7 +59,7 @@ class referenceEncoder:
         return encoding
 
     def reference_encoding_by_chunk(
-        self, signals, references, base_locs, focus_offset
+        self, sig_len, references, base_locs, focus_offset
     ):
 
         index_below = (
@@ -95,57 +76,48 @@ class referenceEncoder:
             )
             - 1
         )
-        encoding = np.zeros(
-            (self.kmer_size * (len(self.alphabet) - 1), len(signals))
-        )
+        encoding = np.zeros((self.kmer_len * (len(self.alphabet) - 1), sig_len))
         origin = base_locs[focus_offset] - self.chunk_context[0]
 
-        counter = 0
-
+        prev = curr = origin
         while True:
-            if counter == 0:
-                curr = origin
-            else:
-                curr = next
+            prev = curr
+            curr = base_locs[np.argmax(base_locs >= prev)]
+            if curr > base_locs[focus_offset] + self.chunk_context[1]:
+                curr = base_locs[focus_offset] + self.chunk_context[1]
 
-            next = base_locs[np.argmax(base_locs >= curr)]
-            if next > base_locs[focus_offset] + self.chunk_context[1]:
-                next = base_locs[focus_offset] + self.chunk_context[1]
-
-            gap = next - curr
-
+            gap = curr - prev
             code = []
             for k in range(
-                index_below - self.kmer_size // 2,
-                index_below + self.kmer_size // 2 + 1,
+                index_below - self.before_bases,
+                index_below + self.after_bases + 1,
             ):
                 if k < 0 or k >= len(references):
                     code += self.alphabet["N"]
                 else:
                     code += self.alphabet[references[k]]
 
-            encoding[:, curr - origin : next - origin] = np.tile(
+            encoding[:, prev - origin : curr - origin] = np.tile(
                 np.array(code), (gap, 1)
             ).T
             index_below += 1
-            counter += 1
 
-            if next > base_locs[index_above] or gap == 0:
+            if curr > base_locs[index_above] or gap == 0:
                 break
         return encoding
 
     def get_reference_encoding(
-        self, signals, references, base_locs, focus_offset
+        self, sig_len, references, base_locs, focus_offset
     ):
 
         if self.fixed_seq_len_chunks:
             encodings = self.reference_encoding_by_base(
-                signals, references, base_locs, focus_offset
+                sig_len, references, base_locs, focus_offset
             )
 
         else:
             encodings = self.reference_encoding_by_chunk(
-                signals, references, base_locs, focus_offset
+                sig_len, references, base_locs, focus_offset
             )
 
         return encodings

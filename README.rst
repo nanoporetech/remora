@@ -13,7 +13,12 @@ Detailed documentation for all ``remora`` commands and algorithms can be found o
 Installation
 ------------
 
-TODO
+To install from gitlab source for development, the following commands can be run.
+
+::
+
+   git clone git@git.oxfordnanolabs.local:algorithm/remora.git
+   pip install -e remora/[tests]
 
 Getting Started
 ---------------
