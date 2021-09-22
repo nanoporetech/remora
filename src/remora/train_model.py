@@ -55,31 +55,19 @@ def train_model(
     batch_fp = util.BatchLogger(out_path)
     atexit.register(batch_fp.close)
 
+    LOGGER.info("Loading model")
     copyfile(model_path, os.path.join(out_path, "model.py"))
     num_out = 4 if base_pred else 2
     model = util._load_python_model(
         model_path, size=size, kmer_len=sum(context_bases) + 1, num_out=num_out
     )
-    dl_trn, dl_val, dl_val_trn = load_datasets(
-        dataset_path,
-        chunk_context,
-        focus_offset,
-        batch_size,
-        num_chunks,
-        fixed_seq_len_chunks=model._variable_width_possible,
-        mod_motif=mod_motif,
-        base_pred=base_pred,
-        val_prop=val_prop,
-        num_data_workers=num_data_workers,
-        context_bases=context_bases,
-    )
+    LOGGER.info(f"Model structure:\n{model}")
 
+    LOGGER.info("Preparing training settings")
     criterion = torch.nn.CrossEntropyLoss()
     if torch.cuda.is_available():
         model = model.cuda()
         criterion = criterion.cuda()
-    LOGGER.info(f"Model structure:\n{model}")
-
     if optimizer == "sgd":
         opt = torch.optim.SGD(
             model.parameters(),
@@ -100,32 +88,42 @@ def train_model(
             lr=float(lr),
             weight_decay=weight_decay,
         )
-
     training_var = {
         "epoch": 0,
         "model_path": model_path,
         "state_dict": {},
     }
-    util.continue_from_checkpoint(
-        out_path,
-        training_var=training_var,
-        opt=opt,
-        model=model,
-    )
     start_epoch = training_var["epoch"]
     state_dict = training_var["state_dict"]
     if state_dict != {}:
         model.load_state_dict(state_dict)
-
     scheduler = torch.optim.lr_scheduler.StepLR(
         opt, step_size=lr_decay_step, gamma=lr_decay_gamma
     )
 
+    LOGGER.info("Loading training dataset")
+    dl_trn, dl_val, dl_val_trn = load_datasets(
+        dataset_path,
+        chunk_context,
+        focus_offset,
+        batch_size,
+        num_chunks,
+        fixed_seq_len_chunks=model._variable_width_possible,
+        mod_motif=mod_motif,
+        base_pred=base_pred,
+        val_prop=val_prop,
+        num_data_workers=num_data_workers,
+        context_bases=context_bases,
+    )
+
+    LOGGER.info("Running initial validation")
     # assess accuracy before first iteration
     val_acc, val_loss = val_fp.validate_model(model, criterion, dl_val, 0)
     trn_acc, trn_loss = val_fp.validate_model(
         model, criterion, dl_val_trn, 0, "trn"
     )
+
+    LOGGER.info("Start training")
     ebar = tqdm(
         total=epochs,
         smoothing=0,
@@ -202,6 +200,9 @@ def train_model(
             loss_train=f"{trn_loss:.6f}",
         )
         ebar.update()
+    ebar.close()
+    pbar.close()
+    LOGGER.info("Training complete")
 
 
 if __name__ == "__main__":

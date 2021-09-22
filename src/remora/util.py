@@ -19,13 +19,9 @@ def _load_python_model(model_file, **model_kwargs):
 
 
 def save_checkpoint(state, out_path):
-    raise NotImplementedError(
-        "Restarting from saved checkpoint currently defunct."
-    )
     if not exists(out_path):
         os.makedirs(out_path)
-    model_path = os.path.basename(state["model_path"]).split(".")[0]
-    filename = join(out_path, f"{model_path}_{state['epoch']}.tar")
+    filename = join(out_path, f"model_{state['epoch']:06d}.checkpoint")
     torch.save(state, filename)
 
 
@@ -36,7 +32,7 @@ def continue_from_checkpoint(dir_path, training_var=None, **kwargs):
     all_ckps = [
         f
         for f in os.listdir(dir_path)
-        if isfile(join(dir_path, f)) and ".tar" in f
+        if isfile(join(dir_path, f)) and ".checkpoint" in f
     ]
     if all_ckps == []:
         return
