@@ -177,13 +177,18 @@ def load_chunks(
                 if sig_end > base_locs[-1]:
                     reject_reasons["invalid_signal_end"] += 1
                     continue
-                if len(sig[sig_start:sig_end]) == 0:
+                if sig_start >= sig_end:
                     reject_reasons["empty signal"] += 1
                     continue
 
-            enc_ref = ref_encoder.get_reference_encoding(
-                sig_end - sig_start, ref, base_locs, m_pos
-            )
+            try:
+                enc_ref = ref_encoder.get_reference_encoding(
+                    sig_end - sig_start, ref, base_locs, m_pos
+                )
+            except (ValueError, RemoraError) as e:
+                LOGGER.debug(f"Failed ref encoding: {read.read_id} {e}")
+                reject_reasons[str(e)] += 1
+                continue
 
             if base_pred:
                 label = read.Reference[m_pos]

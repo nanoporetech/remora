@@ -29,7 +29,14 @@ def extract_canonical_dataset(
             ref_en = center_loc + context_bases + 1
             sig_st = read.Ref_to_signal[ref_st]
             sig_en = read.Ref_to_signal[ref_en]
-            chunk_dict["read_id"] = f"{read.read_id}:::pos{center_loc}"
+            # convert read id to string if bytes
+            read_id = read.read_id
+            try:
+                read_id.decode()
+            except AttributeError:
+                # attribute error indicates read_id is already a string
+                pass
+            chunk_dict["read_id"] = f"{read_id}:::pos_{center_loc}"
             chunk_dict["Dacs"] = read.Dacs[sig_st:sig_en]
             chunk_dict["Ref_to_signal"] = (
                 read.Ref_to_signal[ref_st:ref_en] - sig_st
