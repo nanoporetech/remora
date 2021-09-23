@@ -82,7 +82,7 @@ class referenceEncoder:
         prev = curr = origin
         while True:
             prev = curr
-            curr = base_locs[np.argmax(base_locs >= prev)]
+            curr = base_locs[np.argmax(base_locs > prev)]
             if curr > base_locs[focus_offset] + self.chunk_context[1]:
                 curr = base_locs[focus_offset] + self.chunk_context[1]
 
