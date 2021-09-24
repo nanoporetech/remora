@@ -29,9 +29,9 @@ class network(nn.Module):
         self.fc = nn.Linear(size, num_out)
 
         self.dropout = nn.Dropout(p=0.3)
-        self.bn1 = nn.BatchNorm1d(4)
-        self.bn2 = nn.BatchNorm1d(16)
-        self.bn3 = nn.BatchNorm1d(size)
+        self.sig_bn1 = nn.BatchNorm1d(4)
+        self.sig_bn2 = nn.BatchNorm1d(16)
+        self.sig_bn3 = nn.BatchNorm1d(size)
 
         self.seq_bn1 = nn.BatchNorm1d(16)
         self.seq_bn2 = nn.BatchNorm1d(size)
@@ -41,23 +41,17 @@ class network(nn.Module):
     def forward(self, sigs, seqs):
         # inputs are TBF, conv wants BFT
         sigs = sigs.permute(1, 2, 0)
-        sigs_x = swish(self.sig_conv1(sigs))
-        sigs_x = self.bn1(sigs_x)
-        sigs_x = swish(self.sig_conv2(sigs_x))
-        sigs_x = self.bn2(sigs_x)
-        sigs_x = swish(self.sig_conv3(sigs_x))
-        sigs_x = self.bn3(sigs_x)
+        sigs_x = swish(self.sig_bn1(self.sig_conv1(sigs)))
+        sigs_x = swish(self.sig_bn2(self.sig_conv2(sigs_x)))
+        sigs_x = swish(self.sig_bn3(self.sig_conv3(sigs_x)))
 
         seqs = seqs.permute(1, 2, 0)
-        seqs_x = swish(self.seq_conv1(seqs))
-        seqs_x = self.seq_bn1(seqs_x)
-        seqs_x = swish(self.seq_conv2(seqs_x))
-        seqs_x = self.seq_bn2(seqs_x)
+        seqs_x = swish(self.seq_bn1(self.seq_conv1(seqs)))
+        seqs_x = swish(self.seq_bn2(self.seq_conv2(seqs_x)))
 
         z = torch.cat((sigs_x, seqs_x), 1)
 
-        z = swish(self.merge_conv1(z))
-        z = self.merge_bn(z)
+        z = swish(self.merge_bn(self.merge_conv1(z)))
         z = z.permute(2, 0, 1)
         z = swish(self.lstm1(z)[0])
         z = torch.flip(swish(self.lstm2(torch.flip(z, (0,)))[0]), (0,))
