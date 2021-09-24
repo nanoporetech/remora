@@ -259,7 +259,7 @@ def register_train_model(parser):
         "Default: %(default)s",
     )
     data_grp.add_argument(
-        "--context-bases",
+        "--kmer-context-bases",
         nargs=2,
         default=constants.DEFAULT_CONTEXT_BASES,
         type=int,
@@ -400,7 +400,7 @@ def run_train_model(args):
         args.base_pred,
         args.epochs,
         args.save_freq,
-        args.context_bases,
+        args.kmer_context_bases,
     )
 
 

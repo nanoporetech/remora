@@ -6,11 +6,18 @@ import torch
 import torch.nn.utils.rnn as rnn
 
 from remora import constants, log, RemoraError
-from remora.reference_functions import referenceEncoder
 
 LOGGER = log.get_logger()
 
 DEFAULT_BATCH_SIZE = 1024
+
+BASE_ENCODINGS = {
+    "A": np.array([1, 0, 0, 0]),
+    "C": np.array([0, 1, 0, 0]),
+    "G": np.array([0, 0, 1, 0]),
+    "T": np.array([0, 0, 0, 1]),
+    "N": np.array([0, 0, 0, 0]),
+}
 
 # TODO convert module to be a batch generator
 
@@ -70,7 +77,7 @@ def load_chunks(
     num_chunks,
     mod_motif,
     chunk_context,
-    context_bases,
+    kmer_context_bases,
     focus_offset=None,
     fixed_seq_len_chunks=False,
     base_pred=False,
@@ -83,8 +90,8 @@ def load_chunks(
         mod_motif: modified base motif. mod_base, can_motif, mod_offset
         chunk_context: 2-tuple containing context signal or bases for each
             chunk
-        context_bases: Number of bases before and after to included in encoded
-            reference
+        kmer_context_bases: Number of bases before and after to included in
+            encoded reference
         focus_offset: index of (mod)base in reference
         fixed_seq_len_chunks: return chunks with fixed sequence length and
             variable signal length. Default returns chunks with fixed signal
@@ -126,9 +133,8 @@ def load_chunks(
 
     mod_idx = alphabet_info.alphabet.find(mod)
 
-    ref_encoder = referenceEncoder(
-        chunk_context, fixed_seq_len_chunks, context_bases
-    )
+    kmer_before_bases, kmer_after_bases = kmer_context_bases
+    kmer_len = sum(kmer_context_bases) + 1
 
     sigs = []
     labels = []
@@ -147,7 +153,7 @@ def load_chunks(
         ref = "".join(
             alphabet_info.collapse_alphabet[b] for b in read.Reference
         )
-        base_locs = read.Ref_to_signal - read.Ref_to_signal[0]
+        read_ref_to_sig = read.Ref_to_signal - read.Ref_to_signal[0]
         if full:
             motif_pos = get_motif_pos(
                 read.Reference, int_can_motif, motif_offset
@@ -161,33 +167,69 @@ def load_chunks(
                 if base_start <= 0:
                     reject_reasons["invalid_base_start"] += 1
                     continue
-                if base_end >= len(base_locs):
+                if base_end >= len(read_ref_to_sig):
                     reject_reasons["invalid_base_end"] += 1
                     continue
-                sig_start = base_locs[base_start]
-                sig_end = base_locs[base_end]
+                sig_start = read_ref_to_sig[base_start]
+                sig_end = read_ref_to_sig[base_end]
+                chunk_ref_to_sig = read_ref_to_sig[base_start : base_end + 1]
             else:
                 # compute position at center of central base
-                center_loc = (base_locs[m_pos] + base_locs[m_pos + 1]) // 2
+                center_loc = (
+                    read_ref_to_sig[m_pos] + read_ref_to_sig[m_pos + 1]
+                ) // 2
                 sig_start = center_loc - chunk_context[0]
                 sig_end = center_loc + chunk_context[1]
                 if sig_start < 0:
                     reject_reasons["invalid_signal_start"] += 1
                     continue
-                if sig_end > base_locs[-1]:
+                if sig_end > read_ref_to_sig[-1]:
                     reject_reasons["invalid_signal_end"] += 1
                     continue
                 if sig_start >= sig_end:
                     reject_reasons["empty signal"] += 1
                     continue
-
-            try:
-                enc_ref = ref_encoder.get_reference_encoding(
-                    sig_end - sig_start, ref, base_locs, m_pos
+                base_start = (
+                    np.searchsorted(read_ref_to_sig, sig_start, side="right")
+                    - 1
                 )
-            except (ValueError, RemoraError) as e:
-                LOGGER.debug(f"Failed ref encoding: {read.read_id} {e}")
-                reject_reasons[str(e)] += 1
+                base_end = np.searchsorted(
+                    read_ref_to_sig, sig_end, side="left"
+                )
+                chunk_ref_to_sig = read_ref_to_sig[base_start : base_end + 1]
+                chunk_ref_to_sig[0] = sig_start
+                chunk_ref_to_sig[-1] = sig_end
+
+            # center chunk_ref_to_sig on chunk
+            chunk_ref_to_sig -= chunk_ref_to_sig[0]
+            chunk_ref_w_context = ref[
+                base_start - kmer_before_bases : base_end + kmer_after_bases
+            ]
+            try:
+                chunk_enc_ref_w_context = np.array(
+                    [BASE_ENCODINGS[b] for b in chunk_ref_w_context]
+                )
+                chunk_enc_kmers = np.stack(
+                    [
+                        chunk_enc_ref_w_context[
+                            offset : base_end - base_start + offset
+                        ]
+                        for offset in range(kmer_len)
+                    ],
+                    axis=1,
+                )
+                chunk_enc_kmers = chunk_enc_kmers.reshape(-1, kmer_len * 4)
+                chunk_ref_nn_input = np.repeat(
+                    chunk_enc_kmers, np.diff(chunk_ref_to_sig), axis=0
+                ).T
+            except ValueError as e:
+                LOGGER.debug(
+                    f"FAILED_READ: {read.read_id} sig: {sig_start}-{sig_end} "
+                    f"base: {base_start}-{base_end} "
+                    f"chunk_ref_to_sig: {chunk_ref_to_sig}"
+                    f"chunk_ref_w_context: {chunk_ref_w_context}"
+                )
+                reject_reasons["broken ref encoding"] += 1
                 continue
 
             if base_pred:
@@ -197,8 +239,8 @@ def load_chunks(
             labels.append(label)
             sigs.append(sig[sig_start:sig_end])
             refs.append(ref)
-            enc_refs.append(enc_ref)
-            base_locations.append(base_locs)
+            enc_refs.append(chunk_ref_nn_input)
+            base_locations.append(chunk_ref_to_sig)
             read_ids.append(read.read_id)
             positions.append(read.Ref_to_signal[m_pos])
             focus_offsets.append(m_pos)
@@ -303,7 +345,7 @@ def load_datasets(
     base_pred=True,
     val_prop=0.0,
     num_data_workers=0,
-    context_bases=constants.DEFAULT_CONTEXT_BASES,
+    kmer_context_bases=constants.DEFAULT_CONTEXT_BASES,
     infer=False,
     full=False,
 ):
@@ -322,7 +364,7 @@ def load_datasets(
             num_chunks,
             mod_motif,
             chunk_context,
-            context_bases,
+            kmer_context_bases,
             focus_offset,
             fixed_seq_len_chunks,
             base_pred,
@@ -409,7 +451,7 @@ def load_datasets(
             num_chunks,
             mod_motif,
             chunk_context,
-            context_bases,
+            kmer_context_bases,
             focus_offset,
             fixed_seq_len_chunks,
             base_pred,

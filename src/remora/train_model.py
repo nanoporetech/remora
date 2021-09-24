@@ -38,7 +38,7 @@ def train_model(
     base_pred,
     epochs,
     save_freq,
-    context_bases,
+    kmer_context_bases,
 ):
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -59,7 +59,10 @@ def train_model(
     copyfile(model_path, os.path.join(out_path, "model.py"))
     num_out = 4 if base_pred else 2
     model = util._load_python_model(
-        model_path, size=size, kmer_len=sum(context_bases) + 1, num_out=num_out
+        model_path,
+        size=size,
+        kmer_len=sum(kmer_context_bases) + 1,
+        num_out=num_out,
     )
     LOGGER.info(f"Model structure:\n{model}")
 
@@ -113,7 +116,7 @@ def train_model(
         base_pred=base_pred,
         val_prop=val_prop,
         num_data_workers=num_data_workers,
-        context_bases=context_bases,
+        kmer_context_bases=kmer_context_bases,
     )
 
     LOGGER.info("Running initial validation")
