@@ -1,4 +1,5 @@
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 
 import numpy as np
 from taiyaki.mapped_signal_files import MappedSignalReader
@@ -72,6 +73,112 @@ def validate_motif(input_msf, motif):
     return mod_base, int_can_motif, motif_offset
 
 
+@dataclass
+class Chunk:
+
+    signal: np.ndarray
+    signal_start: int
+    signal_end: int
+    reference: str
+    base_locs: np.ndarray
+    focus_offset: int
+    kmer_context_bases: tuple
+    read_id: str
+    position: int
+    label: int
+    tiled_reference = None
+
+    def __post_init__(self):
+        self.enc_ref = self.encode_reference(
+            self.reference, sum(self.kmer_context_bases) + 1
+        )
+        self.tiled_reference = self.tile_reference(self.enc_ref)
+
+    @classmethod
+    def create_chunk(
+        cls,
+        signal,
+        signal_start,
+        signal_end,
+        reference,
+        base_locs,
+        focus_offset,
+        kmer_context_bases,
+        read_id,
+        position,
+        label,
+    ):
+        sig = signal[signal_start:signal_end]
+
+        base_start = np.searchsorted(base_locs, signal_start, side="right") - 1
+        base_end = np.searchsorted(base_locs, signal_end, side="left")
+
+        centred_base = focus_offset - base_start
+        centred_sig = (
+            base_locs[focus_offset]
+            + (base_locs[focus_offset + 1] - base_locs[focus_offset]) // 2
+            - signal_start
+        )
+
+        chunk_ref_to_sig = base_locs[base_start : base_end + 1]
+        chunk_ref_to_sig[0] = signal_start
+        chunk_ref_to_sig[-1] = signal_end
+
+        chunk_ref_to_sig -= chunk_ref_to_sig[0]
+
+        kmer_before_bases, kmer_after_bases = kmer_context_bases
+        chunk_ref_w_context = reference[
+            base_start - kmer_before_bases : base_end + kmer_after_bases
+        ]
+
+        kmer_len = sum(kmer_context_bases) + 1
+
+        return cls(
+            sig,
+            signal_start,
+            signal_end,
+            chunk_ref_w_context,
+            chunk_ref_to_sig,
+            (centred_base, centred_sig),
+            kmer_context_bases,
+            read_id,
+            position,
+            label,
+        )
+
+    def encode_reference(self, chunk_ref_w_context, kmer_len):
+
+        chunk_enc_ref_w_context = np.array(
+            [BASE_ENCODINGS[b] for b in chunk_ref_w_context]
+        )
+        chunk_enc_kmers = np.stack(
+            [
+                chunk_enc_ref_w_context[
+                    offset : len(chunk_ref_w_context)
+                    - sum(self.kmer_context_bases)
+                    + offset
+                ]
+                for offset in range(kmer_len)
+            ],
+            axis=1,
+        )
+
+        return chunk_enc_kmers
+
+    def tile_reference(self, chunk_enc_kmers):
+        chunk_enc_kmers = chunk_enc_kmers.reshape(
+            -1, (sum(self.kmer_context_bases) + 1) * 4
+        )
+        chunk_ref_nn_input = np.repeat(
+            chunk_enc_kmers, np.diff(self.base_locs), axis=0
+        ).T
+        return chunk_ref_nn_input
+
+    @property
+    def ref_nn_input(self):
+        return self.tiled_reference
+
+
 def load_chunks(
     dataset_path,
     num_chunks,
@@ -133,17 +240,9 @@ def load_chunks(
 
     mod_idx = alphabet_info.alphabet.find(mod)
 
-    kmer_before_bases, kmer_after_bases = kmer_context_bases
     kmer_len = sum(kmer_context_bases) + 1
 
-    sigs = []
-    labels = []
-    refs = []
-    enc_refs = []
-    base_locations = []
-    read_ids = []
-    positions = []
-    focus_offsets = []
+    chunks = []
 
     reject_reasons = defaultdict(int)
     for read in read_data:
@@ -154,6 +253,9 @@ def load_chunks(
             alphabet_info.collapse_alphabet[b] for b in read.Reference
         )
         read_ref_to_sig = read.Ref_to_signal - read.Ref_to_signal[0]
+        if len(read_ref_to_sig) > len(set(read_ref_to_sig)):
+            continue
+
         if full:
             motif_pos = get_motif_pos(
                 read.Reference, int_can_motif, motif_offset
@@ -189,39 +291,29 @@ def load_chunks(
                 if sig_start >= sig_end:
                     reject_reasons["empty signal"] += 1
                     continue
-                base_start = (
-                    np.searchsorted(read_ref_to_sig, sig_start, side="right")
-                    - 1
-                )
-                base_end = np.searchsorted(
-                    read_ref_to_sig, sig_end, side="left"
-                )
-                chunk_ref_to_sig = read_ref_to_sig[base_start : base_end + 1]
-                chunk_ref_to_sig[0] = sig_start
-                chunk_ref_to_sig[-1] = sig_end
 
-            # center chunk_ref_to_sig on chunk
-            chunk_ref_to_sig -= chunk_ref_to_sig[0]
-            chunk_ref_w_context = ref[
-                base_start - kmer_before_bases : base_end + kmer_after_bases
-            ]
+            if base_pred:
+                label = read.Reference[m_pos]
+            else:
+                label = int(read.Reference[m_pos] == mod_idx)
             try:
-                chunk_enc_ref_w_context = np.array(
-                    [BASE_ENCODINGS[b] for b in chunk_ref_w_context]
+                chunks.append(
+                    Chunk.create_chunk(
+                        sig,
+                        sig_start,
+                        sig_end,
+                        ref,
+                        read_ref_to_sig,
+                        m_pos,
+                        kmer_context_bases,
+                        read.read_id,
+                        read.Ref_to_signal[m_pos],
+                        label,
+                    )
                 )
-                chunk_enc_kmers = np.stack(
-                    [
-                        chunk_enc_ref_w_context[
-                            offset : base_end - base_start + offset
-                        ]
-                        for offset in range(kmer_len)
-                    ],
-                    axis=1,
-                )
-                chunk_enc_kmers = chunk_enc_kmers.reshape(-1, kmer_len * 4)
-                chunk_ref_nn_input = np.repeat(
-                    chunk_enc_kmers, np.diff(chunk_ref_to_sig), axis=0
-                ).T
+                reject_reasons["success"] += 1
+                if reject_reasons["success"] >= num_chunks:
+                    break
             except ValueError as e:
                 LOGGER.debug(
                     f"FAILED_READ: {read.read_id} sig: {sig_start}-{sig_end} "
@@ -230,24 +322,6 @@ def load_chunks(
                     f"chunk_ref_w_context: {chunk_ref_w_context}"
                 )
                 reject_reasons["broken ref encoding"] += 1
-                continue
-
-            if base_pred:
-                label = read.Reference[m_pos]
-            else:
-                label = int(read.Reference[m_pos] == mod_idx)
-            labels.append(label)
-            sigs.append(sig[sig_start:sig_end])
-            refs.append(ref)
-            enc_refs.append(chunk_ref_nn_input)
-            base_locations.append(chunk_ref_to_sig)
-            read_ids.append(read.read_id)
-            positions.append(read.Ref_to_signal[m_pos])
-            focus_offsets.append(m_pos)
-
-            reject_reasons["success"] += 1
-            if reject_reasons["success"] >= num_chunks:
-                break
 
     rej_summ = "\n".join(
         f"\t{count}\t{reason}"
@@ -257,16 +331,7 @@ def load_chunks(
     )
     LOGGER.info(f"Chunk selection summary:\n{rej_summ}\n")
 
-    return (
-        sigs,
-        labels,
-        refs,
-        enc_refs,
-        base_locations,
-        read_ids,
-        positions,
-        focus_offsets,
-    )
+    return chunks
 
 
 def collate_var_len_input(batch):
@@ -317,21 +382,16 @@ def collate_fixed_len_input(batch):
 
 
 class RemoraDataset(torch.utils.data.Dataset):
-    def __init__(self, sigs, seqs, labels=None):
-        self.sigs = sigs
-        self.seqs = seqs
-        self.use_labels = True if labels else False
-        if self.use_labels:
-            self.labels = labels
+    def __init__(self, chunks):
+
+        self.chunks = chunks
 
     def __getitem__(self, index):
-        if self.use_labels:
-            return self.sigs[index], self.seqs[index], self.labels[index]
-        else:
-            return self.sigs[index], self.seqs[index]
+        chunk = self.chunks[index]
+        return chunk.signal, chunk.ref_nn_input, chunk.label
 
     def __len__(self):
-        return len(self.sigs)
+        return len(self.chunks)
 
 
 def load_datasets(
@@ -350,16 +410,7 @@ def load_datasets(
     full=False,
 ):
     if not infer:
-        (
-            sigs,
-            labels,
-            refs,
-            enc_refs,
-            base_locs,
-            read_ids,
-            positions,
-            focus_offsets,
-        ) = load_chunks(
+        chunks = load_chunks(
             dataset_path,
             num_chunks,
             mod_motif,
@@ -370,19 +421,14 @@ def load_datasets(
             base_pred,
             full,
         )
-        label_counts = Counter(labels)
+        label_counts = Counter(c.label for c in chunks)
         if len(label_counts) <= 1:
             raise ValueError(
                 "One or fewer output labels found. Ensure --focus-offset and "
                 "--mod are specified correctly"
             )
         LOGGER.info(f"Label distribution: {label_counts}")
-
-        tmp = list(
-            zip(sigs, labels, refs, enc_refs, base_locs, read_ids, positions)
-        )
-        np.random.shuffle(tmp)
-        sigs, labels, refs, enc_refs, base_locs, read_ids, positions = zip(*tmp)
+        np.random.shuffle(chunks)
 
         collate_fn = (
             collate_var_len_input
@@ -392,20 +438,12 @@ def load_datasets(
 
         if val_prop <= 0.0:
             dl_val = dl_val_trn = None
-            trn_set = RemoraDataset(sigs, enc_refs, labels)
+            trn_set = RemoraDataset(chunks)
         else:
-            val_idx = int(len(sigs) * val_prop)
-            val_set = RemoraDataset(
-                sigs[:val_idx], enc_refs[:val_idx], labels[:val_idx]
-            )
-            val_trn_set = RemoraDataset(
-                sigs[val_idx : val_idx + val_idx],
-                enc_refs[val_idx : val_idx + val_idx],
-                labels[val_idx : val_idx + val_idx],
-            )
-            trn_set = RemoraDataset(
-                sigs[val_idx:], enc_refs[val_idx:], labels[val_idx:]
-            )
+            val_idx = int(len(chunks) * val_prop)
+            val_set = RemoraDataset(chunks[:val_idx])
+            val_trn_set = RemoraDataset(chunks[val_idx : val_idx + val_idx])
+            trn_set = RemoraDataset(chunks[val_idx:])
             dl_val = torch.utils.data.DataLoader(
                 val_set,
                 batch_size=batch_size,
@@ -437,16 +475,7 @@ def load_datasets(
 
         return dl_trn, dl_val, dl_val_trn
     else:
-        (
-            sigs,
-            labels,
-            refs,
-            enc_refs,
-            base_locations,
-            read_ids,
-            positions,
-            focus_offsets,
-        ) = load_chunks(
+        chunks = load_chunks(
             dataset_path,
             num_chunks,
             mod_motif,
@@ -463,7 +492,7 @@ def load_datasets(
             if fixed_seq_len_chunks
             else collate_fixed_len_input
         )
-        test_set = RemoraDataset(sigs, enc_refs, labels)
+        test_set = RemoraDataset(chunks)
         dl_test = torch.utils.data.DataLoader(
             test_set,
             batch_size=batch_size,
