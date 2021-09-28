@@ -2,9 +2,11 @@ import torch
 import pandas as pd
 import os
 from tqdm import tqdm
-from remora import util, models
 
+from remora import util, log
 from remora.data_chunks import load_datasets
+
+LOGGER = log.get_logger()
 
 
 class resultsWriter:
@@ -19,12 +21,12 @@ class resultsWriter:
             results_table.to_csv(f, header=f.tell() == 0)
 
 
-def get_results(output, read_ids, positions, labels, it):
+def get_results(output, read_data, labels, it):
     y_pred = torch.argmax(output, dim=1)
     result = pd.DataFrame(
         {
-            "read_id": read_ids[it : it + len(y_pred)],
-            "read_pos": positions[it : it + len(y_pred)],
+            "read_id": [rd[0] for rd in read_data[it : it + len(y_pred)]],
+            "read_pos": [rd[1] for rd in read_data[it : it + len(y_pred)]],
             "mod_prob": y_pred.detach().numpy().tolist(),
             "label": labels,
         }
@@ -41,7 +43,7 @@ def infer(
     device,
     full,
 ):
-    print("Detecting modified bases.")
+    LOGGER.info("Detecting modified bases.")
 
     torch.cuda.set_device(device)
 
@@ -74,7 +76,7 @@ def infer(
     if state_dict != {}:
         model.load_state_dict(state_dict)
 
-    dl_test, read_ids, positions = load_datasets(
+    dl_test, _, _ = load_datasets(
         dataset_path,
         chunk_context,
         batch_size=batch_size,
@@ -82,8 +84,8 @@ def infer(
         mod_motif=mod_motif,
         base_pred=base_pred,
         num_data_workers=nb_workers,
-        infer=True,
         full=full,
+        val_prop=0.0,
     )
     if torch.cuda.is_available():
         model = model.cuda()
@@ -100,12 +102,12 @@ def infer(
     )
     pbar.n = 0
     pbar.refresh()
-    for batch_i, (inputs, labels) in enumerate(dl_test):
+    for batch_i, (inputs, labels, read_data) in enumerate(dl_test):
         if torch.cuda.is_available():
             inputs = (input.cuda() for input in inputs)
         output = model(*inputs).detach().cpu()
         result_table = get_results(
-            output, read_ids, positions, labels, batch_i * batch_size
+            output, read_data, labels, batch_i * batch_size
         )
         rw.write(result_table)
         pbar.update()

@@ -156,7 +156,7 @@ def train_model(
         model.train()
         pbar.n = 0
         pbar.refresh()
-        for epoch_i, (inputs, labels) in enumerate(dl_trn):
+        for epoch_i, (inputs, labels, _) in enumerate(dl_trn):
             if torch.cuda.is_available():
                 inputs = (ip.cuda() for ip in inputs)
                 labels = labels.cuda()
