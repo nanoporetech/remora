@@ -125,7 +125,7 @@ class ValidationLogger:
             all_labels = []
             all_outputs = []
             all_loss = []
-            for inputs, labels in dl:
+            for inputs, labels, _ in dl:
                 all_labels.append(labels)
                 if torch.cuda.is_available():
                     inputs = (input.cuda() for input in inputs)
