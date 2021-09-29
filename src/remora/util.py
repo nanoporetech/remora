@@ -1,14 +1,23 @@
 import imp
 import os
-from os.path import join, isfile, exists
+from os.path import join, isfile, exists, realpath, expanduser
 
 import numpy as np
 import torch
 from sklearn.metrics import precision_recall_curve
 
-from remora import log
+from remora import log, RemoraError
 
 LOGGER = log.get_logger()
+
+
+def resolve_path(fn_path):
+    """Helper function to resolve relative and linked paths that might
+    give other packages problems.
+    """
+    if fn_path is None:
+        return None
+    return realpath(expanduser(fn_path))
 
 
 def _load_python_model(model_file, **model_kwargs):
@@ -18,42 +27,18 @@ def _load_python_model(model_file, **model_kwargs):
     return network
 
 
-def save_checkpoint(state, out_path):
-    if not exists(out_path):
-        os.makedirs(out_path)
-    filename = join(out_path, f"model_{state['epoch']:06d}.checkpoint")
-    torch.save(state, filename)
-
-
-def continue_from_checkpoint(dir_path, training_var=None, **kwargs):
-    if not exists(dir_path):
-        return
-
-    all_ckps = [
-        f
-        for f in os.listdir(dir_path)
-        if isfile(join(dir_path, f)) and ".checkpoint" in f
-    ]
-    if all_ckps == []:
-        return
-
-    ckp_path = join(dir_path, max(all_ckps))
-
+def continue_from_checkpoint(ckp_path, model_path=None):
+    if not isfile(ckp_path):
+        raise RemoraError(f"Checkpoint path is not a file ({ckp_path})")
     LOGGER.info(f"Loading trained model from {ckp_path}")
+    ckpt = torch.load(ckp_path)
+    if ckpt["state_dict"] is None:
+        raise RemoraError("Model state not saved in checkpoint.")
 
-    ckp = torch.load(ckp_path)
-
-    for key, value in kwargs.items():
-        if key in ckp:
-            try:
-                value.load_state_dict(ckp[key])
-            except AttributeError:
-                continue
-
-    if training_var is not None:
-        for var in training_var:
-            if var in ckp:
-                training_var[var] = ckp[var]
+    model_path = ckpt["model_path"] if model_path is None else model_path
+    model = _load_python_model(model_path, **ckpt["model_params"])
+    model.load_state_dict(ckpt["state_dict"])
+    return ckpt, model
 
 
 class plotter:
@@ -86,6 +71,40 @@ class plotter:
 
         fig1.savefig(os.path.join(self.outdir, "accuracy.png"), format="png")
         fig2.savefig(os.path.join(self.outdir, "loss.png"), format="png")
+
+
+def validate_motif(motif, alphabet="ACGT", collapse_alphabet="ACGT"):
+    mod_base, can_motif, motif_offset = motif
+    try:
+        motif_offset = int(motif_offset)
+    except ValueError:
+        raise RemoraError(f'Motif offset not an integer: "{motif_offset}"')
+    if motif_offset >= len(motif):
+        raise RemoraError("Motif offset is past the end of the motif")
+    if any(b not in alphabet for b in can_motif):
+        raise RemoraError(
+            "Base(s) in motif provided not found in alphabet "
+            f'"{set(can_motif).difference(alphabet)}"'
+        )
+    can_base = can_motif[motif_offset]
+    if mod_base not in alphabet:
+        LOGGER.warning("Modified base provided not found in alphabet")
+        mod_base = None
+    else:
+        mod_can_equiv = collapse_alphabet[alphabet.find(mod_base)]
+        if can_base != mod_can_equiv:
+            raise RemoraError(
+                f"Canonical base within motif ({can_base}) does not match "
+                f"canonical equivalent for modified base ({mod_can_equiv})"
+            )
+    non_can_motif_bases = set(can_motif).difference(collapse_alphabet)
+    if len(non_can_motif_bases) > 0:
+        raise RemoraError(
+            "Non-canonical bases found in motif "
+            f"({','.join(non_can_motif_bases)})"
+        )
+
+    return mod_base, can_motif, motif_offset
 
 
 class ValidationLogger:

@@ -100,9 +100,43 @@ def train_cli_args():
         "--batch-size",
         "10",
         "--epochs",
-        "4",
+        "3",
         "--size",
         "16",
         "--save-freq",
         "2",
     ]
+
+
+@pytest.fixture(scope="session")
+def fw_model_path():
+    return (
+        Path(__file__).absolute().parent.parent / "models" / "ConvLSTM_w_ref.py"
+    )
+
+
+@pytest.fixture(scope="session")
+def fw_model_checkpoint(
+    fw_model_path, tmpdir_factory, mod_chunks, train_cli_args
+):
+    """Run `train_model` on the command line."""
+    print(
+        f"Running command line `remora train_model` with model {fw_model_path}"
+    )
+    out_dir = tmpdir_factory.mktemp("remora_tests") / "train_mod_model"
+    out_ckpt = out_dir / "model_final.checkpoint"
+    print(f"Output file: {out_dir}")
+    check_call(
+        [
+            "remora",
+            "train_model",
+            "--dataset-path",
+            str(mod_chunks),
+            "--output-path",
+            str(out_dir),
+            "--model",
+            str(fw_model_path),
+            *train_cli_args,
+        ],
+    )
+    return out_ckpt

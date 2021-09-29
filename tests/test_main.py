@@ -49,3 +49,56 @@ def test_train_mod(model_path, tmpdir_factory, mod_chunks, train_cli_args):
         ],
     )
     return out_dir
+
+
+@pytest.mark.unit
+def test_mod_infer(tmpdir_factory, mod_tai_map_sig, fw_model_checkpoint):
+    out_dir = tmpdir_factory.mktemp("remora_tests") / "mod_infer"
+    check_call(
+        [
+            "remora",
+            "infer",
+            mod_tai_map_sig,
+            fw_model_checkpoint,
+            "--full",
+            "--batch-size",
+            "100",
+            "--output-path",
+            out_dir,
+        ],
+    )
+
+
+@pytest.mark.unit
+def test_can_infer(tmpdir_factory, can_tai_map_sig, fw_model_checkpoint):
+    out_dir = tmpdir_factory.mktemp("remora_tests") / "can_infer"
+    check_call(
+        [
+            "remora",
+            "infer",
+            can_tai_map_sig,
+            fw_model_checkpoint,
+            "--full",
+            "--batch-size",
+            "100",
+            "--output-path",
+            out_dir,
+        ],
+    )
+
+
+@pytest.mark.unit
+def test_chunk_infer(tmpdir_factory, mod_chunks, fw_model_checkpoint):
+    out_dir = tmpdir_factory.mktemp("remora_tests") / "chunk_infer"
+    check_call(
+        [
+            "remora",
+            "infer",
+            str(mod_chunks),
+            fw_model_checkpoint,
+            "--batch-size",
+            "100",
+            "--output-path",
+            out_dir,
+        ],
+    )

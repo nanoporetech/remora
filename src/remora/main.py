@@ -1,5 +1,6 @@
 import argparse
 import os
+import warnings
 
 from remora import __version__
 
@@ -10,6 +11,9 @@ from remora.parsers import (
     register_infer,
     SubcommandHelpFormatter,
 )
+
+# filter warnings about GPU on environments without a GPU
+warnings.filterwarnings(action="ignore", category=UserWarning, module="torch")
 
 # LOGGER = logging.get_logger()
 
