@@ -16,7 +16,7 @@ from pathlib import Path
 from shutil import rmtree
 
 from remora import constants
-from remora import log
+from remora import log, RemoraError
 
 LOGGER = log.get_logger()
 
@@ -174,7 +174,7 @@ def run_prepare_taiyaki_train_data_mod(args):
 
     from taiyaki.mapped_signal_files import MappedSignalReader, BatchHDF5Writer
 
-    from remora.data_chunks import validate_motif
+    from remora.util import validate_motif
     from remora.prepare_taiyaki_train_data import extract_modbase_dataset
 
     LOGGER.info("Opening mapped signal files")
@@ -186,14 +186,15 @@ def run_prepare_taiyaki_train_data_mod(args):
         batch_size=args.batch_size,
     )
     atexit.register(output_msf.close)
-    mod_base, int_can_motif, motif_offset = validate_motif(
-        input_msf, args.mod_motif
+    alphabet_info = input_msf.get_alphabet_information()
+    mod_base, can_motif, motif_offset = validate_motif(
+        args.mod_motif, alphabet_info.alphabet, alphabet_info.collapse_alphabet
     )
     extract_modbase_dataset(
         input_msf,
         output_msf,
         mod_base,
-        int_can_motif,
+        can_motif,
         motif_offset,
         args.context_bases,
         args.max_chunks_per_read,
@@ -276,7 +277,7 @@ def register_train_model(parser):
     out_grp = subparser.add_argument_group("Output Arguments")
     out_grp.add_argument(
         "--output-path",
-        default="remora_results",
+        default="remora_train_results",
         help="Path to the output files. Default: %(default)s",
     )
     out_grp.add_argument(
@@ -292,7 +293,9 @@ def register_train_model(parser):
     )
 
     mdl_grp = subparser.add_argument_group("Model Arguments")
-    mdl_grp.add_argument("--model", default="lstm", help="Model for training")
+    mdl_grp.add_argument(
+        "--model", required=True, help="Model architecture file (required)"
+    )
     mdl_grp.add_argument(
         "--size",
         type=int,
@@ -364,7 +367,6 @@ def register_train_model(parser):
 
 
 def run_train_model(args):
-    from remora import RemoraError, log
     from remora.train_model import train_model
 
     out_path = Path(args.output_path)
@@ -374,7 +376,7 @@ def run_train_model(args):
         elif out_path.exists():
             out_path.unlink()
     elif out_path.exists():
-        raise RemoraError("Refusing to overwrite existing table.")
+        raise RemoraError("Refusing to overwrite existing training directory.")
     out_path.mkdir(parents=True, exist_ok=True)
     log.init_logger(os.path.join(out_path, "log.txt"))
     # TODO preprocess some step to reduce args to train_model
@@ -417,14 +419,22 @@ def register_infer(parser):
         formatter_class=SubcommandHelpFormatter,
     )
     subparser.add_argument(
-        "--dataset-path",
-        default="toy_training_data.hdf5",
-        help="Dataset to detect modified bases.",
+        "dataset_path",
+        help="Taiyaki mapped signal file on which to perform inference.",
     )
     subparser.add_argument(
-        "--checkpoint-path",
-        default="./models",
-        help="Path to a pretrained modified base model",
+        "checkpoint_path",
+        help="Path to a pretrained model checkpoint.",
+    )
+    subparser.add_argument(
+        "--model_path",
+        help="Path to a model architecture. Default: Use path from checkpoint.",
+    )
+    subparser.add_argument(
+        "--focus-offset",
+        default=50,
+        type=int,
+        help="Offset into stored chunks to be inferred. Default: %(default)d",
     )
     subparser.add_argument(
         "--full",
@@ -434,27 +444,26 @@ def register_infer(parser):
     )
     subparser.add_argument(
         "--output-path",
-        default="remora_results",
-        help="Path to the output files",
+        default="remora_infer_results",
+        help="Path to the output files. Default: %(default)s",
     )
     subparser.add_argument(
         "--device",
-        default=0,
         type=int,
-        help="ID of GPU that is used for inference.",
+        help="ID of GPU that is used for inference. Default: CPU",
     )
     subparser.add_argument(
         "--batch-size",
         default=200,
         type=int,
-        help="Number of samples per batch.",
+        help="Number of input units per batch. Default: %(default)d",
     )
     subparser.add_argument(
         "--workers",
         default=0,
         type=int,
         dest="nb_workers",
-        help="Number of workers for dataloader.",
+        help="Number of workers for dataloader. Default: %(default)d",
     )
     subparser.add_argument(
         "--overwrite",
@@ -466,7 +475,6 @@ def register_infer(parser):
 
 
 def run_infer(args):
-    from remora import RemoraError, log
     from remora.inference import infer
 
     out_path = Path(args.output_path)
@@ -476,7 +484,7 @@ def run_infer(args):
         elif out_path.exists():
             out_path.unlink()
     elif out_path.exists():
-        raise RemoraError("Refusing to overwrite existing table.")
+        raise RemoraError("Refusing to overwrite existing inference results.")
     out_path.mkdir(parents=True, exist_ok=True)
     log.init_logger(os.path.join(out_path, "log.txt"))
 
@@ -484,8 +492,10 @@ def run_infer(args):
         out_path,
         args.dataset_path,
         args.checkpoint_path,
+        args.model_path,
         args.batch_size,
         args.nb_workers,
         args.device,
+        args.focus_offset,
         args.full,
     )

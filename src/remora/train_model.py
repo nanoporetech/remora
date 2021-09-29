@@ -1,19 +1,16 @@
 import atexit
+from collections import Counter
 import os
 from shutil import copyfile
-import warnings
 
 import numpy as np
 import torch
 from tqdm import tqdm
 
-from remora import util, log
-from remora.data_chunks import load_datasets
+from remora import util, log, RemoraError
+from remora.data_chunks import load_datasets, load_taiyaki_dataset
 
 LOGGER = log.get_logger()
-
-# filter warnings about GPU on environments without a GPU
-warnings.filterwarnings(action="ignore", category=UserWarning, module="torch")
 
 
 def train_model(
@@ -56,14 +53,15 @@ def train_model(
     atexit.register(batch_fp.close)
 
     LOGGER.info("Loading model")
-    copyfile(model_path, os.path.join(out_path, "model.py"))
+    copy_model_path = util.resolve_path(os.path.join(out_path, "model.py"))
+    copyfile(model_path, copy_model_path)
     num_out = 4 if base_pred else 2
-    model = util._load_python_model(
-        model_path,
-        size=size,
-        kmer_len=sum(kmer_context_bases) + 1,
-        num_out=num_out,
-    )
+    model_params = {
+        "size": size,
+        "kmer_len": sum(kmer_context_bases) + 1,
+        "num_out": num_out,
+    }
+    model = util._load_python_model(copy_model_path, **model_params)
     LOGGER.info(f"Model structure:\n{model}")
 
     LOGGER.info("Preparing training settings")
@@ -91,33 +89,39 @@ def train_model(
             lr=float(lr),
             weight_decay=weight_decay,
         )
-    training_var = {
-        "epoch": 0,
-        "model_path": model_path,
-        "state_dict": {},
-    }
-    start_epoch = training_var["epoch"]
-    state_dict = training_var["state_dict"]
-    if state_dict != {}:
-        model.load_state_dict(state_dict)
     scheduler = torch.optim.lr_scheduler.StepLR(
         opt, step_size=lr_decay_step, gamma=lr_decay_gamma
     )
 
     LOGGER.info("Loading training dataset")
-    dl_trn, dl_val, dl_val_trn = load_datasets(
-        dataset_path,
+    reads, alphabet, collapse_alphabet = load_taiyaki_dataset(dataset_path)
+    mod_motif = util.validate_motif(mod_motif, alphabet, collapse_alphabet)
+    if base_pred and alphabet != "ACGT":
+        raise ValueError(
+            "Base prediction is not compatible with modified base "
+            "training data. It requires a canonical alphabet."
+        )
+    dl_trn, dl_val, dl_val_trn, chunks = load_datasets(
+        reads,
         chunk_context,
-        focus_offset,
-        batch_size,
-        num_chunks,
+        batch_size=batch_size,
+        num_chunks=num_chunks,
         fixed_seq_len_chunks=model._variable_width_possible,
+        focus_offset=focus_offset,
         mod_motif=mod_motif,
+        alphabet=alphabet,
         base_pred=base_pred,
         val_prop=val_prop,
         num_data_workers=num_data_workers,
         kmer_context_bases=kmer_context_bases,
     )
+    label_counts = Counter(c.label for c in chunks)
+    LOGGER.info(f"Label distribution: {label_counts}")
+    if len(label_counts) <= 1:
+        raise RemoraError(
+            "One or fewer output labels found. Ensure --focus-offset and "
+            "--mod are specified correctly"
+        )
 
     LOGGER.info("Running initial validation")
     # assess accuracy before first iteration
@@ -135,7 +139,6 @@ def train_model(
         position=0,
         leave=True,
     )
-    ebar.n = start_epoch
     pbar = tqdm(
         total=len(dl_trn),
         desc="Epoch Progress",
@@ -152,7 +155,7 @@ def train_model(
     )
     atexit.register(pbar.close)
     atexit.register(ebar.close)
-    for epoch in range(start_epoch, epochs):
+    for epoch in range(epochs):
         model.train()
         pbar.n = 0
         pbar.refresh()
@@ -182,19 +185,19 @@ def train_model(
         scheduler.step()
 
         if int(epoch + 1) % save_freq == 0:
-            util.save_checkpoint(
+            torch.save(
                 {
                     "epoch": int(epoch + 1),
-                    "model_path": model_path,
+                    "model_path": copy_model_path,
                     "state_dict": model.state_dict(),
                     "opt": opt.state_dict(),
-                    "focus_offset": focus_offset,
                     "chunk_context": chunk_context,
                     "fixed_seq_len_chunks": model._variable_width_possible,
                     "mod_motif": mod_motif,
                     "base_pred": base_pred,
+                    "model_params": model_params,
                 },
-                out_path,
+                os.path.join(out_path, f"model_{epoch + 1:06d}.checkpoint"),
             )
         ebar.set_postfix(
             acc_val=f"{val_acc:.4f}",
@@ -206,19 +209,19 @@ def train_model(
     ebar.close()
     pbar.close()
     LOGGER.info("Saving final model checkpoint")
-    util.save_checkpoint(
+    torch.save(
         {
             "epoch": int(epoch + 1),
-            "model_path": model_path,
+            "model_path": copy_model_path,
             "state_dict": model.state_dict(),
             "opt": opt.state_dict(),
-            "focus_offset": focus_offset,
             "chunk_context": chunk_context,
             "fixed_seq_len_chunks": model._variable_width_possible,
             "mod_motif": mod_motif,
             "base_pred": base_pred,
+            "model_params": model_params,
         },
-        out_path,
+        os.path.join(out_path, "model_final.checkpoint"),
     )
     LOGGER.info("Training complete")
 

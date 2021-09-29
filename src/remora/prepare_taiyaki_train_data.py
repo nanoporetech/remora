@@ -2,9 +2,26 @@ import numpy as np
 from tqdm import tqdm
 
 from remora import log
-from remora.data_chunks import get_motif_pos
 
 LOGGER = log.get_logger()
+
+
+def get_motif_pos(ref, motif, motif_offset=0):
+    return (
+        np.where(
+            np.all(
+                np.stack(
+                    [
+                        motif[offset]
+                        == ref[offset : ref.size - motif.size + offset + 1]
+                        for offset in range(motif.size)
+                    ]
+                ),
+                axis=0,
+            )
+        )[0]
+        + motif_offset
+    )
 
 
 def extract_canonical_dataset(
@@ -53,13 +70,16 @@ def extract_modbase_dataset(
     input_msf,
     output_msf,
     mod_base,
-    int_can_motif,
+    can_motif,
     motif_offset,
     context_bases,
     max_chunks_per_read,
 ):
     alphabet_info = input_msf.get_alphabet_information()
 
+    int_can_motif = np.array(
+        [alphabet_info.alphabet.find(b) for b in can_motif]
+    )
     int_mod_base = alphabet_info.alphabet.find(mod_base)
     int_mod_motif = np.concatenate(
         [
@@ -79,7 +99,7 @@ def extract_modbase_dataset(
             else int_can_motif
         )
         # select a random hit to the motif
-        motif_hits = get_motif_pos(read.Reference, int_motif)
+        motif_hits = get_motif_pos(read.Reference, int_motif, motif_offset)
         motif_hits = motif_hits[
             np.logical_and(
                 motif_hits > context_bases,
@@ -90,16 +110,15 @@ def extract_modbase_dataset(
             continue
         num_reads += 1
         read_dict = read.get_read_dictionary()
-        for motif_loc in np.random.choice(
+        for focus_pos in np.random.choice(
             motif_hits,
             size=min(max_chunks_per_read, motif_hits.size),
             replace=False,
         ):
             chunk_dict = read_dict.copy()
-            center_loc = motif_loc + motif_offset
             # trim signal and adjust Ref_to_signal mapping
-            ref_st = center_loc - context_bases
-            ref_en = center_loc + context_bases + 1
+            ref_st = focus_pos - context_bases
+            ref_en = focus_pos + context_bases + 1
             sig_st = read.Ref_to_signal[ref_st]
             sig_en = read.Ref_to_signal[ref_en]
             # remove chunks with more signal than bases
@@ -107,13 +126,13 @@ def extract_modbase_dataset(
             # on-the-fly-chunk extraction)
             if sig_en - sig_st < ref_en - ref_st:
                 continue
-            chunk_dict["read_id"] = f"{read.read_id}:::pos{center_loc}"
+            chunk_dict["read_id"] = f"{read.read_id}:::pos{focus_pos}"
             chunk_dict["Dacs"] = read.Dacs[sig_st:sig_en]
             chunk_dict["Ref_to_signal"] = (
                 read.Ref_to_signal[ref_st:ref_en] - sig_st
             )
             chunk_dict["Reference"] = read.Reference[
-                center_loc - context_bases : center_loc + context_bases + 1
+                focus_pos - context_bases : focus_pos + context_bases + 1
             ]
             num_chunks += 1
             output_msf.write_read(chunk_dict)
