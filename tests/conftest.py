@@ -51,7 +51,6 @@ def can_chunks(tmpdir_factory, can_tai_map_sig):
         [
             "remora",
             "prepare_taiyaki_train_data",
-            "canonical",
             str(can_tai_map_sig),
             "--output-mapped-signal-file",
             str(output),
@@ -70,12 +69,10 @@ def mod_chunks(tmpdir_factory, mod_tai_map_sig):
         [
             "remora",
             "prepare_taiyaki_train_data",
-            "modbase",
             str(mod_tai_map_sig),
             "--output-mapped-signal-file",
             str(output),
-            "--mod-motif",
-            "m",
+            "--motif",
             "CG",
             "0",
         ],
@@ -93,10 +90,6 @@ def train_cli_args():
     return [
         "--val-prop",
         "0.1",
-        "--mod-motif",
-        "m",
-        "CG",
-        "0",
         "--batch-size",
         "10",
         "--epochs",
@@ -116,7 +109,7 @@ def fw_model_path():
 
 
 @pytest.fixture(scope="session")
-def fw_model_checkpoint(
+def fw_mod_model_checkpoint(
     fw_model_path, tmpdir_factory, mod_chunks, train_cli_args
 ):
     """Run `train_model` on the command line."""
@@ -136,6 +129,39 @@ def fw_model_checkpoint(
             str(out_dir),
             "--model",
             str(fw_model_path),
+            "--mod-bases",
+            "m",
+            "--motif",
+            "CG",
+            "0",
+            *train_cli_args,
+        ],
+    )
+    return out_ckpt
+
+
+@pytest.fixture(scope="session")
+def fw_base_pred_model_checkpoint(
+    fw_model_path, tmpdir_factory, can_chunks, train_cli_args
+):
+    """Run `train_model` on the command line with --base-pred."""
+    print(
+        f"Running command line `remora train_model` with model {fw_model_path}"
+    )
+    out_dir = tmpdir_factory.mktemp("remora_tests") / "train_mod_model"
+    out_ckpt = out_dir / "model_final.checkpoint"
+    print(f"Output file: {out_dir}")
+    check_call(
+        [
+            "remora",
+            "train_model",
+            "--dataset-path",
+            str(can_chunks),
+            "--output-path",
+            str(out_dir),
+            "--model",
+            str(fw_model_path),
+            "--base-pred",
             *train_cli_args,
         ],
     )

@@ -1,6 +1,7 @@
 import imp
 import os
-from os.path import join, isfile, exists, realpath, expanduser
+from os.path import isfile, realpath, expanduser
+import re
 
 import numpy as np
 import torch
@@ -10,6 +11,24 @@ from remora import log, RemoraError
 
 LOGGER = log.get_logger()
 
+SINGLE_LETTER_CODE = {
+    "A": "A",
+    "C": "C",
+    "G": "G",
+    "T": "T",
+    "B": "CGT",
+    "D": "AGT",
+    "H": "ACT",
+    "K": "GT",
+    "M": "AC",
+    "N": "ACGT",
+    "R": "AG",
+    "S": "CG",
+    "V": "ACG",
+    "W": "AT",
+    "Y": "CT",
+}
+
 
 def resolve_path(fn_path):
     """Helper function to resolve relative and linked paths that might
@@ -18,6 +37,26 @@ def resolve_path(fn_path):
     if fn_path is None:
         return None
     return realpath(expanduser(fn_path))
+
+
+def to_str(value):
+    """Try to convert a bytes object to a string. If it is already a string
+    catch this error and return the input string. This can be used for read ids
+    stored in HDF5 files as they are sometimes returned as bytes and sometimes
+    strings.
+    """
+    try:
+        return value.decode()
+    except AttributeError:
+        return value
+
+
+def get_mod_bases(alphabet, collapse_alphabet):
+    return [
+        mod_base
+        for can_base, mod_base in zip(alphabet, collapse_alphabet)
+        if can_base != mod_base
+    ]
 
 
 def _load_python_model(model_file, **model_kwargs):
@@ -39,6 +78,55 @@ def continue_from_checkpoint(ckp_path, model_path=None):
     model = _load_python_model(model_path, **ckpt["model_params"])
     model.load_state_dict(ckpt["state_dict"])
     return ckpt, model
+
+
+class Motif:
+    def __init__(self, raw_motif, focus_pos=0):
+        self.raw_motif = raw_motif
+        try:
+            self.focus_pos = int(focus_pos)
+        except ValueError:
+            raise RemoraError(
+                f'Motif focus position not an integer: "{focus_pos}"'
+            )
+        if self.focus_pos >= len(self.raw_motif):
+            raise RemoraError(
+                "Motif focus position is past the end of the motif"
+            )
+
+        ambig_pat_str = "".join(
+            "[{}]".format(SINGLE_LETTER_CODE[letter]) for letter in raw_motif
+        )
+        # add lookahead group to serach for overlapping motif hits
+        self.pattern = re.compile("(?=({}))".format(ambig_pat_str))
+
+    def to_tuple(self):
+        return self.raw_motif, self.focus_pos
+
+    @property
+    def focus_base(self):
+        return self.raw_motif[self.focus_pos]
+
+    @property
+    def any_context(self):
+        return self.raw_motif == "N"
+
+    @property
+    def num_bases_after_focus(self):
+        return len(self.raw_motif) - self.focus_pos - 1
+
+
+def validate_mod_bases(mod_bases, motif, alphabet, collapse_alphabet):
+    for mod_base in mod_bases:
+        if mod_base not in alphabet:
+            raise RemoraError("Modified base provided not found in alphabet")
+        mod_can_equiv = collapse_alphabet[alphabet.find(mod_base)]
+        if motif.focus_base != mod_can_equiv:
+            raise RemoraError(
+                f"Canonical base within motif ({motif.focus_base}) does not "
+                "match canonical equivalent for modified base "
+                f"({mod_can_equiv})"
+            )
 
 
 class plotter:
@@ -71,40 +159,6 @@ class plotter:
 
         fig1.savefig(os.path.join(self.outdir, "accuracy.png"), format="png")
         fig2.savefig(os.path.join(self.outdir, "loss.png"), format="png")
-
-
-def validate_motif(motif, alphabet="ACGT", collapse_alphabet="ACGT"):
-    mod_base, can_motif, motif_offset = motif
-    try:
-        motif_offset = int(motif_offset)
-    except ValueError:
-        raise RemoraError(f'Motif offset not an integer: "{motif_offset}"')
-    if motif_offset >= len(motif):
-        raise RemoraError("Motif offset is past the end of the motif")
-    if any(b not in alphabet for b in can_motif):
-        raise RemoraError(
-            "Base(s) in motif provided not found in alphabet "
-            f'"{set(can_motif).difference(alphabet)}"'
-        )
-    can_base = can_motif[motif_offset]
-    if mod_base not in alphabet:
-        LOGGER.warning("Modified base provided not found in alphabet")
-        mod_base = None
-    else:
-        mod_can_equiv = collapse_alphabet[alphabet.find(mod_base)]
-        if can_base != mod_can_equiv:
-            raise RemoraError(
-                f"Canonical base within motif ({can_base}) does not match "
-                f"canonical equivalent for modified base ({mod_can_equiv})"
-            )
-    non_can_motif_bases = set(can_motif).difference(collapse_alphabet)
-    if len(non_can_motif_bases) > 0:
-        raise RemoraError(
-            "Non-canonical bases found in motif "
-            f"({','.join(non_can_motif_bases)})"
-        )
-
-    return mod_base, can_motif, motif_offset
 
 
 class ValidationLogger:

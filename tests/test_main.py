@@ -29,6 +29,11 @@ def test_prep_mod(mod_chunks):
     print(mod_chunks)
 
 
+##################
+# Mod Prediction #
+##################
+
+
 @pytest.mark.parametrize("model_path", MODEL_PATHS)
 def test_train_mod(model_path, tmpdir_factory, mod_chunks, train_cli_args):
     """Run `train_model` on the command line."""
@@ -45,6 +50,11 @@ def test_train_mod(model_path, tmpdir_factory, mod_chunks, train_cli_args):
             str(out_dir),
             "--model",
             model_path,
+            "--mod-bases",
+            "m",
+            "--motif",
+            "CG",
+            "0",
             *train_cli_args,
         ],
     )
@@ -52,14 +62,14 @@ def test_train_mod(model_path, tmpdir_factory, mod_chunks, train_cli_args):
 
 
 @pytest.mark.unit
-def test_mod_infer(tmpdir_factory, mod_tai_map_sig, fw_model_checkpoint):
+def test_mod_infer(tmpdir_factory, mod_tai_map_sig, fw_mod_model_checkpoint):
     out_dir = tmpdir_factory.mktemp("remora_tests") / "mod_infer"
     check_call(
         [
             "remora",
             "infer",
             mod_tai_map_sig,
-            fw_model_checkpoint,
+            fw_mod_model_checkpoint,
             "--full",
             "--batch-size",
             "100",
@@ -70,14 +80,14 @@ def test_mod_infer(tmpdir_factory, mod_tai_map_sig, fw_model_checkpoint):
 
 
 @pytest.mark.unit
-def test_can_infer(tmpdir_factory, can_tai_map_sig, fw_model_checkpoint):
+def test_can_infer(tmpdir_factory, can_tai_map_sig, fw_mod_model_checkpoint):
     out_dir = tmpdir_factory.mktemp("remora_tests") / "can_infer"
     check_call(
         [
             "remora",
             "infer",
             can_tai_map_sig,
-            fw_model_checkpoint,
+            fw_mod_model_checkpoint,
             "--full",
             "--batch-size",
             "100",
@@ -88,14 +98,83 @@ def test_can_infer(tmpdir_factory, can_tai_map_sig, fw_model_checkpoint):
 
 
 @pytest.mark.unit
-def test_chunk_infer(tmpdir_factory, mod_chunks, fw_model_checkpoint):
+def test_chunk_infer(tmpdir_factory, mod_chunks, fw_mod_model_checkpoint):
     out_dir = tmpdir_factory.mktemp("remora_tests") / "chunk_infer"
     check_call(
         [
             "remora",
             "infer",
             str(mod_chunks),
-            fw_model_checkpoint,
+            fw_mod_model_checkpoint,
+            "--batch-size",
+            "100",
+            "--output-path",
+            out_dir,
+        ],
+    )
+
+
+###################
+# Base Prediction #
+###################
+
+
+@pytest.mark.parametrize("model_path", MODEL_PATHS)
+def test_train_base_pred(
+    model_path, tmpdir_factory, can_chunks, train_cli_args
+):
+    """Run `train_model` on the command line with base prediction option."""
+    print(f"Running command line `remora train_model` with model {model_path}")
+    out_dir = tmpdir_factory.mktemp("remora_tests") / "train_base_pred_model"
+    print(f"Output file: {out_dir}")
+    check_call(
+        [
+            "remora",
+            "train_model",
+            "--dataset-path",
+            str(can_chunks),
+            "--output-path",
+            str(out_dir),
+            "--model",
+            model_path,
+            "--base-pred",
+            *train_cli_args,
+        ],
+    )
+    return out_dir
+
+
+@pytest.mark.unit
+def test_base_pred_infer(
+    tmpdir_factory, can_tai_map_sig, fw_base_pred_model_checkpoint
+):
+    out_dir = tmpdir_factory.mktemp("remora_tests") / "can_infer_base_pred"
+    check_call(
+        [
+            "remora",
+            "infer",
+            can_tai_map_sig,
+            fw_base_pred_model_checkpoint,
+            "--full",
+            "--batch-size",
+            "100",
+            "--output-path",
+            out_dir,
+        ],
+    )
+
+
+@pytest.mark.unit
+def test_base_pred_chunk_infer(
+    tmpdir_factory, can_chunks, fw_base_pred_model_checkpoint
+):
+    out_dir = tmpdir_factory.mktemp("remora_tests") / "chunk_infer_base_pred"
+    check_call(
+        [
+            "remora",
+            "infer",
+            str(can_chunks),
+            str(fw_base_pred_model_checkpoint),
             "--batch-size",
             "100",
             "--output-path",
