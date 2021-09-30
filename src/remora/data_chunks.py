@@ -1,13 +1,12 @@
 from collections import defaultdict
 from dataclasses import dataclass
-import re
 
 import numpy as np
 from taiyaki.mapped_signal_files import MappedSignalReader
 import torch
 import torch.nn.utils.rnn as rnn
 
-from remora import constants, log
+from remora import constants, log, RemoraError, util
 
 LOGGER = log.get_logger()
 
@@ -20,6 +19,7 @@ BASE_ENCODINGS = {
     "T": np.array([0, 0, 0, 1]),
     "N": np.array([0, 0, 0, 0]),
 }
+ENCODING_LEN = BASE_ENCODINGS["A"].size
 
 
 @dataclass
@@ -49,13 +49,7 @@ class RemoraRead:
         seq = "".join(collapse_alphabet[b] for b in read.Reference)
         seq_to_sig_map = read.Ref_to_signal - read.Ref_to_signal[0]
         int_seq = read.Reference
-        read_id = read.read_id
-        try:
-            read_id.decode()
-        except AttributeError:
-            # attribute error indicates read_id is already a string
-            pass
-        return cls(sig, seq, seq_to_sig_map, read_id, int_seq)
+        return cls(sig, seq, seq_to_sig_map, util.to_str(read.read_id), int_seq)
 
 
 def load_taiyaki_dataset(dataset_path):
@@ -84,6 +78,8 @@ class Chunk:
         sig_focus_pos (int): Index within signal array on which the chunk is
             focuesed for prediction. May be used in model architecture in the
             future.
+        seq_focus_pos (int): Index within sequence on which the chunk is
+            focuesed for prediction.
         label (int): Integer label for training/validation.
         read_id (str): Read ID
         read_seq_pos (int): Position within read for validation purposes
@@ -97,15 +93,37 @@ class Chunk:
     before_context_seq: str
     after_context_seq: str
     sig_focus_pos: int
+    seq_focus_pos: int
     label: int
     read_id: str
     read_seq_pos: int
     _seq_nn_input: np.ndarray = None
 
-    def __post_init__(self):
-        # compute seq nn input to raise any potential errors at chunk
-        # generation time. instead of access time
-        self.seq_nn_input
+    def mask_focus_base(self):
+        if self.sequence[self.seq_focus_pos] == "N":
+            return
+        self.sequence = (
+            f"{self.sequence[:self.seq_focus_pos]}"
+            f"N{self.sequence[self.seq_focus_pos + 1:]}"
+        )
+        self._seq_nn_input = None
+
+    def check(self):
+        if self.signal.size <= 0:
+            LOGGER.debug(
+                f"FAILED_CHUNK: no_sig {self.read_id} {self.read_seq_pos}"
+            )
+            raise RemoraError("No signal for chunk")
+        if self.seq_nn_input.shape[1] != self.signal.size:
+            LOGGER.debug(
+                f"FAILED_CHUNK: seq_nn_len {self.read_id} {self.read_seq_pos}"
+            )
+            raise RemoraError("Invalid encoded sig length")
+        if len(self.sequence) != self.seq_to_sig_map.size - 1:
+            LOGGER.debug(
+                f"FAILED_CHUNK: map_len {self.read_id} {self.read_seq_pos}"
+            )
+            raise RemoraError("Invalid sig to seq map length")
 
     @classmethod
     def extract_chunk_from_read(
@@ -154,6 +172,12 @@ class Chunk:
         kmer_before_bases, kmer_after_bases = kmer_context_bases
         before_context_seq = read.seq[seq_start - kmer_before_bases : seq_start]
         after_context_seq = read.seq[seq_end : seq_end + kmer_after_bases]
+        if (
+            len(before_context_seq) != kmer_before_bases
+            or len(after_context_seq) != kmer_after_bases
+        ):
+            LOGGER.debug(f"FAILED_CHUNK: context_seq {read_id} {read_seq_pos}")
+            raise RemoraError("Invalid context seq extracted")
 
         return cls(
             read.sig[sig_start:sig_end],
@@ -162,10 +186,19 @@ class Chunk:
             before_context_seq,
             after_context_seq,
             sig_focus_pos - sig_start,
+            read_seq_pos - seq_start,
             label,
             read_id,
             read_seq_pos,
         )
+
+    @property
+    def kmer_len(self):
+        return len(self.before_context_seq) + len(self.after_context_seq) + 1
+
+    @property
+    def seq_w_context(self):
+        return self.before_context_seq + self.sequence + self.after_context_seq
 
     @property
     def seq_nn_input(self):
@@ -174,36 +207,27 @@ class Chunk:
         first dimension represents the number of input features.
         """
         if self._seq_nn_input is None:
-            seq_w_context = (
-                self.before_context_seq + self.sequence + self.after_context_seq
-            )
-            kmer_len = len(seq_w_context) - len(self.sequence) + 1
             enc_seq_w_context = np.array(
-                [BASE_ENCODINGS[b] for b in seq_w_context]
+                [BASE_ENCODINGS[b] for b in self.seq_w_context]
             )
             enc_kmers = np.stack(
                 [
                     enc_seq_w_context[offset : len(self.sequence) + offset]
-                    for offset in range(kmer_len)
+                    for offset in range(self.kmer_len)
                 ],
                 axis=1,
-            ).reshape(-1, kmer_len * 4)
+            ).reshape(-1, self.kmer_len * ENCODING_LEN)
             self._seq_nn_input = np.repeat(
                 enc_kmers, np.diff(self.seq_to_sig_map), axis=0
             ).T
         return self._seq_nn_input
 
-    @property
-    def accepted(self):
-        # TODO add other filters for failed chunks
-        return self.signal.shape[0] > 0
-
 
 def load_chunks(
     reads,
     num_chunks,
-    mod_motif,
-    alphabet,
+    motif,
+    label_conv,
     chunk_context,
     kmer_context_bases,
     focus_offset=None,
@@ -213,28 +237,26 @@ def load_chunks(
 ):
     """
     Args:
-        reads: Iteratable of RemoraRead objects from which to load chunks
-        num_chunks: Total maximum number of chunks to return
-        mod_motif: 3-tuple representing modified base motif. (mod_base,
-            can_motif, mod_offset)
-        alphabet (str): Alphabet for training data
-        chunk_context: 2-tuple containing context signal or bases for each
-            chunk
-        kmer_context_bases: Number of bases before and after to included in
-            encoded reference
-        focus_offset: index of (mod)base in reference
-        fixed_seq_len_chunks: return chunks with fixed sequence length and
-            variable signal length. Default returns chunks with fixed signal
+        reads (iterable): Iteratable of RemoraRead objects from which to load
+            chunks
+        num_chunks (int): Total maximum number of chunks to return
+        motif (util.Motif): Remora motif object
+        label_conv (np.array): Convert reference labels to Remora labels to
+            predict. -1 indicates invalid Remora label
+        chunk_context (tuple): 2-tuple containing context signal or bases for
+            each chunk
+        kmer_context_bases (tuple): Number of bases before and after to included
+            in encoded reference
+        focus_offset (int): Index of focus position in each reference chunk
+        fixed_seq_len_chunks (bool): return chunks with fixed sequence length
+            and variable signal length. Default returns chunks with fixed signal
             length and variable length sequences.
-        base_pred: Is this a base prediction model? Default: mods
-        full: Is the input data a full read Taiyaki mapped signal file?
+        base_pred (bool): Is this a base prediction model? Default: mods
+        full (bool): Is the input data a full read Taiyaki mapped signal file?
             Default: chunks
 
     Returns:
-        sigs: list of signal chunks
-        labels: list of mod/unmod labels for the corresponding chunks
-        refs: list of reference sequences for each chunk
-        base_locs: location for each base in the corersponing chunk
+        List of Chunk objects
     """
 
     if num_chunks is not None and not isinstance(num_chunks, int):
@@ -246,21 +268,26 @@ def load_chunks(
     if focus_offset is None and not full:
         raise ValueError("Either --focus-offset or --full need to be set.")
 
-    # TODO allow multiple modified bases
-    mod, can_motif, motif_offset = mod_motif
-    mod_idx = None if mod is None else alphabet.find(mod)
-
     chunks = []
 
     reject_reasons = defaultdict(int)
     for read in reads:
         if full:
             motif_pos = [
-                m.start() + motif_offset
-                for m in re.finditer(can_motif, read.seq)
+                m.start() + motif.focus_pos
+                for m in motif.pattern.finditer(read.seq)
             ]
         else:
             motif_pos = [focus_offset]
+            read_motif = read.seq[
+                focus_offset
+                - motif.focus_pos : focus_offset
+                + motif.num_bases_after_focus
+                + 1
+            ]
+            if not motif.pattern.match(read_motif):
+                reject_reasons["Focus position motif mismatch"] += 1
+                continue
         sig_start = sig_end = seq_start = seq_end = None
         for m_pos in motif_pos:
             # compute position at center of central base
@@ -271,10 +298,10 @@ def load_chunks(
                 seq_start = m_pos - chunk_context[0]
                 seq_end = m_pos + chunk_context[1] + 1
                 if seq_start <= 0:
-                    reject_reasons["invalid_base_start"] += 1
+                    reject_reasons["Invalid base start"] += 1
                     continue
                 if seq_end >= len(read.seq_to_sig_map):
-                    reject_reasons["invalid_base_end"] += 1
+                    reject_reasons["Invalid base end"] += 1
                     continue
                 sig_start = read.seq_to_sig_map[seq_start]
                 sig_end = read.seq_to_sig_map[seq_end]
@@ -282,49 +309,46 @@ def load_chunks(
                 sig_start = sig_focus_pos - chunk_context[0]
                 sig_end = sig_focus_pos + chunk_context[1]
                 if sig_start < 0:
-                    reject_reasons["invalid_signal_start"] += 1
+                    reject_reasons["Invalid signal start"] += 1
                     continue
                 if sig_end > read.seq_to_sig_map[-1]:
-                    reject_reasons["invalid_signal_end"] += 1
+                    reject_reasons["Invalid signal end"] += 1
                     continue
                 if sig_start >= sig_end:
-                    reject_reasons["empty signal"] += 1
+                    reject_reasons["Empty signal"] += 1
                     continue
 
-            if base_pred:
-                label = -1 if read.int_seq is None else read.int_seq[m_pos]
-            else:
-                if mod_idx is None or read.int_seq is None:
-                    label = -1
-                else:
-                    label = int(read.int_seq[m_pos] == mod_idx)
+            label = (
+                -1 if read.int_seq is None else label_conv[read.int_seq[m_pos]]
+            )
             try:
-                chunks.append(
-                    Chunk.extract_chunk_from_read(
-                        read,
-                        kmer_context_bases,
-                        sig_start,
-                        sig_end,
-                        label=label,
-                        seq_start=seq_start,
-                        seq_end=seq_end,
-                        sig_focus_pos=sig_focus_pos,
-                        read_id=read.read_id,
-                        read_seq_pos=m_pos,
-                    )
+                chunk = Chunk.extract_chunk_from_read(
+                    read,
+                    kmer_context_bases,
+                    sig_start,
+                    sig_end,
+                    label=label,
+                    seq_start=seq_start,
+                    seq_end=seq_end,
+                    sig_focus_pos=sig_focus_pos,
+                    read_id=read.read_id,
+                    read_seq_pos=m_pos,
                 )
+                if base_pred:
+                    chunk.mask_focus_base()
+                # check that chunk is valid
+                chunk.check()
+                chunks.append(chunk)
                 reject_reasons["success"] += 1
-                if (
-                    num_chunks is not None
-                    and reject_reasons["success"] >= num_chunks
-                ):
+                if num_chunks is not None and len(chunks) >= num_chunks:
                     break
-            except ValueError:
+            except Exception as e:
                 LOGGER.debug(
                     f"FAILED_READ: {read.read_id} sig: {sig_start}-{sig_end} "
-                    f"base: {seq_start}-{seq_end} "
+                    f"base: {seq_start}-{seq_end}. ERROR: {e}"
                 )
-                reject_reasons["broken ref encoding"] += 1
+                # TODO add full traceback to better track down failed reads
+                reject_reasons[str(e)] += 1
                 continue
 
     rej_summ = "\n".join(
@@ -334,6 +358,8 @@ def load_chunks(
         )
     )
     LOGGER.info(f"Chunk selection summary:\n{rej_summ}\n")
+    if len(chunks) == 0:
+        raise RemoraError("No valid chunks extracted")
 
     return chunks
 
@@ -347,33 +373,23 @@ def collate_var_len_input(batch_chunks):
     """
     # get sequence lengths
     lens = torch.tensor(
-        [c.signal.shape[0] for c in batch_chunks if c.accepted], dtype=np.long
+        [c.signal.shape[0] for c in batch_chunks], dtype=np.long
     )
 
     # padding
     sigs = torch.nn.utils.rnn.pad_sequence(
-        [
-            torch.Tensor(c.signal).unsqueeze(1)
-            for c in batch_chunks
-            if c.accepted
-        ]
+        [torch.Tensor(c.signal).unsqueeze(1) for c in batch_chunks]
     )
     sigs = rnn.pack_padded_sequence(sigs, lens, enforce_sorted=False)
     seqs = torch.nn.utils.rnn.pad_sequence(
-        [
-            torch.Tensor(c.seq_nn_input).permute(1, 0)
-            for c in batch_chunks
-            if c.accepted
-        ]
+        [torch.Tensor(c.seq_nn_input).permute(1, 0) for c in batch_chunks]
     )
     seqs = rnn.pack_padded_sequence(seqs, lens, enforce_sorted=False)
     # get labels
     labels = torch.tensor(
-        np.array([c.label for c in batch_chunks if c.accepted], dtype=np.long)
+        np.array([c.label for c in batch_chunks], dtype=np.long)
     )
-    read_data = [
-        (c.read_id, c.read_seq_pos) for c in batch_chunks if c.accepted
-    ]
+    read_data = [(c.read_id, c.read_seq_pos) for c in batch_chunks]
 
     return (sigs, seqs, lens), labels, read_data
 
@@ -385,19 +401,15 @@ def collate_fixed_len_input(batch_chunks):
     """
     # convert inputs to TBF
     sigs = (
-        torch.Tensor([c.signal for c in batch_chunks if c.accepted])
+        torch.Tensor([c.signal for c in batch_chunks])
         .permute(1, 0)
         .unsqueeze(2)
     )
-    seqs = torch.Tensor(
-        [c.seq_nn_input for c in batch_chunks if c.accepted]
-    ).permute(2, 0, 1)
+    seqs = torch.Tensor([c.seq_nn_input for c in batch_chunks]).permute(2, 0, 1)
     labels = torch.tensor(
-        np.array([c.label for c in batch_chunks if c.accepted], dtype=np.long)
+        np.array([c.label for c in batch_chunks], dtype=np.long)
     )
-    read_data = [
-        (c.read_id, c.read_seq_pos) for c in batch_chunks if c.accepted
-    ]
+    read_data = [(c.read_id, c.read_seq_pos) for c in batch_chunks]
     return (sigs, seqs), labels, read_data
 
 
@@ -420,8 +432,8 @@ def load_datasets(
     fixed_seq_len_chunks=False,
     focus_offset=None,
     full=False,
-    mod_motif=None,
-    alphabet="ACGT",
+    label_conv=None,
+    motif=None,
     base_pred=False,
     val_prop=0.0,
     num_data_workers=0,
@@ -430,8 +442,8 @@ def load_datasets(
     chunks = load_chunks(
         reads,
         num_chunks,
-        mod_motif,
-        alphabet,
+        motif,
+        label_conv,
         chunk_context,
         kmer_context_bases,
         focus_offset,
@@ -450,6 +462,14 @@ def load_datasets(
         dl_val = dl_val_trn = None
         trn_set = RemoraDataset(chunks)
     else:
+        # if fewer than 2 validation examples will be selected dataset
+        # TODO ensure validation data has at least one instance of each class
+        # ideally perform stratified data split
+        if len(chunks) < int(1 / val_prop) * 2:
+            raise RemoraError(
+                "Too few chunks to extract validation proportion "
+                f"({len(chunks)} < {int(1 / val_prop) * 2})"
+            )
         np.random.shuffle(chunks)
         val_idx = int(len(chunks) * val_prop)
         val_set = RemoraDataset(chunks[:val_idx])

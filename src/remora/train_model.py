@@ -19,7 +19,7 @@ def train_model(
     out_path,
     dataset_path,
     num_chunks,
-    mod_motif,
+    motif,
     focus_offset,
     chunk_context,
     val_prop,
@@ -27,12 +27,13 @@ def train_model(
     num_data_workers,
     model_path,
     size,
+    mod_bases,
+    base_pred,
     optimizer,
     lr,
     weight_decay,
     lr_decay_step,
     lr_decay_gamma,
-    base_pred,
     epochs,
     save_freq,
     kmer_context_bases,
@@ -45,6 +46,17 @@ def train_model(
     elif device is not None:
         LOGGER.warning(
             "Device option specified, but CUDA is not available from torch."
+        )
+
+    if not base_pred and mod_bases is None:
+        raise RemoraError(
+            "Must specify either modified base or base prediction model "
+            "type option."
+        )
+    elif base_pred and mod_bases is not None:
+        raise RemoraError(
+            "Must specify either modified base or base prediction model "
+            "type option not both."
         )
 
     val_fp = util.ValidationLogger(out_path, base_pred)
@@ -93,14 +105,23 @@ def train_model(
         opt, step_size=lr_decay_step, gamma=lr_decay_gamma
     )
 
-    LOGGER.info("Loading training dataset")
+    LOGGER.info("Loading Taiyaki dataset")
     reads, alphabet, collapse_alphabet = load_taiyaki_dataset(dataset_path)
-    mod_motif = util.validate_motif(mod_motif, alphabet, collapse_alphabet)
-    if base_pred and alphabet != "ACGT":
-        raise ValueError(
-            "Base prediction is not compatible with modified base "
-            "training data. It requires a canonical alphabet."
-        )
+    if base_pred:
+        if alphabet != "ACGT":
+            raise ValueError(
+                "Base prediction is not compatible with modified base "
+                "training data. It requires a canonical alphabet."
+            )
+        label_conv = np.arange(4)
+    else:
+        util.validate_mod_bases(mod_bases, motif, alphabet, collapse_alphabet)
+        mod_can_equiv = collapse_alphabet[alphabet.find(mod_bases[0])]
+        label_conv = np.full(len(alphabet), -1, dtype=int)
+        label_conv[alphabet.find(mod_can_equiv)] = 0
+        for mod_i, mod_base in enumerate(mod_bases):
+            label_conv[alphabet.find(mod_base)] = mod_i + 1
+    LOGGER.info("Converting dataset for Remora input")
     dl_trn, dl_val, dl_val_trn, chunks = load_datasets(
         reads,
         chunk_context,
@@ -108,8 +129,8 @@ def train_model(
         num_chunks=num_chunks,
         fixed_seq_len_chunks=model._variable_width_possible,
         focus_offset=focus_offset,
-        mod_motif=mod_motif,
-        alphabet=alphabet,
+        motif=motif,
+        label_conv=label_conv,
         base_pred=base_pred,
         val_prop=val_prop,
         num_data_workers=num_data_workers,
@@ -155,6 +176,19 @@ def train_model(
     )
     atexit.register(pbar.close)
     atexit.register(ebar.close)
+    ckpt_save_data = {
+        "epoch": 0,
+        "state_dict": model.state_dict(),
+        "opt": opt.state_dict(),
+        "model_path": copy_model_path,
+        "model_params": model_params,
+        "chunk_context": chunk_context,
+        "fixed_seq_len_chunks": model._variable_width_possible,
+        "motif": motif.to_tuple(),
+        "mod_bases": mod_bases,
+        "base_pred": base_pred,
+        "kmer_context_bases": kmer_context_bases,
+    }
     for epoch in range(epochs):
         model.train()
         pbar.n = 0
@@ -185,18 +219,11 @@ def train_model(
         scheduler.step()
 
         if int(epoch + 1) % save_freq == 0:
+            ckpt_save_data["epoch"] = epoch + 1
+            ckpt_save_data["state_dict"] = model.state_dict()
+            ckpt_save_data["opt"] = opt.state_dict()
             torch.save(
-                {
-                    "epoch": int(epoch + 1),
-                    "model_path": copy_model_path,
-                    "state_dict": model.state_dict(),
-                    "opt": opt.state_dict(),
-                    "chunk_context": chunk_context,
-                    "fixed_seq_len_chunks": model._variable_width_possible,
-                    "mod_motif": mod_motif,
-                    "base_pred": base_pred,
-                    "model_params": model_params,
-                },
+                ckpt_save_data,
                 os.path.join(out_path, f"model_{epoch + 1:06d}.checkpoint"),
             )
         ebar.set_postfix(
@@ -209,18 +236,11 @@ def train_model(
     ebar.close()
     pbar.close()
     LOGGER.info("Saving final model checkpoint")
+    ckpt_save_data["epoch"] = epoch + 1
+    ckpt_save_data["state_dict"] = model.state_dict()
+    ckpt_save_data["opt"] = opt.state_dict()
     torch.save(
-        {
-            "epoch": int(epoch + 1),
-            "model_path": copy_model_path,
-            "state_dict": model.state_dict(),
-            "opt": opt.state_dict(),
-            "chunk_context": chunk_context,
-            "fixed_seq_len_chunks": model._variable_width_possible,
-            "mod_motif": mod_motif,
-            "base_pred": base_pred,
-            "model_params": model_params,
-        },
+        ckpt_save_data,
         os.path.join(out_path, "model_final.checkpoint"),
     )
     LOGGER.info("Training complete")
