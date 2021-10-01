@@ -4,7 +4,6 @@ from dataclasses import dataclass
 import numpy as np
 from taiyaki.mapped_signal_files import MappedSignalReader
 import torch
-import torch.nn.utils.rnn as rnn
 
 from remora import constants, log, RemoraError, util
 
@@ -242,12 +241,12 @@ class Chunk:
 
 def load_chunks(
     reads,
-    num_chunks,
     motif,
     label_conv,
-    chunk_context,
-    kmer_context_bases,
-    focus_offset=None,
+    num_chunks=None,
+    chunk_context=constants.DEFAULT_CHUNK_CONTEXT,
+    kmer_context_bases=constants.DEFAULT_KMER_CONTEXT_BASES,
+    focus_offset=constants.DEFAULT_FOCUS_OFFSET,
     fixed_seq_len_chunks=False,
     base_pred=False,
     full=False,
@@ -256,10 +255,10 @@ def load_chunks(
     Args:
         reads (iterable): Iteratable of RemoraRead objects from which to load
             chunks
-        num_chunks (int): Total maximum number of chunks to return
         motif (util.Motif): Remora motif object
         label_conv (np.array): Convert reference labels to Remora labels to
             predict. -1 indicates invalid Remora label
+        num_chunks (int): Total maximum number of chunks to return
         chunk_context (tuple): 2-tuple containing context signal or bases for
             each chunk
         kmer_context_bases (tuple): Number of bases before and after to included
@@ -277,7 +276,9 @@ def load_chunks(
     """
 
     if num_chunks is not None and not isinstance(num_chunks, int):
-        raise ValueError("num_chunks must be an integer or None")
+        raise ValueError(
+            f"num_chunks must be an integer or None ({num_chunks})"
+        )
     if len(chunk_context) != 2:
         raise ValueError("chunk_context must be length 2")
     if any(not isinstance(cc, int) for cc in chunk_context):
@@ -389,7 +390,7 @@ class RemoraDataset:
     def __init__(
         self,
         chunks,
-        batch_size=64,
+        batch_size=constants.DEFAULT_BATCH_SIZE,
         shuffle=False,
         drop_last=False,
         return_read_data=False,
@@ -458,21 +459,20 @@ def load_datasets(
     motif=None,
     base_pred=False,
     val_prop=0.0,
-    num_data_workers=0,
-    kmer_context_bases=constants.DEFAULT_CONTEXT_BASES,
+    kmer_context_bases=constants.DEFAULT_KMER_CONTEXT_BASES,
     return_read_data=False,
 ):
     chunks = load_chunks(
         reads,
-        num_chunks,
         motif,
         label_conv,
-        chunk_context,
-        kmer_context_bases,
-        focus_offset,
-        fixed_seq_len_chunks,
-        base_pred,
-        full,
+        num_chunks=num_chunks,
+        chunk_context=chunk_context,
+        kmer_context_bases=kmer_context_bases,
+        focus_offset=focus_offset,
+        fixed_seq_len_chunks=fixed_seq_len_chunks,
+        base_pred=base_pred,
+        full=full,
     )
 
     if val_prop <= 0.0:

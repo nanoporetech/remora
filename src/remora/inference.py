@@ -55,7 +55,6 @@ def infer(
     checkpoint_path,
     model_path,
     batch_size,
-    nb_workers,
     device,
     focus_offset,
     full,
@@ -117,7 +116,6 @@ def infer(
         motif=motif,
         label_conv=label_conv,
         base_pred=ckpt["base_pred"],
-        num_data_workers=nb_workers,
         kmer_context_bases=ckpt["kmer_context_bases"],
         return_read_data=True,
     )

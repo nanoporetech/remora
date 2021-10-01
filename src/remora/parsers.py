@@ -154,7 +154,7 @@ def register_train_model(parser):
     )
     data_grp.add_argument(
         "--val-prop",
-        default=0.01,
+        default=constants.DEFAULT_VAL_PROP,
         type=float,
         help="Proportion of the dataset to be used as validation. "
         "Default: %(default)f",
@@ -177,7 +177,7 @@ def register_train_model(parser):
     )
     data_grp.add_argument(
         "--chunk-context",
-        default=[25, 25],
+        default=constants.DEFAULT_CHUNK_CONTEXT,
         type=int,
         nargs=2,
         help="Number of context signal points or bases to select around the "
@@ -188,14 +188,14 @@ def register_train_model(parser):
     data_grp.add_argument(
         "--kmer-context-bases",
         nargs=2,
-        default=constants.DEFAULT_CONTEXT_BASES,
+        default=constants.DEFAULT_KMER_CONTEXT_BASES,
         type=int,
         help="Definition of k-mer (derived from the reference) passed into "
         "the model along with each signal position. Default: %(default)s",
     )
     data_grp.add_argument(
         "--batch-size",
-        default=200,
+        default=constants.DEFAULT_BATCH_SIZE,
         type=int,
         help="Number of samples per batch. Default: %(default)d",
     )
@@ -225,7 +225,7 @@ def register_train_model(parser):
     mdl_grp.add_argument(
         "--size",
         type=int,
-        default=64,
+        default=constants.DEFAULT_NN_SIZE,
         help="Model layer size. Default: %(default)d",
     )
     mdl_grp.add_argument(
@@ -240,37 +240,37 @@ def register_train_model(parser):
     train_grp = subparser.add_argument_group("Training Arguments")
     train_grp.add_argument(
         "--epochs",
-        default=50,
+        default=constants.DEFAULT_EPOCHS,
         type=int,
         help="Number of training epochs. Default: %(default)d",
     )
-    # TODO convert to choices devired from central module
     train_grp.add_argument(
         "--optimizer",
-        default="adamw",
+        default=constants.OPTIMIZERS[0],
+        choices=constants.OPTIMIZERS,
         help="Optimizer setting. Default: %(default)s",
     )
     train_grp.add_argument(
         "--lr",
-        default=1e-5,
+        default=constants.DEFAULT_LR,
         type=float,
         help="Learning rate setting. Default: %(default)f",
     )
     train_grp.add_argument(
         "--lr-decay-step",
-        default=10,
+        default=constants.DEFAULT_DECAY_STEP,
         type=int,
         help="Learning decay step setting. Default: %(default)d",
     )
     train_grp.add_argument(
         "--lr-decay-gamma",
-        default=0.5,
+        default=constants.DEFAULT_DECAY_GAMMA,
         type=float,
         help="Learning decay gamma setting. Default: %(default)f",
     )
     train_grp.add_argument(
         "--weight-decay",
-        default=1e-4,
+        default=constants.DEFAULT_WEIGHT_DECAY,
         type=float,
         help="Weight decay setting. Default: %(default)f",
     )
@@ -283,13 +283,6 @@ def register_train_model(parser):
         "--device",
         type=int,
         help="ID of GPU that is used for training. Default: Use CPU.",
-    )
-    comp_grp.add_argument(
-        "--workers",
-        default=0,
-        type=int,
-        dest="nb_workers",
-        help="Number of workers for dataloader. Default: %(default)d",
     )
 
     subparser.set_defaults(func=run_train_model)
@@ -322,7 +315,6 @@ def run_train_model(args):
         args.chunk_context,
         args.val_prop,
         args.batch_size,
-        args.nb_workers,
         args.model,
         args.size,
         args.mod_bases,
@@ -392,13 +384,6 @@ def register_infer(parser):
         help="Number of input units per batch. Default: %(default)d",
     )
     subparser.add_argument(
-        "--workers",
-        default=0,
-        type=int,
-        dest="nb_workers",
-        help="Number of workers for dataloader. Default: %(default)d",
-    )
-    subparser.add_argument(
         "--overwrite",
         action="store_true",
         help="Overwrite existing output directory if existing.",
@@ -427,7 +412,6 @@ def run_infer(args):
         args.checkpoint_path,
         args.model_path,
         args.batch_size,
-        args.nb_workers,
         args.device,
         args.focus_offset,
         args.full,
