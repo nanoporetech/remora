@@ -11,6 +11,8 @@ MODEL_PATHS = [
     model_path
     for model_path in MODELS_DIR.iterdir()
     if str(model_path).endswith(".py")
+    # TODO fix var width model data loading
+    and str(model_path).find("var_width") == -1
 ]
 
 

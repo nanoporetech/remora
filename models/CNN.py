@@ -23,9 +23,8 @@ class network(nn.Module):
         self.pool = nn.MaxPool1d(3)
 
     def forward(self, sigs, seqs):
-        # Tensor is stored in TBF order, but `conv` requires BFT order
-        x = sigs.permute(1, 2, 0)
-        x = self.dropout(F.relu(self.conv1(x)))
+        # inputs are BFT (batch, feature, time)
+        x = self.dropout(F.relu(self.conv1(sigs)))
         x = self.pool(x)
         x = self.dropout(F.relu(self.conv2(x)))
         x = self.pool(x)

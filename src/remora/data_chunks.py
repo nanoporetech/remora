@@ -13,13 +13,13 @@ LOGGER = log.get_logger()
 DEFAULT_BATCH_SIZE = 1024
 
 BASE_ENCODINGS = {
-    "A": np.array([1, 0, 0, 0]),
-    "C": np.array([0, 1, 0, 0]),
-    "G": np.array([0, 0, 1, 0]),
-    "T": np.array([0, 0, 0, 1]),
-    "N": np.array([0, 0, 0, 0]),
+    "A": np.array([1, 0, 0, 0], dtype=np.bool8),
+    "C": np.array([0, 1, 0, 0], dtype=np.bool8),
+    "G": np.array([0, 0, 1, 0], dtype=np.bool8),
+    "T": np.array([0, 0, 0, 1], dtype=np.bool8),
+    "N": np.array([0, 0, 0, 0], dtype=np.bool8),
 }
-ENCODING_LEN = BASE_ENCODINGS["A"].size
+ENCODING_LEN = BASE_ENCODINGS["A"].shape[0]
 
 
 @dataclass
@@ -97,6 +97,7 @@ class Chunk:
     label: int
     read_id: str
     read_seq_pos: int
+    _base_sig_lens: np.ndarray = None
     _seq_nn_input: np.ndarray = None
 
     def mask_focus_base(self):
@@ -119,7 +120,7 @@ class Chunk:
                 f"FAILED_CHUNK: seq_nn_len {self.read_id} {self.read_seq_pos}"
             )
             raise RemoraError("Invalid encoded sig length")
-        if len(self.sequence) != self.seq_to_sig_map.size - 1:
+        if len(self.sequence) != self.seq_to_sig_map.shape[0] - 1:
             LOGGER.debug(
                 f"FAILED_CHUNK: map_len {self.read_id} {self.read_seq_pos}"
             )
@@ -164,19 +165,25 @@ class Chunk:
             )
             seq_end = np.searchsorted(read.seq_to_sig_map, sig_end, side="left")
 
-        chunk_seq_to_sig = read.seq_to_sig_map[seq_start : seq_end + 1]
+        chunk_seq_to_sig = read.seq_to_sig_map[seq_start : seq_end + 1].copy()
         chunk_seq_to_sig[0] = sig_start
         chunk_seq_to_sig[-1] = sig_end
         chunk_seq_to_sig -= sig_start
+        chunk_seq_to_sig = chunk_seq_to_sig.astype(np.int32)
 
         kmer_before_bases, kmer_after_bases = kmer_context_bases
-        before_context_seq = read.seq[seq_start - kmer_before_bases : seq_start]
+        before_context_seq = read.seq[
+            max(0, seq_start - kmer_before_bases) : seq_start
+        ]
         after_context_seq = read.seq[seq_end : seq_end + kmer_after_bases]
         if (
             len(before_context_seq) != kmer_before_bases
             or len(after_context_seq) != kmer_after_bases
         ):
-            LOGGER.debug(f"FAILED_CHUNK: context_seq {read_id} {read_seq_pos}")
+            LOGGER.debug(
+                f"FAILED_CHUNK: context_seq {read_id} {read_seq_pos}  "
+                f"{seq_start} {kmer_before_bases}"
+            )
             raise RemoraError("Invalid context seq extracted")
 
         return cls(
@@ -201,25 +208,35 @@ class Chunk:
         return self.before_context_seq + self.sequence + self.after_context_seq
 
     @property
+    def base_sig_lens(self):
+        if self._base_sig_lens is None:
+            self._base_sig_lens = np.diff(self.seq_to_sig_map)
+        return self._base_sig_lens
+
+    @property
     def seq_nn_input(self):
         """Representation of chunk sequence presented to neural network. The
         length of the second dimension should match chunk.signal.shape[0]. The
         first dimension represents the number of input features.
         """
         if self._seq_nn_input is None:
-            enc_seq_w_context = np.array(
-                [BASE_ENCODINGS[b] for b in self.seq_w_context]
-            )
-            enc_kmers = np.stack(
+            enc_kmers = np.concatenate(
                 [
-                    enc_seq_w_context[offset : len(self.sequence) + offset]
+                    np.stack(
+                        [
+                            BASE_ENCODINGS[b]
+                            for b in self.seq_w_context[
+                                offset : offset + len(self.sequence)
+                            ]
+                        ],
+                        axis=1,
+                    )
                     for offset in range(self.kmer_len)
-                ],
-                axis=1,
-            ).reshape(-1, self.kmer_len * ENCODING_LEN)
+                ]
+            )
             self._seq_nn_input = np.repeat(
-                enc_kmers, np.diff(self.seq_to_sig_map), axis=0
-            ).T
+                enc_kmers, self.base_sig_lens, axis=1
+            )
         return self._seq_nn_input
 
 
@@ -278,6 +295,9 @@ def load_chunks(
                 for m in motif.pattern.finditer(read.seq)
             ]
         else:
+            if focus_offset >= len(read.seq):
+                reject_reasons["[--focus-offset] past read seq"] += 1
+                continue
             motif_pos = [focus_offset]
             read_motif = read.seq[
                 focus_offset
@@ -364,64 +384,66 @@ def load_chunks(
     return chunks
 
 
-def collate_var_len_input(batch_chunks):
-    """Pads batch of variable sequence lengths
+# TODO add version for variable length datasets
+class RemoraDataset:
+    def __init__(
+        self,
+        chunks,
+        batch_size=64,
+        shuffle=False,
+        drop_last=False,
+        return_read_data=False,
+    ):
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.drop_last = drop_last
+        self.return_read_data = return_read_data
 
-    note: the output is passed to the pack_padded_sequence,
-        so that variable sequence lenghts can be handled by
-        the RNN
-    """
-    # get sequence lengths
-    lens = torch.tensor(
-        [c.signal.shape[0] for c in batch_chunks], dtype=np.long
-    )
+        self.dataset_len = len(chunks)
+        self.n_batches, remainder = divmod(self.dataset_len, self.batch_size)
+        if not self.drop_last and remainder > 0:
+            self.n_batches += 1
 
-    # padding
-    sigs = torch.nn.utils.rnn.pad_sequence(
-        [torch.Tensor(c.signal).unsqueeze(1) for c in batch_chunks]
-    )
-    sigs = rnn.pack_padded_sequence(sigs, lens, enforce_sorted=False)
-    seqs = torch.nn.utils.rnn.pad_sequence(
-        [torch.Tensor(c.seq_nn_input).permute(1, 0) for c in batch_chunks]
-    )
-    seqs = rnn.pack_padded_sequence(seqs, lens, enforce_sorted=False)
-    # get labels
-    labels = torch.tensor(
-        np.array([c.label for c in batch_chunks], dtype=np.long)
-    )
-    read_data = [(c.read_id, c.read_seq_pos) for c in batch_chunks]
+        # pre-compute full tensors from which to load data
+        self.sig_tensor = torch.Tensor(
+            np.stack([c.signal for c in chunks])
+        ).unsqueeze(1)
+        self.seq_tensor = torch.from_numpy(
+            np.stack([c.seq_nn_input for c in chunks])
+        ).type(torch.FloatTensor)
+        self.labels = torch.LongTensor([c.label for c in chunks])
+        self.read_data = None
+        if self.return_read_data:
+            self.read_data = [(c.read_id, c.read_seq_pos) for c in chunks]
 
-    return (sigs, seqs, lens), labels, read_data
+    def __iter__(self):
+        if self.shuffle:
+            shuf_idx = torch.randperm(self.dataset_len)
+            self.sig_tensor = self.sig_tensor[shuf_idx]
+            self.seq_tensor = self.seq_tensor[shuf_idx]
+            self.labels = self.labels[shuf_idx]
+            if self.return_read_data:
+                self.read_data = [self.read_data[si] for si in shuf_idx]
+        self._batch_i = 0
+        return self
 
-
-def collate_fixed_len_input(batch_chunks):
-    """Collate data with fixed width inputs
-
-    Note that inputs with be in Time x Batch x Features (TBF) dimension order
-    """
-    # convert inputs to TBF
-    sigs = (
-        torch.Tensor([c.signal for c in batch_chunks])
-        .permute(1, 0)
-        .unsqueeze(2)
-    )
-    seqs = torch.Tensor([c.seq_nn_input for c in batch_chunks]).permute(2, 0, 1)
-    labels = torch.tensor(
-        np.array([c.label for c in batch_chunks], dtype=np.long)
-    )
-    read_data = [(c.read_id, c.read_seq_pos) for c in batch_chunks]
-    return (sigs, seqs), labels, read_data
-
-
-class RemoraDataset(torch.utils.data.Dataset):
-    def __init__(self, chunks):
-        self.chunks = chunks
-
-    def __getitem__(self, index):
-        return self.chunks[index]
+    def __next__(self):
+        if self._batch_i >= self.n_batches:
+            raise StopIteration
+        b_st = self._batch_i * self.batch_size
+        b_en = b_st + self.batch_size
+        self._batch_i += 1
+        batch_read_data = None
+        if self.return_read_data:
+            batch_read_data = self.read_data[b_st:b_en]
+        return (
+            (self.sig_tensor[b_st:b_en], self.seq_tensor[b_st:b_en]),
+            self.labels[b_st:b_en],
+            batch_read_data,
+        )
 
     def __len__(self):
-        return len(self.chunks)
+        return self.n_batches
 
 
 def load_datasets(
@@ -438,6 +460,7 @@ def load_datasets(
     val_prop=0.0,
     num_data_workers=0,
     kmer_context_bases=constants.DEFAULT_CONTEXT_BASES,
+    return_read_data=False,
 ):
     chunks = load_chunks(
         reads,
@@ -452,15 +475,9 @@ def load_datasets(
         full,
     )
 
-    collate_fn = (
-        collate_var_len_input
-        if fixed_seq_len_chunks
-        else collate_fixed_len_input
-    )
-
     if val_prop <= 0.0:
         dl_val = dl_val_trn = None
-        trn_set = RemoraDataset(chunks)
+        trn_set = chunks
     else:
         # if fewer than 2 validation examples will be selected dataset
         # TODO ensure validation data has at least one instance of each class
@@ -472,37 +489,29 @@ def load_datasets(
             )
         np.random.shuffle(chunks)
         val_idx = int(len(chunks) * val_prop)
-        val_set = RemoraDataset(chunks[:val_idx])
-        val_trn_set = RemoraDataset(chunks[val_idx : val_idx + val_idx])
-        trn_set = RemoraDataset(chunks[val_idx:])
-        dl_val = torch.utils.data.DataLoader(
-            val_set,
+        trn_set = chunks[val_idx:]
+        dl_val = RemoraDataset(
+            chunks[:val_idx],
             batch_size=batch_size,
             shuffle=False,
-            num_workers=num_data_workers,
             drop_last=False,
-            collate_fn=collate_fn,
-            pin_memory=True,
+            return_read_data=return_read_data,
         )
-        dl_val_trn = torch.utils.data.DataLoader(
-            val_trn_set,
+        dl_val_trn = RemoraDataset(
+            chunks[val_idx : val_idx + val_idx],
             batch_size=batch_size,
             shuffle=False,
-            num_workers=num_data_workers,
             drop_last=False,
-            collate_fn=collate_fn,
-            pin_memory=True,
+            return_read_data=return_read_data,
         )
 
     # shuffle and drop_last only if this is a split train/validation set.
-    dl_trn = torch.utils.data.DataLoader(
+    dl_trn = RemoraDataset(
         trn_set,
         batch_size=batch_size,
         shuffle=val_prop > 0,
-        num_workers=num_data_workers,
         drop_last=val_prop > 0,
-        collate_fn=collate_fn,
-        pin_memory=True,
+        return_read_data=return_read_data,
     )
 
     return dl_trn, dl_val, dl_val_trn, chunks

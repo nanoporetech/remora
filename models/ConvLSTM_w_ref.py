@@ -39,13 +39,11 @@ class network(nn.Module):
         self.merge_bn = nn.BatchNorm1d(size)
 
     def forward(self, sigs, seqs):
-        # inputs are TBF, conv wants BFT
-        sigs = sigs.permute(1, 2, 0)
+        # inputs are BFT (batch, feature, time)
         sigs_x = swish(self.sig_bn1(self.sig_conv1(sigs)))
         sigs_x = swish(self.sig_bn2(self.sig_conv2(sigs_x)))
         sigs_x = swish(self.sig_bn3(self.sig_conv3(sigs_x)))
 
-        seqs = seqs.permute(1, 2, 0)
         seqs_x = swish(self.seq_bn1(self.seq_conv1(seqs)))
         seqs_x = swish(self.seq_bn2(self.seq_conv2(seqs_x)))
 

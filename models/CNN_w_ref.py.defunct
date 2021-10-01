@@ -24,10 +24,9 @@ class network(nn.Module):
         self.dropout = nn.Dropout(p=0.3)
 
     def forward(self, sigs, seqs):
-        sigs = sigs.permute(1, 2, 0)
+        # inputs are BFT (batch, feature, time)
         sigs = self.dropout(swish(self.sig_conv1(sigs)))
 
-        seqs = seqs.permute(1, 2, 0)
         seqs = self.dropout(swish(self.seq_conv1(seqs.unsqueeze(1))))
         seqs = seqs.squeeze(2)
         z = torch.cat((sigs, seqs), 1)

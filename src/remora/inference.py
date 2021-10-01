@@ -119,6 +119,7 @@ def infer(
         base_pred=ckpt["base_pred"],
         num_data_workers=nb_workers,
         kmer_context_bases=ckpt["kmer_context_bases"],
+        return_read_data=True,
     )
 
     LOGGER.info("Applying model to loaded data")
