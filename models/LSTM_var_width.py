@@ -20,7 +20,9 @@ class network(nn.Module):
         self.fc1 = nn.Linear(size, num_out)
 
     def forward(self, sigs, seqs, lens):
-        x = self.lstm(sigs)
+        # inputs are BFT (batch, feature, time)
+        x = sigs.permute(2, 0, 1)
+        x = self.lstm(x)
         x, hn = rnn.pad_packed_sequence(x[0])
         x = x[lens - 1]
         x = torch.transpose(torch.diagonal(x), 0, 1)

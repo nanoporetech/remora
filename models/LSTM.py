@@ -18,7 +18,9 @@ class network(nn.Module):
         self.fc1 = nn.Linear(size, num_out)
 
     def forward(self, sigs, seqs):
-        x, hx = self.lstm(sigs)
+        # inputs are BFT (batch, feature, time)
+        x = sigs.permute(2, 0, 1)
+        x, hx = self.lstm(x)
         x = x[-1].permute(0, 1)
         x = self.fc1(x)
 
