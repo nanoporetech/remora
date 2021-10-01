@@ -8,7 +8,7 @@ class network(nn.Module):
 
     def __init__(
         self,
-        size=constants.DEFAULT_SIZE,
+        size=constants.DEFAULT_NN_SIZE,
         kmer_len=constants.DEFAULT_KMER_LEN,
         num_out=2,
     ):

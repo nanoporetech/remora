@@ -7,10 +7,34 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from remora import util, log, RemoraError
+from remora import constants, util, log, RemoraError
 from remora.data_chunks import load_datasets, load_taiyaki_dataset
 
 LOGGER = log.get_logger()
+
+
+def load_optimizer(optimizer, model, lr, weight_decay, momentum=0.9):
+    if optimizer == constants.SGD_OPT:
+        return torch.optim.SGD(
+            model.parameters(),
+            lr=lr,
+            weight_decay=weight_decay,
+            momentum=momentum,
+            nesterov=True,
+        )
+    elif optimizer == constants.ADAM_OPT:
+        return torch.optim.Adam(
+            model.parameters(),
+            lr=lr,
+            weight_decay=weight_decay,
+        )
+    elif optimizer == constants.ADAMW_OPT:
+        return torch.optim.AdamW(
+            model.parameters(),
+            lr=lr,
+            weight_decay=weight_decay,
+        )
+    raise RemoraError(f"Invalid optimizer specified ({optimizer})")
 
 
 def train_model(
@@ -24,7 +48,6 @@ def train_model(
     chunk_context,
     val_prop,
     batch_size,
-    num_data_workers,
     model_path,
     size,
     mod_bases,
@@ -67,7 +90,7 @@ def train_model(
     LOGGER.info("Loading model")
     copy_model_path = util.resolve_path(os.path.join(out_path, "model.py"))
     copyfile(model_path, copy_model_path)
-    num_out = 4 if base_pred else 2
+    num_out = 4 if base_pred else len(mod_bases) + 1
     model_params = {
         "size": size,
         "kmer_len": sum(kmer_context_bases) + 1,
@@ -81,26 +104,7 @@ def train_model(
     if torch.cuda.is_available():
         model = model.cuda()
         criterion = criterion.cuda()
-    if optimizer == "sgd":
-        opt = torch.optim.SGD(
-            model.parameters(),
-            lr=float(lr),
-            weight_decay=weight_decay,
-            momentum=0.9,
-            nesterov=True,
-        )
-    elif optimizer == "adam":
-        opt = torch.optim.Adam(
-            model.parameters(),
-            lr=float(lr),
-            weight_decay=weight_decay,
-        )
-    else:
-        opt = torch.optim.AdamW(
-            model.parameters(),
-            lr=float(lr),
-            weight_decay=weight_decay,
-        )
+    opt = load_optimizer(optimizer, model, lr, weight_decay)
     scheduler = torch.optim.lr_scheduler.StepLR(
         opt, step_size=lr_decay_step, gamma=lr_decay_gamma
     )
@@ -133,7 +137,6 @@ def train_model(
         label_conv=label_conv,
         base_pred=base_pred,
         val_prop=val_prop,
-        num_data_workers=num_data_workers,
         kmer_context_bases=kmer_context_bases,
     )
     label_counts = Counter(c.label for c in chunks)
@@ -143,6 +146,7 @@ def train_model(
             "One or fewer output labels found. Ensure --focus-offset and "
             "--mod are specified correctly"
         )
+    del chunks
 
     LOGGER.info("Running initial validation")
     # assess accuracy before first iteration
