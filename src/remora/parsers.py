@@ -142,9 +142,14 @@ def register_train_model(parser):
 
     data_grp = subparser.add_argument_group("Data Arguments")
     data_grp.add_argument(
-        "--dataset-path",
-        default="remora_modified_base_training_dataset.hdf5",
-        help="Training dataset. Default: %(default)s",
+        "--taiyaki-dataset-path",
+        help="Taiyaki chunk training dataset (must specify either this or "
+        "--remora-dataset-path)",
+    )
+    data_grp.add_argument(
+        "--remora-dataset-path",
+        help="Remora training dataset (must specify either this or "
+        "--taiyaki-dataset-path)",
     )
     data_grp.add_argument(
         "--num-chunks",
@@ -308,7 +313,8 @@ def run_train_model(args):
         args.seed,
         args.device,
         out_path,
-        args.dataset_path,
+        args.taiyaki_dataset_path,
+        args.remora_dataset_path,
         args.num_chunks,
         motif,
         args.focus_offset,

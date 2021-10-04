@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from remora import util, log
-from remora.data_chunks import load_datasets, load_taiyaki_dataset
+from remora.data_chunks import load_taiyaki_dataset, load_chunks, RemoraDataset
 
 LOGGER = log.get_logger()
 
@@ -106,29 +106,35 @@ def infer(
             for mod_i, mod_base in enumerate(mod_bases):
                 label_conv[alphabet.find(mod_base)] = mod_i + 1
     LOGGER.info("Converting dataset for Remora input")
-    dl_infer, _, _, _ = load_datasets(
+    chunks = load_chunks(
         reads,
-        ckpt["chunk_context"],
-        batch_size=batch_size,
-        val_prop=0.0,
-        full=full,
-        focus_offset=focus_offset,
         motif=motif,
+        full=full,
         label_conv=label_conv,
-        base_pred=ckpt["base_pred"],
+        chunk_context=ckpt["chunk_context"],
         kmer_context_bases=ckpt["kmer_context_bases"],
-        return_read_data=True,
+        focus_offset=focus_offset,
+        fixed_seq_len_chunks=model._variable_width_possible,
+        base_pred=ckpt["base_pred"],
     )
+    dataset = RemoraDataset.load_from_chunks(
+        chunks,
+        batch_size=batch_size,
+        chunk_context=ckpt["chunk_context"],
+        kmer_context_bases=ckpt["kmer_context_bases"],
+        store_read_data=True,
+    )
+    del chunks
 
     LOGGER.info("Applying model to loaded data")
     pbar = tqdm(
-        total=len(dl_infer),
+        total=len(dataset),
         smoothing=0,
         desc="Call Batches",
         dynamic_ncols=True,
     )
     atexit.register(pbar.close)
-    for inputs, labels, read_data in dl_infer:
+    for inputs, labels, read_data in dataset:
         if torch.cuda.is_available():
             inputs = (input.cuda() for input in inputs)
         output = model(*inputs).detach().cpu()

@@ -15,3 +15,6 @@ SGD_OPT = "sgd"
 ADAM_OPT = "adam"
 ADAMW_OPT = "adamw"
 OPTIMIZERS = (ADAMW_OPT, SGD_OPT, ADAM_OPT)
+
+FINAL_MODEL_FILENAME = "model_final.checkpoint"
+SAVE_DATASET_FILENAME = "remora_train_data.npz"
