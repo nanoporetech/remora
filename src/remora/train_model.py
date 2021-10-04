@@ -1,5 +1,4 @@
 import atexit
-from collections import Counter
 import os
 from shutil import copyfile
 
@@ -8,7 +7,7 @@ import torch
 from tqdm import tqdm
 
 from remora import constants, util, log, RemoraError
-from remora.data_chunks import load_datasets, load_taiyaki_dataset
+from remora.data_chunks import load_taiyaki_dataset, load_chunks, RemoraDataset
 
 LOGGER = log.get_logger()
 
@@ -41,7 +40,8 @@ def train_model(
     seed,
     device,
     out_path,
-    dataset_path,
+    taiyaki_dataset_path,
+    remora_dataset_path,
     num_chunks,
     motif,
     focus_offset,
@@ -71,6 +71,37 @@ def train_model(
             "Device option specified, but CUDA is not available from torch."
         )
 
+    if taiyaki_dataset_path is None and remora_dataset_path is None:
+        raise RemoraError("Must specify either Taiyaki or Remora dataset.")
+    elif taiyaki_dataset_path is not None and remora_dataset_path is not None:
+        raise RemoraError("Must specify only one of Taiyaki or Remora dataset.")
+    if remora_dataset_path is not None:
+        LOGGER.info("Loading dataset from Remora file")
+        dataset = RemoraDataset.load_from_file(
+            remora_dataset_path,
+            batch_size=batch_size,
+        )
+        # load attributes from file
+        base_pred = dataset.base_pred
+        mod_bases = dataset.mod_bases
+        # TODO allow modification of applicable attributes
+        # namely, kmer_context_bases, chunk_context can be shrunk from versions
+        # in file
+        kmer_context_bases = dataset.kmer_context_bases
+        chunk_context = dataset.chunk_context
+        LOGGER.info(
+            "Loaded data info from file:\n"
+            f"          base_pred : {base_pred}\n"
+            f"          mod_bases : {mod_bases}\n"
+            f" kmer_context_bases : {kmer_context_bases}\n"
+            f"      chunk_context : {chunk_context}\n"
+        )
+
+    val_fp = util.ValidationLogger(out_path, base_pred)
+    atexit.register(val_fp.close)
+    batch_fp = util.BatchLogger(out_path)
+    atexit.register(batch_fp.close)
+
     if not base_pred and mod_bases is None:
         raise RemoraError(
             "Must specify either modified base or base prediction model "
@@ -81,11 +112,6 @@ def train_model(
             "Must specify either modified base or base prediction model "
             "type option not both."
         )
-
-    val_fp = util.ValidationLogger(out_path, base_pred)
-    atexit.register(val_fp.close)
-    batch_fp = util.BatchLogger(out_path)
-    atexit.register(batch_fp.close)
 
     LOGGER.info("Loading model")
     copy_model_path = util.resolve_path(os.path.join(out_path, "model.py"))
@@ -109,50 +135,68 @@ def train_model(
         opt, step_size=lr_decay_step, gamma=lr_decay_gamma
     )
 
-    LOGGER.info("Loading Taiyaki dataset")
-    reads, alphabet, collapse_alphabet = load_taiyaki_dataset(dataset_path)
-    if base_pred:
-        if alphabet != "ACGT":
-            raise ValueError(
-                "Base prediction is not compatible with modified base "
-                "training data. It requires a canonical alphabet."
+    if taiyaki_dataset_path is not None:
+        LOGGER.info("Loading training data Taiyaki file")
+        reads, alphabet, collapse_alphabet = load_taiyaki_dataset(
+            taiyaki_dataset_path
+        )
+        if base_pred:
+            if alphabet != "ACGT":
+                raise ValueError(
+                    "Base prediction is not compatible with modified base "
+                    "training data. It requires a canonical alphabet."
+                )
+            label_conv = np.arange(4)
+        else:
+            util.validate_mod_bases(
+                mod_bases, motif, alphabet, collapse_alphabet
             )
-        label_conv = np.arange(4)
-    else:
-        util.validate_mod_bases(mod_bases, motif, alphabet, collapse_alphabet)
-        mod_can_equiv = collapse_alphabet[alphabet.find(mod_bases[0])]
-        label_conv = np.full(len(alphabet), -1, dtype=int)
-        label_conv[alphabet.find(mod_can_equiv)] = 0
-        for mod_i, mod_base in enumerate(mod_bases):
-            label_conv[alphabet.find(mod_base)] = mod_i + 1
-    LOGGER.info("Converting dataset for Remora input")
-    dl_trn, dl_val, dl_val_trn, chunks = load_datasets(
-        reads,
-        chunk_context,
-        batch_size=batch_size,
-        num_chunks=num_chunks,
-        fixed_seq_len_chunks=model._variable_width_possible,
-        focus_offset=focus_offset,
-        motif=motif,
-        label_conv=label_conv,
-        base_pred=base_pred,
-        val_prop=val_prop,
-        kmer_context_bases=kmer_context_bases,
-    )
-    label_counts = Counter(c.label for c in chunks)
+            mod_can_equiv = collapse_alphabet[alphabet.find(mod_bases[0])]
+            label_conv = np.full(len(alphabet), -1, dtype=int)
+            label_conv[alphabet.find(mod_can_equiv)] = 0
+            for mod_i, mod_base in enumerate(mod_bases):
+                label_conv[alphabet.find(mod_base)] = mod_i + 1
+        LOGGER.info("Converting dataset for Remora input")
+        chunks = load_chunks(
+            reads,
+            motif=motif,
+            label_conv=label_conv,
+            num_chunks=num_chunks,
+            chunk_context=chunk_context,
+            kmer_context_bases=kmer_context_bases,
+            focus_offset=focus_offset,
+            fixed_seq_len_chunks=model._variable_width_possible,
+            base_pred=base_pred,
+        )
+        dataset = RemoraDataset.load_from_chunks(
+            chunks,
+            batch_size=batch_size,
+            chunk_context=chunk_context,
+            kmer_context_bases=kmer_context_bases,
+            mod_bases=mod_bases,
+            base_pred=base_pred,
+        )
+        del chunks
+        # shuffle data before storage for fixed validation chunks on restart
+        dataset.shuffle_data()
+        dataset.save_dataset(
+            os.path.join(out_path, constants.SAVE_DATASET_FILENAME)
+        )
+
+    label_counts = dataset.get_label_counts()
     LOGGER.info(f"Label distribution: {label_counts}")
     if len(label_counts) <= 1:
         raise RemoraError(
             "One or fewer output labels found. Ensure --focus-offset and "
             "--mod are specified correctly"
         )
-    del chunks
+    trn_ds, val_trn_ds, val_ds = dataset.split_data(val_prop)
 
     LOGGER.info("Running initial validation")
     # assess accuracy before first iteration
-    val_acc, val_loss = val_fp.validate_model(model, criterion, dl_val, 0)
+    val_acc, val_loss = val_fp.validate_model(model, criterion, val_ds, 0)
     trn_acc, trn_loss = val_fp.validate_model(
-        model, criterion, dl_val_trn, 0, "trn"
+        model, criterion, val_trn_ds, 0, "trn"
     )
 
     LOGGER.info("Start training")
@@ -165,7 +209,7 @@ def train_model(
         leave=True,
     )
     pbar = tqdm(
-        total=len(dl_trn),
+        total=len(trn_ds),
         desc="Epoch Progress",
         dynamic_ncols=True,
         position=1,
@@ -197,7 +241,7 @@ def train_model(
         model.train()
         pbar.n = 0
         pbar.refresh()
-        for epoch_i, (inputs, labels, _) in enumerate(dl_trn):
+        for epoch_i, (inputs, labels, _) in enumerate(trn_ds):
             if torch.cuda.is_available():
                 inputs = (ip.cuda() for ip in inputs)
                 labels = labels.cuda()
@@ -208,16 +252,16 @@ def train_model(
             opt.step()
 
             batch_fp.log_batch(
-                loss.detach().cpu(), (epoch * len(dl_trn)) + epoch_i
+                loss.detach().cpu(), (epoch * len(trn_ds)) + epoch_i
             )
             pbar.update()
             pbar.refresh()
 
         val_acc, val_loss = val_fp.validate_model(
-            model, criterion, dl_val, (epoch + 1) * len(dl_trn)
+            model, criterion, val_ds, (epoch + 1) * len(trn_ds)
         )
         trn_acc, trn_loss = val_fp.validate_model(
-            model, criterion, dl_val_trn, (epoch + 1) * len(dl_trn), "trn"
+            model, criterion, val_trn_ds, (epoch + 1) * len(trn_ds), "trn"
         )
 
         scheduler.step()
@@ -245,7 +289,7 @@ def train_model(
     ckpt_save_data["opt"] = opt.state_dict()
     torch.save(
         ckpt_save_data,
-        os.path.join(out_path, "model_final.checkpoint"),
+        os.path.join(out_path, constants.FINAL_MODEL_FILENAME),
     )
     LOGGER.info("Training complete")
 

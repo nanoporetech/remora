@@ -1,4 +1,4 @@
-from collections import defaultdict
+from collections import defaultdict, Counter
 from dataclasses import dataclass
 
 import numpy as np
@@ -386,45 +386,43 @@ def load_chunks(
 
 
 # TODO add version for variable length datasets
+@dataclass
 class RemoraDataset:
-    def __init__(
-        self,
-        chunks,
-        batch_size=constants.DEFAULT_BATCH_SIZE,
-        shuffle=False,
-        drop_last=False,
-        return_read_data=False,
-    ):
-        self.batch_size = batch_size
-        self.shuffle = shuffle
-        self.drop_last = drop_last
-        self.return_read_data = return_read_data
+    # data attributes
+    sig_tensor: torch.Tensor
+    seq_tensor: torch.Tensor
+    labels: torch.LongTensor
+    read_data: list
 
-        self.dataset_len = len(chunks)
+    # scalar metadata attributes
+    chunk_context: tuple = constants.DEFAULT_CHUNK_CONTEXT
+    kmer_context_bases: tuple = constants.DEFAULT_KMER_CONTEXT_BASES
+    base_pred: bool = False
+    mod_bases: str = ""
+
+    # batch attributes (can change after data loading)
+    store_read_data: bool = False
+    batch_size: int = constants.DEFAULT_BATCH_SIZE
+    shuffle_on_iter: bool = False
+    drop_last: bool = False
+
+    def __post_init__(self):
+        self.dataset_len = self.sig_tensor.shape[0]
         self.n_batches, remainder = divmod(self.dataset_len, self.batch_size)
         if not self.drop_last and remainder > 0:
             self.n_batches += 1
 
-        # pre-compute full tensors from which to load data
-        self.sig_tensor = torch.Tensor(
-            np.stack([c.signal for c in chunks])
-        ).unsqueeze(1)
-        self.seq_tensor = torch.from_numpy(
-            np.stack([c.seq_nn_input for c in chunks])
-        ).type(torch.FloatTensor)
-        self.labels = torch.LongTensor([c.label for c in chunks])
-        self.read_data = None
-        if self.return_read_data:
-            self.read_data = [(c.read_id, c.read_seq_pos) for c in chunks]
+    def shuffle_data(self):
+        shuf_idx = torch.randperm(self.dataset_len)
+        self.sig_tensor = self.sig_tensor[shuf_idx]
+        self.seq_tensor = self.seq_tensor[shuf_idx]
+        self.labels = self.labels[shuf_idx]
+        if self.store_read_data:
+            self.read_data = [self.read_data[si] for si in shuf_idx]
 
     def __iter__(self):
-        if self.shuffle:
-            shuf_idx = torch.randperm(self.dataset_len)
-            self.sig_tensor = self.sig_tensor[shuf_idx]
-            self.seq_tensor = self.seq_tensor[shuf_idx]
-            self.labels = self.labels[shuf_idx]
-            if self.return_read_data:
-                self.read_data = [self.read_data[si] for si in shuf_idx]
+        if self.shuffle_on_iter:
+            self.shuffle_data()
         self._batch_i = 0
         return self
 
@@ -435,7 +433,7 @@ class RemoraDataset:
         b_en = b_st + self.batch_size
         self._batch_i += 1
         batch_read_data = None
-        if self.return_read_data:
+        if self.store_read_data:
             batch_read_data = self.read_data[b_st:b_en]
         return (
             (self.sig_tensor[b_st:b_en], self.seq_tensor[b_st:b_en]),
@@ -446,72 +444,113 @@ class RemoraDataset:
     def __len__(self):
         return self.n_batches
 
+    def get_label_counts(self):
+        return Counter(self.labels.numpy())
 
-def load_datasets(
-    reads,
-    chunk_context,
-    batch_size=DEFAULT_BATCH_SIZE,
-    num_chunks=None,
-    fixed_seq_len_chunks=False,
-    focus_offset=None,
-    full=False,
-    label_conv=None,
-    motif=None,
-    base_pred=False,
-    val_prop=0.0,
-    kmer_context_bases=constants.DEFAULT_KMER_CONTEXT_BASES,
-    return_read_data=False,
-):
-    chunks = load_chunks(
-        reads,
-        motif,
-        label_conv,
-        num_chunks=num_chunks,
-        chunk_context=chunk_context,
-        kmer_context_bases=kmer_context_bases,
-        focus_offset=focus_offset,
-        fixed_seq_len_chunks=fixed_seq_len_chunks,
-        base_pred=base_pred,
-        full=full,
-    )
-
-    if val_prop <= 0.0:
-        dl_val = dl_val_trn = None
-        trn_set = chunks
-    else:
-        # if fewer than 2 validation examples will be selected dataset
-        # TODO ensure validation data has at least one instance of each class
-        # ideally perform stratified data split
-        if len(chunks) < int(1 / val_prop) * 2:
+    def split_data(self, val_prop):
+        if self.dataset_len < int(1 / val_prop) * 2:
             raise RemoraError(
                 "Too few chunks to extract validation proportion "
-                f"({len(chunks)} < {int(1 / val_prop) * 2})"
+                f"({self.dataset_len} < {int(1 / val_prop) * 2})"
             )
-        np.random.shuffle(chunks)
-        val_idx = int(len(chunks) * val_prop)
-        trn_set = chunks[val_idx:]
-        dl_val = RemoraDataset(
-            chunks[:val_idx],
-            batch_size=batch_size,
-            shuffle=False,
+        common_kwargs = {
+            "chunk_context": self.chunk_context,
+            "kmer_context_bases": self.kmer_context_bases,
+            "base_pred": self.base_pred,
+            "mod_bases": self.mod_bases,
+            "store_read_data": self.store_read_data,
+            "batch_size": self.batch_size,
+        }
+        val_idx = int(self.dataset_len * val_prop)
+        val_ds = RemoraDataset(
+            self.sig_tensor[:val_idx],
+            self.seq_tensor[:val_idx],
+            self.labels[:val_idx],
+            self.read_data[:val_idx] if self.store_read_data else None,
+            shuffle_on_iter=False,
             drop_last=False,
-            return_read_data=return_read_data,
+            **common_kwargs,
         )
-        dl_val_trn = RemoraDataset(
-            chunks[val_idx : val_idx + val_idx],
-            batch_size=batch_size,
-            shuffle=False,
+        val_trn_ds = RemoraDataset(
+            self.sig_tensor[val_idx : val_idx + val_idx],
+            self.seq_tensor[val_idx : val_idx + val_idx],
+            self.labels[val_idx : val_idx + val_idx],
+            self.read_data[val_idx : val_idx + val_idx]
+            if self.store_read_data
+            else None,
+            shuffle_on_iter=False,
             drop_last=False,
-            return_read_data=return_read_data,
+            **common_kwargs,
+        )
+        trn_ds = RemoraDataset(
+            self.sig_tensor[val_idx:],
+            self.seq_tensor[val_idx:],
+            self.labels[val_idx:],
+            self.read_data[val_idx:] if self.store_read_data else None,
+            shuffle_on_iter=False,
+            drop_last=False,
+            **common_kwargs,
+        )
+        return trn_ds, val_trn_ds, val_ds
+
+    def save_dataset(self, filename):
+        np.savez(
+            filename,
+            sig_tensor=self.sig_tensor,
+            seq_tensor=self.seq_tensor,
+            labels=self.labels,
+            read_data=self.read_data,
+            chunk_context=self.chunk_context,
+            kmer_context_bases=self.kmer_context_bases,
+            base_pred=self.base_pred,
+            mod_bases=self.mod_bases,
         )
 
-    # shuffle and drop_last only if this is a split train/validation set.
-    dl_trn = RemoraDataset(
-        trn_set,
-        batch_size=batch_size,
-        shuffle=val_prop > 0,
-        drop_last=val_prop > 0,
-        return_read_data=return_read_data,
-    )
+    @classmethod
+    def load_from_file(cls, filename, *args, **kwargs):
+        # use allow_pickle=True to allow None type in read_data
+        data = np.load(filename, allow_pickle=True)
+        sig_tensor = torch.from_numpy(data["sig_tensor"])
+        seq_tensor = torch.from_numpy(data["seq_tensor"])
+        labels = torch.from_numpy(data["labels"])
+        read_data = data["read_data"].tolist()
+        chunk_context = tuple(data["chunk_context"].tolist())
+        kmer_context_bases = tuple(data["kmer_context_bases"].tolist())
+        base_pred = data["base_pred"].item()
+        mod_bases = data["mod_bases"].item()
+        return cls(
+            sig_tensor,
+            seq_tensor,
+            labels,
+            read_data,
+            chunk_context=chunk_context,
+            kmer_context_bases=kmer_context_bases,
+            base_pred=base_pred,
+            mod_bases=mod_bases,
+            store_read_data=read_data is not None,
+            *args,
+            **kwargs,
+        )
 
-    return dl_trn, dl_val, dl_val_trn, chunks
+    @classmethod
+    def load_from_chunks(cls, chunks, store_read_data=False, *args, **kwargs):
+        # pre-compute full tensors from which to load data
+        sig_tensor = torch.Tensor(
+            np.stack([c.signal for c in chunks])
+        ).unsqueeze(1)
+        seq_tensor = torch.from_numpy(
+            np.stack([c.seq_nn_input for c in chunks])
+        ).type(torch.FloatTensor)
+        labels = torch.LongTensor([c.label for c in chunks])
+        read_data = None
+        if store_read_data:
+            read_data = [(c.read_id, c.read_seq_pos) for c in chunks]
+        return cls(
+            sig_tensor,
+            seq_tensor,
+            labels,
+            read_data,
+            store_read_data=store_read_data,
+            *args,
+            **kwargs,
+        )

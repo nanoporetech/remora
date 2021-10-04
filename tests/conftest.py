@@ -109,21 +109,18 @@ def fw_model_path():
 
 
 @pytest.fixture(scope="session")
-def fw_mod_model_checkpoint(
-    fw_model_path, tmpdir_factory, mod_chunks, train_cli_args
-):
+def fw_mod_model_dir(fw_model_path, tmpdir_factory, mod_chunks, train_cli_args):
     """Run `train_model` on the command line."""
     print(
         f"Running command line `remora train_model` with model {fw_model_path}"
     )
     out_dir = tmpdir_factory.mktemp("remora_tests") / "train_mod_model"
-    out_ckpt = out_dir / "model_final.checkpoint"
     print(f"Output file: {out_dir}")
     check_call(
         [
             "remora",
             "train_model",
-            "--dataset-path",
+            "--taiyaki-dataset-path",
             str(mod_chunks),
             "--output-path",
             str(out_dir),
@@ -137,11 +134,11 @@ def fw_mod_model_checkpoint(
             *train_cli_args,
         ],
     )
-    return out_ckpt
+    return out_dir
 
 
 @pytest.fixture(scope="session")
-def fw_base_pred_model_checkpoint(
+def fw_base_pred_model_dir(
     fw_model_path, tmpdir_factory, can_chunks, train_cli_args
 ):
     """Run `train_model` on the command line with --base-pred."""
@@ -149,13 +146,12 @@ def fw_base_pred_model_checkpoint(
         f"Running command line `remora train_model` with model {fw_model_path}"
     )
     out_dir = tmpdir_factory.mktemp("remora_tests") / "train_mod_model"
-    out_ckpt = out_dir / "model_final.checkpoint"
     print(f"Output file: {out_dir}")
     check_call(
         [
             "remora",
             "train_model",
-            "--dataset-path",
+            "--taiyaki-dataset-path",
             str(can_chunks),
             "--output-path",
             str(out_dir),
@@ -165,4 +161,4 @@ def fw_base_pred_model_checkpoint(
             *train_cli_args,
         ],
     )
-    return out_ckpt
+    return out_dir

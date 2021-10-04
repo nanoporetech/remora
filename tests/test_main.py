@@ -6,6 +6,11 @@ from subprocess import check_call
 
 pytestmark = pytest.mark.main
 
+# These are copied from remora.constants
+#  - can't figure out how to load this from pytest
+FINAL_MODEL_FILENAME = "model_final.checkpoint"
+SAVE_DATASET_FILENAME = "remora_train_data.npz"
+
 MODELS_DIR = Path(__file__).absolute().parent.parent / "models"
 MODEL_PATHS = [
     model_path
@@ -36,6 +41,7 @@ def test_prep_mod(mod_chunks):
 ##################
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("model_path", MODEL_PATHS)
 def test_train_mod(model_path, tmpdir_factory, mod_chunks, train_cli_args):
     """Run `train_model` on the command line."""
@@ -46,7 +52,7 @@ def test_train_mod(model_path, tmpdir_factory, mod_chunks, train_cli_args):
         [
             "remora",
             "train_model",
-            "--dataset-path",
+            "--taiyaki-dataset-path",
             str(mod_chunks),
             "--output-path",
             str(out_dir),
@@ -64,14 +70,41 @@ def test_train_mod(model_path, tmpdir_factory, mod_chunks, train_cli_args):
 
 
 @pytest.mark.unit
-def test_mod_infer(tmpdir_factory, mod_tai_map_sig, fw_mod_model_checkpoint):
+def test_train_mod_from_remora_ds(
+    tmpdir_factory, train_cli_args, fw_model_path, fw_mod_model_dir
+):
+    """Run `train_model` on the command line."""
+    print("Running command line `remora train_model` using remora dataset")
+    out_dir = tmpdir_factory.mktemp("remora_tests") / "train_mod_model"
+    print(f"Output file: {out_dir}")
+    check_call(
+        [
+            "remora",
+            "train_model",
+            "--remora-dataset-path",
+            str(fw_mod_model_dir / SAVE_DATASET_FILENAME),
+            "--output-path",
+            str(out_dir),
+            "--model",
+            fw_model_path,
+            "--motif",
+            "CG",
+            "0",
+            *train_cli_args,
+        ],
+    )
+    return out_dir
+
+
+@pytest.mark.unit
+def test_mod_infer(tmpdir_factory, mod_tai_map_sig, fw_mod_model_dir):
     out_dir = tmpdir_factory.mktemp("remora_tests") / "mod_infer"
     check_call(
         [
             "remora",
             "infer",
             mod_tai_map_sig,
-            fw_mod_model_checkpoint,
+            str(fw_mod_model_dir / FINAL_MODEL_FILENAME),
             "--full",
             "--batch-size",
             "100",
@@ -82,14 +115,14 @@ def test_mod_infer(tmpdir_factory, mod_tai_map_sig, fw_mod_model_checkpoint):
 
 
 @pytest.mark.unit
-def test_can_infer(tmpdir_factory, can_tai_map_sig, fw_mod_model_checkpoint):
+def test_can_infer(tmpdir_factory, can_tai_map_sig, fw_mod_model_dir):
     out_dir = tmpdir_factory.mktemp("remora_tests") / "can_infer"
     check_call(
         [
             "remora",
             "infer",
             can_tai_map_sig,
-            fw_mod_model_checkpoint,
+            str(fw_mod_model_dir / FINAL_MODEL_FILENAME),
             "--full",
             "--batch-size",
             "100",
@@ -100,14 +133,14 @@ def test_can_infer(tmpdir_factory, can_tai_map_sig, fw_mod_model_checkpoint):
 
 
 @pytest.mark.unit
-def test_chunk_infer(tmpdir_factory, mod_chunks, fw_mod_model_checkpoint):
+def test_chunk_infer(tmpdir_factory, mod_chunks, fw_mod_model_dir):
     out_dir = tmpdir_factory.mktemp("remora_tests") / "chunk_infer"
     check_call(
         [
             "remora",
             "infer",
             str(mod_chunks),
-            fw_mod_model_checkpoint,
+            str(fw_mod_model_dir / FINAL_MODEL_FILENAME),
             "--batch-size",
             "100",
             "--output-path",
@@ -133,7 +166,7 @@ def test_train_base_pred(
         [
             "remora",
             "train_model",
-            "--dataset-path",
+            "--taiyaki-dataset-path",
             str(can_chunks),
             "--output-path",
             str(out_dir),
@@ -147,8 +180,35 @@ def test_train_base_pred(
 
 
 @pytest.mark.unit
+def test_train_base_pred_from_remora_ds(
+    tmpdir_factory, train_cli_args, fw_model_path, fw_base_pred_model_dir
+):
+    """Run `train_model` on the command line."""
+    print("Running command line `remora train_model` using remora dataset")
+    out_dir = tmpdir_factory.mktemp("remora_tests") / "train_base_pred_model"
+    print(f"Output file: {out_dir}")
+    check_call(
+        [
+            "remora",
+            "train_model",
+            "--remora-dataset-path",
+            str(fw_base_pred_model_dir / SAVE_DATASET_FILENAME),
+            "--output-path",
+            str(out_dir),
+            "--model",
+            fw_model_path,
+            "--motif",
+            "CG",
+            "0",
+            *train_cli_args,
+        ],
+    )
+    return out_dir
+
+
+@pytest.mark.unit
 def test_base_pred_infer(
-    tmpdir_factory, can_tai_map_sig, fw_base_pred_model_checkpoint
+    tmpdir_factory, can_tai_map_sig, fw_base_pred_model_dir
 ):
     out_dir = tmpdir_factory.mktemp("remora_tests") / "can_infer_base_pred"
     check_call(
@@ -156,7 +216,7 @@ def test_base_pred_infer(
             "remora",
             "infer",
             can_tai_map_sig,
-            fw_base_pred_model_checkpoint,
+            str(fw_base_pred_model_dir / FINAL_MODEL_FILENAME),
             "--full",
             "--batch-size",
             "100",
@@ -168,7 +228,7 @@ def test_base_pred_infer(
 
 @pytest.mark.unit
 def test_base_pred_chunk_infer(
-    tmpdir_factory, can_chunks, fw_base_pred_model_checkpoint
+    tmpdir_factory, can_chunks, fw_base_pred_model_dir
 ):
     out_dir = tmpdir_factory.mktemp("remora_tests") / "chunk_infer_base_pred"
     check_call(
@@ -176,7 +236,7 @@ def test_base_pred_chunk_infer(
             "remora",
             "infer",
             str(can_chunks),
-            str(fw_base_pred_model_checkpoint),
+            str(fw_base_pred_model_dir / FINAL_MODEL_FILENAME),
             "--batch-size",
             "100",
             "--output-path",
