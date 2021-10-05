@@ -364,7 +364,7 @@ class RemoraDataset:
 
     def __iter__(self):
         if self.shuffle_on_iter:
-            self.shuffle_data()
+            self.shuffle_dataset()
         self._batch_i = 0
         return self
 

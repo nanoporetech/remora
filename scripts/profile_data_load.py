@@ -2,17 +2,19 @@ import argparse
 
 import numpy as np
 from taiyaki.mapped_signal_files import MappedSignalReader
+from tqdm import tqdm
 
 from remora import log, constants
 from remora.data_chunks import RemoraDataset
+from remora.prepare_train_data import fill_dataset
 from remora.util import Motif
 
 LOGGER = log.get_logger()
 
 
-def iter_batches(dl_trn, num_profile_batches):
-    for epoch_i in range(num_profile_batches):
-        for batch_i, (inputs, labels, read_data) in enumerate(dl_trn):
+def iter_batches(dataset, num_profile_batches):
+    for epoch_i in tqdm(range(num_profile_batches), smoothing=0, unit="epoch"):
+        for batch_i, (inputs, labels, read_data) in enumerate(dataset):
             LOGGER.debug(f"{epoch_i} {batch_i} {inputs[0].shape}")
 
 
@@ -22,9 +24,8 @@ def get_parser():
     )
     data_grp = parser.add_argument_group("Data Arguments")
     data_grp.add_argument(
-        "--dataset-path",
-        default="remora_modified_base_training_dataset.hdf5",
-        help="Training dataset. Default: %(default)s",
+        "taiyaki_mapped_signal",
+        help="Taiyaki mapped signal file",
     )
     data_grp.add_argument(
         "--num-chunks",
@@ -33,14 +34,8 @@ def get_parser():
         "Default: All chunks loaded",
     )
     data_grp.add_argument(
-        "--focus-offset",
-        default=constants.DEFAULT_FOCUS_OFFSET,
-        type=int,
-        help="Offset into stored chunks to be predicted. Default: %(default)d",
-    )
-    data_grp.add_argument(
         "--chunk-context",
-        default=constants.DEFAULT_CONTEXT_CHUNKS,
+        default=constants.DEFAULT_CHUNK_CONTEXT,
         type=int,
         nargs=2,
         help="Number of context signal points or bases to select around the "
@@ -48,7 +43,7 @@ def get_parser():
     )
     data_grp.add_argument(
         "--batch-size",
-        default=200,
+        default=constants.DEFAULT_BATCH_SIZE,
         type=int,
         help="Number of samples per batch. Default: %(default)d",
     )
@@ -72,7 +67,7 @@ def get_parser():
     data_grp.add_argument(
         "--kmer-context-bases",
         nargs=2,
-        default=constants.DEFAULT_CONTEXT_BASES,
+        default=constants.DEFAULT_KMER_CONTEXT_BASES,
         type=int,
         help="Definition of k-mer (derived from the reference) passed into "
         "the model along with each signal position. Default: %(default)s",
@@ -84,8 +79,20 @@ def get_parser():
         help="Number of batches to iterate over for profiling. "
         "Default: %(default)d",
     )
+    data_grp.add_argument(
+        "--max-chunks-per-read",
+        type=int,
+        default=10,
+        help="Maxiumum number of chunks to extract from a single read. "
+        "Default: %(default)s",
+    )
 
     mdl_grp = parser.add_argument_group("Model Arguments")
+    mdl_grp.add_argument(
+        "--mod-bases",
+        help="Single letter codes for modified bases to predict. Must "
+        "provide either this or specify --base-pred.",
+    )
     mdl_grp.add_argument(
         "--base-pred",
         action="store_true",
@@ -111,7 +118,7 @@ def main(args):
 
     import cProfile
 
-    input_msf = MappedSignalReader(args.dataset_path)
+    input_msf = MappedSignalReader(args.taiyaki_mapped_signal)
     alphabet_info = input_msf.get_alphabet_information()
     alphabet, collapse_alphabet = (
         alphabet_info.alphabet,
@@ -129,9 +136,21 @@ def main(args):
         mod_bases=args.mod_bases,
         motif=motif.to_tuple(),
     )
-    LOGGER.info("Profiling Remora dataset extraction")
+    LOGGER.info("Profiling Remora dataset conversion")
+    save_fn = f"{args.output_basename}_remora_mapped_signal.npz"
+    # appease flake8
+    fill_dataset
     cProfile.runctx(
-        """
+        """fill_dataset(
+            input_msf,
+            dataset,
+            num_reads,
+            alphabet_info.collapse_alphabet,
+            args.max_chunks_per_read,
+            label_conv
+        )
+dataset.shuffle_dataset()
+dataset.save_dataset(save_fn)
         """,
         globals(),
         locals(),
@@ -140,7 +159,7 @@ def main(args):
 
     LOGGER.info("Profiling data iteration")
     cProfile.runctx(
-        "iter_batches(dl_trn, args.num_profile_batches)",
+        "iter_batches(dataset, args.num_profile_batches)",
         globals(),
         locals(),
         filename=f"{args.output_basename}_iter_batches.prof",
