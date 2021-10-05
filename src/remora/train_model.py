@@ -7,7 +7,7 @@ import torch
 from tqdm import tqdm
 
 from remora import constants, util, log, RemoraError
-from remora.data_chunks import load_taiyaki_dataset, load_chunks, RemoraDataset
+from remora.data_chunks import RemoraDataset
 
 LOGGER = log.get_logger()
 
@@ -40,18 +40,13 @@ def train_model(
     seed,
     device,
     out_path,
-    taiyaki_dataset_path,
     remora_dataset_path,
-    num_chunks,
-    motif,
-    focus_offset,
     chunk_context,
+    kmer_context_bases,
     val_prop,
     batch_size,
     model_path,
     size,
-    mod_bases,
-    base_pred,
     optimizer,
     lr,
     weight_decay,
@@ -59,7 +54,6 @@ def train_model(
     lr_decay_gamma,
     epochs,
     save_freq,
-    kmer_context_bases,
 ):
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -71,52 +65,35 @@ def train_model(
             "Device option specified, but CUDA is not available from torch."
         )
 
-    if taiyaki_dataset_path is None and remora_dataset_path is None:
-        raise RemoraError("Must specify either Taiyaki or Remora dataset.")
-    elif taiyaki_dataset_path is not None and remora_dataset_path is not None:
-        raise RemoraError("Must specify only one of Taiyaki or Remora dataset.")
-    if remora_dataset_path is not None:
-        LOGGER.info("Loading dataset from Remora file")
-        dataset = RemoraDataset.load_from_file(
-            remora_dataset_path,
-            batch_size=batch_size,
-        )
-        # load attributes from file
-        base_pred = dataset.base_pred
-        mod_bases = dataset.mod_bases
-        # TODO allow modification of applicable attributes
-        # namely, kmer_context_bases, chunk_context can be shrunk from versions
-        # in file
-        kmer_context_bases = dataset.kmer_context_bases
-        chunk_context = dataset.chunk_context
-        LOGGER.info(
-            "Loaded data info from file:\n"
-            f"          base_pred : {base_pred}\n"
-            f"          mod_bases : {mod_bases}\n"
-            f" kmer_context_bases : {kmer_context_bases}\n"
-            f"      chunk_context : {chunk_context}\n"
-        )
+    LOGGER.info("Loading dataset from Remora file")
+    dataset = RemoraDataset.load_from_file(
+        remora_dataset_path,
+        batch_size=batch_size,
+    )
+    # load attributes from file
+    # TODO allow modification of applicable attributes
+    # namely, kmer_context_bases, chunk_context can be shrunk from versions
+    # in file
+    kmer_context_bases = dataset.kmer_context_bases
+    chunk_context = dataset.chunk_context
+    LOGGER.info(
+        "Loaded data info from file:\n"
+        f"          base_pred : {dataset.base_pred}\n"
+        f"          mod_bases : {dataset.mod_bases}\n"
+        f" kmer_context_bases : {kmer_context_bases}\n"
+        f"      chunk_context : {chunk_context}\n"
+        f"              motif : {dataset.motif}\n"
+    )
 
-    val_fp = util.ValidationLogger(out_path, base_pred)
+    val_fp = util.ValidationLogger(out_path, dataset.base_pred)
     atexit.register(val_fp.close)
     batch_fp = util.BatchLogger(out_path)
     atexit.register(batch_fp.close)
 
-    if not base_pred and mod_bases is None:
-        raise RemoraError(
-            "Must specify either modified base or base prediction model "
-            "type option."
-        )
-    elif base_pred and mod_bases is not None:
-        raise RemoraError(
-            "Must specify either modified base or base prediction model "
-            "type option not both."
-        )
-
     LOGGER.info("Loading model")
     copy_model_path = util.resolve_path(os.path.join(out_path, "model.py"))
     copyfile(model_path, copy_model_path)
-    num_out = 4 if base_pred else len(mod_bases) + 1
+    num_out = 4 if dataset.base_pred else len(dataset.mod_bases) + 1
     model_params = {
         "size": size,
         "kmer_len": sum(kmer_context_bases) + 1,
@@ -134,54 +111,6 @@ def train_model(
     scheduler = torch.optim.lr_scheduler.StepLR(
         opt, step_size=lr_decay_step, gamma=lr_decay_gamma
     )
-
-    if taiyaki_dataset_path is not None:
-        LOGGER.info("Loading training data Taiyaki file")
-        reads, alphabet, collapse_alphabet = load_taiyaki_dataset(
-            taiyaki_dataset_path
-        )
-        if base_pred:
-            if alphabet != "ACGT":
-                raise ValueError(
-                    "Base prediction is not compatible with modified base "
-                    "training data. It requires a canonical alphabet."
-                )
-            label_conv = np.arange(4)
-        else:
-            util.validate_mod_bases(
-                mod_bases, motif, alphabet, collapse_alphabet
-            )
-            mod_can_equiv = collapse_alphabet[alphabet.find(mod_bases[0])]
-            label_conv = np.full(len(alphabet), -1, dtype=int)
-            label_conv[alphabet.find(mod_can_equiv)] = 0
-            for mod_i, mod_base in enumerate(mod_bases):
-                label_conv[alphabet.find(mod_base)] = mod_i + 1
-        LOGGER.info("Converting dataset for Remora input")
-        chunks = load_chunks(
-            reads,
-            motif=motif,
-            label_conv=label_conv,
-            num_chunks=num_chunks,
-            chunk_context=chunk_context,
-            kmer_context_bases=kmer_context_bases,
-            focus_offset=focus_offset,
-            fixed_seq_len_chunks=model._variable_width_possible,
-            base_pred=base_pred,
-        )
-        dataset = RemoraDataset.load_from_chunks(
-            chunks,
-            batch_size=batch_size,
-            chunk_context=chunk_context,
-            kmer_context_bases=kmer_context_bases,
-            mod_bases=mod_bases,
-            base_pred=base_pred,
-        )
-        del chunks
-        # shuffle data before storage for fixed validation chunks on restart
-        dataset.shuffle_data()
-        dataset.save_dataset(
-            os.path.join(out_path, constants.SAVE_DATASET_FILENAME)
-        )
 
     label_counts = dataset.get_label_counts()
     LOGGER.info(f"Label distribution: {label_counts}")
@@ -232,9 +161,9 @@ def train_model(
         "model_params": model_params,
         "chunk_context": chunk_context,
         "fixed_seq_len_chunks": model._variable_width_possible,
-        "motif": motif.to_tuple(),
-        "mod_bases": mod_bases,
-        "base_pred": base_pred,
+        "motif": dataset.motif,
+        "mod_bases": dataset.mod_bases,
+        "base_pred": dataset.base_pred,
         "kmer_context_bases": kmer_context_bases,
     }
     for epoch in range(epochs):

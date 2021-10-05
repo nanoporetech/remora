@@ -1,9 +1,10 @@
 import argparse
 
 import numpy as np
+from taiyaki.mapped_signal_files import MappedSignalReader
 
 from remora import log, constants
-from remora.data_chunks import load_datasets, load_taiyaki_dataset
+from remora.data_chunks import RemoraDataset
 from remora.util import Motif
 
 LOGGER = log.get_logger()
@@ -110,51 +111,31 @@ def main(args):
 
     import cProfile
 
-    LOGGER.info("Profiling Taiyaki data loading")
-    cProfile.runctx(
-        "load_taiyaki_dataset(args.dataset_path)",
-        globals(),
-        locals(),
-        filename=f"{args.output_basename}_tai_load.prof",
+    input_msf = MappedSignalReader(args.dataset_path)
+    alphabet_info = input_msf.get_alphabet_information()
+    alphabet, collapse_alphabet = (
+        alphabet_info.alphabet,
+        alphabet_info.collapse_alphabet,
     )
-
-    reads, alphabet, collapse_alphabet = load_taiyaki_dataset(args.dataset_path)
     label_conv = np.arange(len(alphabet))
     motif = Motif(*args.motif)
-    LOGGER.info("Profiling conversion to Remora dataset")
-    # appease flak8
-    load_datasets
+    num_reads = len(input_msf.get_read_ids())
+    # initialize empty dataset with pre-allocated memory
+    dataset = RemoraDataset.allocate_empty_chunks(
+        num_chunks=args.max_chunks_per_read * num_reads,
+        chunk_context=args.chunk_context,
+        kmer_context_bases=args.kmer_context_bases,
+        base_pred=args.base_pred,
+        mod_bases=args.mod_bases,
+        motif=motif.to_tuple(),
+    )
+    LOGGER.info("Profiling Remora dataset extraction")
     cProfile.runctx(
-        """load_datasets(
-            reads,
-            args.chunk_context,
-            batch_size=args.batch_size,
-            num_chunks=args.num_chunks,
-            fixed_seq_len_chunks=False,
-            focus_offset=args.focus_offset,
-            motif=motif,
-            label_conv=label_conv,
-            base_pred=args.base_pred,
-            val_prop=args.val_prop,
-            kmer_context_bases=args.kmer_context_bases,
-         )""",
+        """
+        """,
         globals(),
         locals(),
         filename=f"{args.output_basename}_remora_convert.prof",
-    )
-
-    dl_trn, _, _, _ = load_datasets(
-        reads,
-        args.chunk_context,
-        batch_size=args.batch_size,
-        num_chunks=args.num_chunks,
-        fixed_seq_len_chunks=False,
-        focus_offset=args.focus_offset,
-        motif=motif,
-        label_conv=label_conv,
-        base_pred=args.base_pred,
-        val_prop=args.val_prop,
-        kmer_context_bases=args.kmer_context_bases,
     )
 
     LOGGER.info("Profiling data iteration")

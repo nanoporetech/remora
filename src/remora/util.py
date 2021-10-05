@@ -54,8 +54,8 @@ def to_str(value):
 def get_mod_bases(alphabet, collapse_alphabet):
     return [
         mod_base
-        for can_base, mod_base in zip(alphabet, collapse_alphabet)
-        if can_base != mod_base
+        for mod_base, can_base in zip(alphabet, collapse_alphabet)
+        if mod_base != can_base
     ]
 
 
@@ -117,16 +117,28 @@ class Motif:
 
 
 def validate_mod_bases(mod_bases, motif, alphabet, collapse_alphabet):
+    """Validate that inputs are mutually consistent. Return label conversion
+    from alphabet integer encodings to modified base categories.
+    """
+    if len(set(mod_bases)) < len(mod_bases):
+        raise RemoraError("Single letter modified base codes must be unique.")
     for mod_base in mod_bases:
         if mod_base not in alphabet:
             raise RemoraError("Modified base provided not found in alphabet")
         mod_can_equiv = collapse_alphabet[alphabet.find(mod_base)]
+        # note this check also requires that all modified bases have the same
+        # canonical base equivalent.
         if motif.focus_base != mod_can_equiv:
             raise RemoraError(
                 f"Canonical base within motif ({motif.focus_base}) does not "
                 "match canonical equivalent for modified base "
                 f"({mod_can_equiv})"
             )
+    label_conv = np.full(len(alphabet), -1, dtype=int)
+    label_conv[alphabet.find(mod_can_equiv)] = 0
+    for mod_i, mod_base in enumerate(mod_bases):
+        label_conv[alphabet.find(mod_base)] = mod_i + 1
+    return label_conv
 
 
 class plotter:
