@@ -40,9 +40,9 @@ class SubcommandHelpFormatter(argparse.RawDescriptionHelpFormatter):
 
 def register_prepare_taiyaki_train_data(parser):
     subparser = parser.add_parser(
-        "prepare_taiyaki_train_data",
-        description="Prepare Remora training data in Taiyaki format",
-        help="Prepare Remora training data in Taiyaki format",
+        "prepare_train_data",
+        description="Prepare Remora training dataset",
+        help="Prepare Remora training dataset.",
         formatter_class=SubcommandHelpFormatter,
     )
     subparser.add_argument(
@@ -50,9 +50,9 @@ def register_prepare_taiyaki_train_data(parser):
         help="Taiyaki mapped signal file.",
     )
     subparser.add_argument(
-        "--output-mapped-signal-file",
-        default="remora_chunk_training_dataset.hdf5",
-        help="Output Taiyaki mapped signal file. Default: %(default)s",
+        "--output-remora-training-file",
+        default="remora_training_dataset.npz",
+        help="Output Remora training dataset file. Default: %(default)s",
     )
     subparser.add_argument(
         "--motif",
@@ -65,11 +65,30 @@ def register_prepare_taiyaki_train_data(parser):
         '"--motif CG 0". Default: Any context ("N 0")',
     )
     subparser.add_argument(
-        "--context-bases",
+        "--chunk-context",
+        default=constants.DEFAULT_CHUNK_CONTEXT,
         type=int,
-        default=constants.DEFAULT_FOCUS_OFFSET,
-        help="Number of bases to either side of central base. "
-        "Default: %(default)s",
+        nargs=2,
+        help="Number of context signal points to select around the central "
+        "position. Default: %(default)s",
+    )
+    subparser.add_argument(
+        "--kmer-context-bases",
+        nargs=2,
+        default=constants.DEFAULT_KMER_CONTEXT_BASES,
+        type=int,
+        help="Definition of k-mer (derived from the reference) passed into "
+        "the model along with each signal position. Default: %(default)s",
+    )
+    subparser.add_argument(
+        "--mod-bases",
+        help="Single letter codes for modified bases to predict. Must "
+        "provide either this or specify --base-pred.",
+    )
+    subparser.add_argument(
+        "--base-pred",
+        action="store_true",
+        help="Train to predict bases (SNPs) and not mods.",
     )
     subparser.add_argument(
         "--max-chunks-per-read",
@@ -79,51 +98,64 @@ def register_prepare_taiyaki_train_data(parser):
         "Default: %(default)s",
     )
     subparser.add_argument(
-        "--batch-size",
-        type=int,
-        default=100000,
-        help="Number of chunks per batch in output file. "
-        "Default: %(default)s",
+        "--log-filename",
+        help="Log filename. Default: Don't output log file.",
     )
 
-    subparser.set_defaults(func=run_prepare_taiyaki_train_data_mod)
+    subparser.set_defaults(func=run_prepare_train_data)
 
 
-def run_prepare_taiyaki_train_data_mod(args):
+def run_prepare_train_data(args):
     import atexit
 
-    from taiyaki.mapped_signal_files import MappedSignalReader, BatchHDF5Writer
+    import numpy as np
+    from taiyaki.mapped_signal_files import MappedSignalReader
 
-    from remora.util import get_mod_bases, Motif, validate_mod_bases
-    from remora.prepare_taiyaki_train_data import extract_chunk_dataset
+    from remora.util import Motif, validate_mod_bases
+    from remora.prepare_train_data import extract_chunk_dataset
 
+    if args.log_filename is not None:
+        log.init_logger(args.log_filename)
     LOGGER.info("Opening mapped signal files")
     input_msf = MappedSignalReader(args.mapped_signal_file)
     atexit.register(input_msf.close)
     alphabet_info = input_msf.get_alphabet_information()
-    output_msf = BatchHDF5Writer(
-        args.output_mapped_signal_file,
-        alphabet_info,
-        batch_size=args.batch_size,
+    alphabet, collapse_alphabet = (
+        alphabet_info.alphabet,
+        alphabet_info.collapse_alphabet,
     )
-    atexit.register(output_msf.close)
     motif = Motif(*args.motif)
-    mod_bases = get_mod_bases(
-        alphabet_info.alphabet, alphabet_info.collapse_alphabet
-    )
-    if len(mod_bases) > 0:
-        validate_mod_bases(
-            mod_bases,
-            motif,
-            alphabet_info.alphabet,
-            alphabet_info.collapse_alphabet,
+    if not args.base_pred and args.mod_bases is None:
+        raise RemoraError(
+            "Must specify either modified base or base prediction model "
+            "type option."
+        )
+    elif args.base_pred and args.mod_bases is not None:
+        raise RemoraError(
+            "Must specify either modified base or base prediction model "
+            "type option not both."
+        )
+    if args.base_pred:
+        if alphabet != "ACGT":
+            raise ValueError(
+                "Base prediction is not compatible with modified base "
+                "training data. It requires a canonical alphabet."
+            )
+        label_conv = np.arange(4)
+    else:
+        label_conv = validate_mod_bases(
+            args.mod_bases, motif, alphabet, collapse_alphabet
         )
     extract_chunk_dataset(
         input_msf,
-        output_msf,
+        args.output_remora_training_file,
         motif,
-        args.context_bases,
+        args.chunk_context,
         args.max_chunks_per_read,
+        label_conv,
+        args.base_pred,
+        args.mod_bases,
+        args.kmer_context_bases,
     )
 
 
@@ -140,23 +172,12 @@ def register_train_model(parser):
         formatter_class=SubcommandHelpFormatter,
     )
 
+    subparser.add_argument(
+        "remora_dataset_path",
+        help="Remora training dataset",
+    )
+
     data_grp = subparser.add_argument_group("Data Arguments")
-    data_grp.add_argument(
-        "--taiyaki-dataset-path",
-        help="Taiyaki chunk training dataset (must specify either this or "
-        "--remora-dataset-path)",
-    )
-    data_grp.add_argument(
-        "--remora-dataset-path",
-        help="Remora training dataset (must specify either this or "
-        "--taiyaki-dataset-path)",
-    )
-    data_grp.add_argument(
-        "--num-chunks",
-        type=int,
-        help="Total number of chunks loaded for training. "
-        "Default: All chunks loaded",
-    )
     data_grp.add_argument(
         "--val-prop",
         default=constants.DEFAULT_VAL_PROP,
@@ -165,44 +186,25 @@ def register_train_model(parser):
         "Default: %(default)f",
     )
     data_grp.add_argument(
-        "--focus-offset",
-        default=constants.DEFAULT_FOCUS_OFFSET,
-        type=int,
-        help="Offset into stored chunks to be predicted. Default: %(default)d",
-    )
-    data_grp.add_argument(
-        "--motif",
-        nargs=2,
-        metavar=("MOTIF", "REL_POSITION"),
-        default=["N", 0],
-        help="Restrict prediction to a defined motif. Argument takes 2 "
-        "values representing 1) sequence motif and 2) relative "
-        "focus position within the motif. For example to restrict to CpG "
-        'sites use "--motif CG 0". Default: All bases',
-    )
-    data_grp.add_argument(
-        "--chunk-context",
-        default=constants.DEFAULT_CHUNK_CONTEXT,
-        type=int,
-        nargs=2,
-        help="Number of context signal points or bases to select around the "
-        "central position. Signal or base positions is determined by whether "
-        "the input model takes fixed signal or fixed sequence length inputs. "
-        "Default: %(default)s",
-    )
-    data_grp.add_argument(
-        "--kmer-context-bases",
-        nargs=2,
-        default=constants.DEFAULT_KMER_CONTEXT_BASES,
-        type=int,
-        help="Definition of k-mer (derived from the reference) passed into "
-        "the model along with each signal position. Default: %(default)s",
-    )
-    data_grp.add_argument(
         "--batch-size",
         default=constants.DEFAULT_BATCH_SIZE,
         type=int,
         help="Number of samples per batch. Default: %(default)d",
+    )
+    data_grp.add_argument(
+        "--chunk-context",
+        type=int,
+        nargs=2,
+        help="Override chunk context from data prep. Number of context signal "
+        "points to select around the central position.",
+    )
+    data_grp.add_argument(
+        "--kmer-context-bases",
+        nargs=2,
+        type=int,
+        help="Override kmer context bases from data prep. Definition of "
+        "k-mer (derived from the reference) passed into the model along with "
+        "each signal position.",
     )
 
     out_grp = subparser.add_argument_group("Output Arguments")
@@ -232,14 +234,6 @@ def register_train_model(parser):
         type=int,
         default=constants.DEFAULT_NN_SIZE,
         help="Model layer size. Default: %(default)d",
-    )
-    mdl_grp.add_argument(
-        "--mod-bases", help="Single letter codes for modified bases to predict."
-    )
-    mdl_grp.add_argument(
-        "--base-pred",
-        action="store_true",
-        help="Train to predict bases and not mods.",
     )
 
     train_grp = subparser.add_argument_group("Training Arguments")
@@ -295,7 +289,6 @@ def register_train_model(parser):
 
 def run_train_model(args):
     from remora.train_model import train_model
-    from remora.util import Motif
 
     out_path = Path(args.output_path)
     if args.overwrite:
@@ -307,24 +300,17 @@ def run_train_model(args):
         raise RemoraError("Refusing to overwrite existing training directory.")
     out_path.mkdir(parents=True, exist_ok=True)
     log.init_logger(os.path.join(out_path, "log.txt"))
-    motif = Motif(*args.motif)
-    # TODO preprocess some step to reduce args to train_model
     train_model(
         args.seed,
         args.device,
         out_path,
-        args.taiyaki_dataset_path,
         args.remora_dataset_path,
-        args.num_chunks,
-        motif,
-        args.focus_offset,
         args.chunk_context,
+        args.kmer_context_bases,
         args.val_prop,
         args.batch_size,
         args.model,
         args.size,
-        args.mod_bases,
-        args.base_pred,
         args.optimizer,
         args.lr,
         args.weight_decay,
@@ -332,7 +318,6 @@ def run_train_model(args):
         args.lr_decay_gamma,
         args.epochs,
         args.save_freq,
-        args.kmer_context_bases,
     )
 
 
@@ -362,16 +347,9 @@ def register_infer(parser):
     )
     subparser.add_argument(
         "--focus-offset",
-        default=constants.DEFAULT_FOCUS_OFFSET,
         type=int,
-        help="Offset into stored chunks to be inferred. Default: %(default)d",
-    )
-    subparser.add_argument(
-        "--full",
-        action="store_true",
-        help="Make predictions at all motif matches. Default: Only predict at "
-        "--focus-offset position in each read (for chunk training dataset "
-        "validation).",
+        help="Offset into stored chunks to be inferred. Default: Call all "
+        "matches to motif (retrieved from model)",
     )
     subparser.add_argument(
         "--output-path",
@@ -399,6 +377,10 @@ def register_infer(parser):
 
 
 def run_infer(args):
+    import atexit
+
+    from taiyaki.mapped_signal_files import MappedSignalReader
+
     from remora.inference import infer
 
     out_path = Path(args.output_path)
@@ -412,13 +394,16 @@ def run_infer(args):
     out_path.mkdir(parents=True, exist_ok=True)
     log.init_logger(os.path.join(out_path, "log.txt"))
 
+    LOGGER.info("Opening mapped signal files")
+    input_msf = MappedSignalReader(args.dataset_path)
+    atexit.register(input_msf.close)
+
     infer(
+        input_msf,
         out_path,
-        args.dataset_path,
         args.checkpoint_path,
         args.model_path,
         args.batch_size,
         args.device,
         args.focus_offset,
-        args.full,
     )

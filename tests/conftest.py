@@ -44,16 +44,17 @@ def mod_tai_map_sig():
 @pytest.fixture(scope="session")
 def can_chunks(tmpdir_factory, can_tai_map_sig):
     """Run `prepare_taiyaki_train_data canonical` on the command line."""
-    print("Running command line `remora prepare_taiyaki_train_data canonical`")
-    output = tmpdir_factory.mktemp("remora_tests") / "can_remora_chunks.hdf5"
+    print("Running command line `remora prepare_train_data` canonical")
+    output = tmpdir_factory.mktemp("remora_tests") / "can_remora_chunks.npz"
     print(f"Output file: {output}")
     check_call(
         [
             "remora",
-            "prepare_taiyaki_train_data",
+            "prepare_train_data",
             str(can_tai_map_sig),
-            "--output-mapped-signal-file",
+            "--output-remora-training-file",
             str(output),
+            "--base-pred",
         ],
     )
     return output
@@ -61,17 +62,19 @@ def can_chunks(tmpdir_factory, can_tai_map_sig):
 
 @pytest.fixture(scope="session")
 def mod_chunks(tmpdir_factory, mod_tai_map_sig):
-    """Run `prepare_taiyaki_train_data modbase` on the command line."""
-    print("Running command line `remora prepare_taiyaki_train_data modbase`")
-    output = tmpdir_factory.mktemp("remora_tests") / "mod_remora_chunks.hdf5"
+    """Run `prepare_train_data` modbase on the command line."""
+    print("Running command line `remora prepare_train_data` modbase")
+    output = tmpdir_factory.mktemp("remora_tests") / "mod_remora_chunks.npz"
     print(f"Output file: {output}")
     check_call(
         [
             "remora",
-            "prepare_taiyaki_train_data",
+            "prepare_train_data",
             str(mod_tai_map_sig),
-            "--output-mapped-signal-file",
+            "--output-remora-training-file",
             str(output),
+            "--mod-bases",
+            "m",
             "--motif",
             "CG",
             "0",
@@ -109,6 +112,31 @@ def fw_model_path():
 
 
 @pytest.fixture(scope="session")
+def fw_base_pred_model_dir(
+    fw_model_path, tmpdir_factory, can_chunks, train_cli_args
+):
+    """Run `train_model` on the command line with --base-pred."""
+    print(
+        f"Running command line `remora train_model` with model {fw_model_path}"
+    )
+    out_dir = tmpdir_factory.mktemp("remora_tests") / "train_can_model"
+    print(f"Output file: {out_dir}")
+    check_call(
+        [
+            "remora",
+            "train_model",
+            str(can_chunks),
+            "--output-path",
+            str(out_dir),
+            "--model",
+            str(fw_model_path),
+            *train_cli_args,
+        ],
+    )
+    return out_dir
+
+
+@pytest.fixture(scope="session")
 def fw_mod_model_dir(fw_model_path, tmpdir_factory, mod_chunks, train_cli_args):
     """Run `train_model` on the command line."""
     print(
@@ -120,44 +148,11 @@ def fw_mod_model_dir(fw_model_path, tmpdir_factory, mod_chunks, train_cli_args):
         [
             "remora",
             "train_model",
-            "--taiyaki-dataset-path",
             str(mod_chunks),
             "--output-path",
             str(out_dir),
             "--model",
             str(fw_model_path),
-            "--mod-bases",
-            "m",
-            "--motif",
-            "CG",
-            "0",
-            *train_cli_args,
-        ],
-    )
-    return out_dir
-
-
-@pytest.fixture(scope="session")
-def fw_base_pred_model_dir(
-    fw_model_path, tmpdir_factory, can_chunks, train_cli_args
-):
-    """Run `train_model` on the command line with --base-pred."""
-    print(
-        f"Running command line `remora train_model` with model {fw_model_path}"
-    )
-    out_dir = tmpdir_factory.mktemp("remora_tests") / "train_mod_model"
-    print(f"Output file: {out_dir}")
-    check_call(
-        [
-            "remora",
-            "train_model",
-            "--taiyaki-dataset-path",
-            str(can_chunks),
-            "--output-path",
-            str(out_dir),
-            "--model",
-            str(fw_model_path),
-            "--base-pred",
             *train_cli_args,
         ],
     )
