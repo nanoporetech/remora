@@ -7,10 +7,11 @@ import numpy as np
 import torch
 from sklearn.metrics import precision_recall_curve
 
-from remora import log, RemoraError
+from remora import log, RemoraError, encoded_kmers
 
 LOGGER = log.get_logger()
 
+CAN_ALPHABET = "ACGT"
 SINGLE_LETTER_CODE = {
     "A": "A",
     "C": "C",
@@ -49,14 +50,6 @@ def to_str(value):
         return value.decode()
     except AttributeError:
         return value
-
-
-def get_mod_bases(alphabet, collapse_alphabet):
-    return [
-        mod_base
-        for mod_base, can_base in zip(alphabet, collapse_alphabet)
-        if mod_base != can_base
-    ]
 
 
 def _load_python_model(model_file, **model_kwargs):
@@ -100,6 +93,17 @@ class Motif:
         # add lookahead group to serach for overlapping motif hits
         self.pattern = re.compile("(?=({}))".format(ambig_pat_str))
 
+        self.int_pattern = [
+            np.array(
+                [
+                    b_idx
+                    for b_idx, b in enumerate(CAN_ALPHABET)
+                    if b in SINGLE_LETTER_CODE[letter]
+                ]
+            )
+            for letter in raw_motif
+        ]
+
     def to_tuple(self):
         return self.raw_motif, self.focus_pos
 
@@ -114,6 +118,30 @@ class Motif:
     @property
     def num_bases_after_focus(self):
         return len(self.raw_motif) - self.focus_pos - 1
+
+
+def get_can_converter(alphabet, collapse_alphabet):
+    """Compute conversion from full alphabet integer encodings to
+    canonical alphabet integer encodings.
+    """
+    can_bases = "".join(
+        (
+            can_base
+            for mod_base, can_base in zip(alphabet, collapse_alphabet)
+            if mod_base == can_base
+        )
+    )
+    return np.array(
+        [can_bases.find(b) for b in collapse_alphabet], dtype=np.byte
+    )
+
+
+def get_mod_bases(alphabet, collapse_alphabet):
+    return [
+        mod_base
+        for mod_base, can_base in zip(alphabet, collapse_alphabet)
+        if mod_base != can_base
+    ]
 
 
 def validate_mod_bases(mod_bases, motif, alphabet, collapse_alphabet):
@@ -134,7 +162,7 @@ def validate_mod_bases(mod_bases, motif, alphabet, collapse_alphabet):
                 "match canonical equivalent for modified base "
                 f"({mod_can_equiv})"
             )
-    label_conv = np.full(len(alphabet), -1, dtype=int)
+    label_conv = np.full(len(alphabet), -1, dtype=np.byte)
     label_conv[alphabet.find(mod_can_equiv)] = 0
     for mod_i, mod_base in enumerate(mod_bases):
         label_conv[alphabet.find(mod_base)] = mod_i + 1
@@ -204,17 +232,24 @@ class ValidationLogger:
     def close(self):
         self.fp.close()
 
-    def validate_model(self, model, criterion, dl, niter, val_type="val"):
+    def validate_model(self, model, criterion, dataset, niter, val_type="val"):
+        bb, ab = dataset.kmer_context_bases
         with torch.no_grad():
             model.eval()
             all_labels = []
             all_outputs = []
             all_loss = []
-            for inputs, labels, _ in dl:
+            for (sigs, seqs, seq_maps, seq_lens), labels, _ in dataset:
                 all_labels.append(labels)
+                enc_kmers = torch.from_numpy(
+                    encoded_kmers.compute_encoded_kmer_batch(
+                        bb, ab, seqs, seq_maps, seq_lens
+                    )
+                )
                 if torch.cuda.is_available():
-                    inputs = (input.cuda() for input in inputs)
-                output = model(*inputs).detach().cpu()
+                    sigs = sigs.cuda()
+                    enc_kmers = enc_kmers.cuda()
+                output = model(sigs, enc_kmers).detach().cpu()
                 all_outputs.append(output)
                 loss = criterion(output, labels)
                 all_loss.append(loss.detach().cpu().numpy())

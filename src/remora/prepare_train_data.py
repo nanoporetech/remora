@@ -1,8 +1,8 @@
 import numpy as np
 from tqdm import tqdm
 
-from remora import log
-from remora.util import Motif
+from remora import log, RemoraError
+from remora.util import Motif, get_can_converter
 from remora.data_chunks import RemoraRead, RemoraDataset
 
 LOGGER = log.get_logger()
@@ -12,17 +12,21 @@ def fill_dataset(
     input_msf,
     dataset,
     num_reads,
-    collapse_alphabet,
-    max_chunks_per_read,
+    can_conv,
     label_conv,
+    max_chunks_per_read,
 ):
     motif = Motif(*dataset.motif)
     for read in tqdm(input_msf, smoothing=0, total=num_reads, unit="reads"):
-        read = RemoraRead.from_taiyaki_read(read, collapse_alphabet)
+        try:
+            read = RemoraRead.from_taiyaki_read(read, can_conv, label_conv)
+        except RemoraError:
+            # TODO log these failed reads to track down errors
+            continue
         if motif.any_context:
             motif_hits = np.arange(
                 motif.focus_pos,
-                len(read.seq) - motif.num_bases_after_focus,
+                read.can_seq.size - motif.num_bases_after_focus,
             )
         else:
             motif_hits = np.fromiter(read.iter_motif_hits(motif), int)
@@ -34,12 +38,12 @@ def fill_dataset(
         for chunk in read.iter_chunks(
             focus_base_indices,
             dataset.chunk_context,
-            label_conv,
             dataset.kmer_context_bases,
             dataset.base_pred,
         ):
-            dataset.add_chunk(chunk)
-    dataset.trim_dataset()
+            if chunk.seq_len <= dataset.max_seq_len:
+                dataset.add_chunk(chunk)
+    dataset.clip_chunks()
 
 
 def extract_chunk_dataset(
@@ -47,6 +51,7 @@ def extract_chunk_dataset(
     output_filename,
     motif,
     chunk_context,
+    max_seq_len,
     max_chunks_per_read,
     label_conv,
     base_pred,
@@ -54,6 +59,9 @@ def extract_chunk_dataset(
     kmer_context_bases,
 ):
     alphabet_info = input_msf.get_alphabet_information()
+    can_conv = get_can_converter(
+        alphabet_info.alphabet, alphabet_info.collapse_alphabet
+    )
 
     LOGGER.info("Allocating memory for output tensors")
     num_reads = len(input_msf.get_read_ids())
@@ -61,6 +69,7 @@ def extract_chunk_dataset(
     dataset = RemoraDataset.allocate_empty_chunks(
         num_chunks=max_chunks_per_read * num_reads,
         chunk_context=chunk_context,
+        max_seq_len=max_seq_len,
         kmer_context_bases=kmer_context_bases,
         base_pred=base_pred,
         mod_bases=mod_bases,
@@ -71,9 +80,9 @@ def extract_chunk_dataset(
         input_msf,
         dataset,
         num_reads,
-        alphabet_info.collapse_alphabet,
-        max_chunks_per_read,
+        can_conv,
         label_conv,
+        max_chunks_per_read,
     )
     dataset.shuffle_dataset()
     dataset.save_dataset(output_filename)

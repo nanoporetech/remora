@@ -73,6 +73,13 @@ def register_prepare_taiyaki_train_data(parser):
         "position. Default: %(default)s",
     )
     subparser.add_argument(
+        "--max-seq-length",
+        type=int,
+        default=constants.DEFAULT_MAX_SEQ_LEN,
+        help="Maxiumum bases from a chunk Should be adjusted accordingly with "
+        "--chunk-context. Default: %(default)s",
+    )
+    subparser.add_argument(
         "--kmer-context-bases",
         nargs=2,
         default=constants.DEFAULT_KMER_CONTEXT_BASES,
@@ -108,10 +115,9 @@ def register_prepare_taiyaki_train_data(parser):
 def run_prepare_train_data(args):
     import atexit
 
-    import numpy as np
     from taiyaki.mapped_signal_files import MappedSignalReader
 
-    from remora.util import Motif, validate_mod_bases
+    from remora.util import Motif, validate_mod_bases, get_can_converter
     from remora.prepare_train_data import extract_chunk_dataset
 
     if args.log_filename is not None:
@@ -141,7 +147,7 @@ def run_prepare_train_data(args):
                 "Base prediction is not compatible with modified base "
                 "training data. It requires a canonical alphabet."
             )
-        label_conv = np.arange(4)
+        label_conv = get_can_converter(alphabet, collapse_alphabet)
     else:
         label_conv = validate_mod_bases(
             args.mod_bases, motif, alphabet, collapse_alphabet
@@ -151,6 +157,7 @@ def run_prepare_train_data(args):
         args.output_remora_training_file,
         motif,
         args.chunk_context,
+        args.max_seq_length,
         args.max_chunks_per_read,
         label_conv,
         args.base_pred,
