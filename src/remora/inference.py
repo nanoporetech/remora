@@ -7,9 +7,14 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-from remora import log, RemoraError
+from remora import log, RemoraError, encoded_kmers
 from remora.data_chunks import RemoraDataset, RemoraRead
-from remora.util import continue_from_checkpoint, Motif, validate_mod_bases
+from remora.util import (
+    continue_from_checkpoint,
+    Motif,
+    validate_mod_bases,
+    get_can_converter,
+)
 
 LOGGER = log.get_logger()
 
@@ -97,7 +102,7 @@ def infer(
                 "Base prediction is not compatible with modified base "
                 "training data. It requires a canonical alphabet."
             )
-        label_conv = np.arange(4)
+        label_conv = get_can_converter(alphabet, collapse_alphabet)
     else:
         try:
             label_conv = validate_mod_bases(
@@ -106,23 +111,38 @@ def infer(
         except RemoraError:
             label_conv = None
 
+    can_conv = get_can_converter(
+        alphabet_info.alphabet, alphabet_info.collapse_alphabet
+    )
     num_reads = len(input_msf.get_read_ids())
+    bb, ab = ckpt["kmer_context_bases"]
     for read in tqdm(input_msf, smoothing=0, total=num_reads, unit="reads"):
-        read = RemoraRead.from_taiyaki_read(
-            read, alphabet_info.collapse_alphabet
-        )
+        try:
+            read = RemoraRead.from_taiyaki_read(read, can_conv, label_conv)
+        except RemoraError:
+            # TODO log these failed reads to track down errors
+            continue
         if focus_offset is not None:
             motif_hits = focus_offset
         elif motif.any_context:
             motif_hits = np.arange(
                 motif.focus_pos,
-                len(read.seq) - motif.num_bases_after_focus,
+                read.can_seq.size - motif.num_bases_after_focus,
             )
         else:
             motif_hits = np.fromiter(read.iter_motif_hits(motif), int)
+        chunks = list(
+            read.iter_chunks(
+                motif_hits,
+                ckpt["chunk_context"],
+                ckpt["kmer_context_bases"],
+                ckpt["base_pred"],
+            )
+        )
         read_dataset = RemoraDataset.allocate_empty_chunks(
             num_chunks=len(motif_hits),
             chunk_context=ckpt["chunk_context"],
+            max_seq_len=max(c.seq_len for c in chunks),
             kmer_context_bases=ckpt["kmer_context_bases"],
             base_pred=ckpt["base_pred"],
             mod_bases=ckpt["mod_bases"],
@@ -132,19 +152,19 @@ def infer(
             shuffle_on_iter=False,
             drop_last=False,
         )
-        for chunk in read.iter_chunks(
-            motif_hits,
-            ckpt["chunk_context"],
-            label_conv,
-            ckpt["kmer_context_bases"],
-            ckpt["base_pred"],
-        ):
+        for chunk in chunks:
             read_dataset.add_chunk(chunk)
         read_dataset.set_nbatches()
-        for inputs, labels, read_data in read_dataset:
+        for (sigs, seqs, seq_maps, seq_lens), labels, read_data in read_dataset:
+            enc_kmers = torch.from_numpy(
+                encoded_kmers.compute_encoded_kmer_batch(
+                    bb, ab, seqs, seq_maps, seq_lens
+                )
+            )
             if torch.cuda.is_available():
-                inputs = (ip.cuda() for ip in inputs)
-            output = model(*inputs).detach().cpu()
+                sigs = sigs.cuda()
+                enc_kmers = enc_kmers.cuda()
+            output = model(sigs, enc_kmers).detach().cpu()
             rw.write_results(output, read_data, labels)
 
 

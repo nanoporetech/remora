@@ -1,21 +1,31 @@
 import argparse
 
-import numpy as np
 from taiyaki.mapped_signal_files import MappedSignalReader
+import torch
 from tqdm import tqdm
 
-from remora import log, constants
+from remora import log, constants, encoded_kmers
 from remora.data_chunks import RemoraDataset
 from remora.prepare_train_data import fill_dataset
-from remora.util import Motif
+from remora.util import Motif, get_can_converter
 
 LOGGER = log.get_logger()
 
 
 def iter_batches(dataset, num_profile_batches):
+    bb, ab = dataset.kmer_context_bases
     for epoch_i in tqdm(range(num_profile_batches), smoothing=0, unit="epoch"):
-        for batch_i, (inputs, labels, read_data) in enumerate(dataset):
-            LOGGER.debug(f"{epoch_i} {batch_i} {inputs[0].shape}")
+        for batch_i, (
+            (sigs, seqs, seq_maps, seq_lens),
+            labels,
+            read_data,
+        ) in enumerate(dataset):
+            enc_kmers = torch.from_numpy(
+                encoded_kmers.compute_encoded_kmer_batch(
+                    bb, ab, seqs, seq_maps, seq_lens
+                )
+            )
+            LOGGER.debug(f"{epoch_i} {batch_i} {enc_kmers.shape}")
 
 
 def get_parser():
@@ -86,6 +96,13 @@ def get_parser():
         help="Maxiumum number of chunks to extract from a single read. "
         "Default: %(default)s",
     )
+    data_grp.add_argument(
+        "--max-seq-length",
+        type=int,
+        default=constants.DEFAULT_MAX_SEQ_LEN,
+        help="Maxiumum bases from a chunk Should be adjusted accordingly with "
+        "--chunk-context. Default: %(default)s",
+    )
 
     mdl_grp = parser.add_argument_group("Model Arguments")
     mdl_grp.add_argument(
@@ -124,13 +141,17 @@ def main(args):
         alphabet_info.alphabet,
         alphabet_info.collapse_alphabet,
     )
-    label_conv = np.arange(len(alphabet))
+    can_conv = get_can_converter(
+        alphabet_info.alphabet, alphabet_info.collapse_alphabet
+    )
+    label_conv = can_conv
     motif = Motif(*args.motif)
     num_reads = len(input_msf.get_read_ids())
     # initialize empty dataset with pre-allocated memory
     dataset = RemoraDataset.allocate_empty_chunks(
         num_chunks=args.max_chunks_per_read * num_reads,
         chunk_context=args.chunk_context,
+        max_seq_len=args.max_seq_length,
         kmer_context_bases=args.kmer_context_bases,
         base_pred=args.base_pred,
         mod_bases=args.mod_bases,
@@ -145,9 +166,9 @@ def main(args):
             input_msf,
             dataset,
             num_reads,
-            alphabet_info.collapse_alphabet,
+            can_conv,
+            can_conv,
             args.max_chunks_per_read,
-            label_conv
         )
 dataset.shuffle_dataset()
 dataset.save_dataset(save_fn)

@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from remora import constants, util, log, RemoraError
+from remora import constants, util, log, RemoraError, encoded_kmers
 from remora.data_chunks import RemoraDataset
 
 LOGGER = log.get_logger()
@@ -70,18 +70,15 @@ def train_model(
         remora_dataset_path,
         batch_size=batch_size,
     )
+    dataset.trim_kmer_context_bases(kmer_context_bases)
+    dataset.trim_chunk_context(chunk_context)
     # load attributes from file
-    # TODO allow modification of applicable attributes
-    # namely, kmer_context_bases, chunk_context can be shrunk from versions
-    # in file
-    kmer_context_bases = dataset.kmer_context_bases
-    chunk_context = dataset.chunk_context
     LOGGER.info(
         "Loaded data info from file:\n"
         f"          base_pred : {dataset.base_pred}\n"
         f"          mod_bases : {dataset.mod_bases}\n"
-        f" kmer_context_bases : {kmer_context_bases}\n"
-        f"      chunk_context : {chunk_context}\n"
+        f" kmer_context_bases : {dataset.kmer_context_bases}\n"
+        f"      chunk_context : {dataset.chunk_context}\n"
         f"              motif : {dataset.motif}\n"
     )
 
@@ -96,7 +93,7 @@ def train_model(
     num_out = 4 if dataset.base_pred else len(dataset.mod_bases) + 1
     model_params = {
         "size": size,
-        "kmer_len": sum(kmer_context_bases) + 1,
+        "kmer_len": sum(dataset.kmer_context_bases) + 1,
         "num_out": num_out,
     }
     model = util._load_python_model(copy_model_path, **model_params)
@@ -159,22 +156,31 @@ def train_model(
         "opt": opt.state_dict(),
         "model_path": copy_model_path,
         "model_params": model_params,
-        "chunk_context": chunk_context,
+        "chunk_context": dataset.chunk_context,
         "fixed_seq_len_chunks": model._variable_width_possible,
         "motif": dataset.motif,
         "mod_bases": dataset.mod_bases,
         "base_pred": dataset.base_pred,
-        "kmer_context_bases": kmer_context_bases,
+        "kmer_context_bases": dataset.kmer_context_bases,
     }
+    bb, ab = dataset.kmer_context_bases
     for epoch in range(epochs):
         model.train()
         pbar.n = 0
         pbar.refresh()
-        for epoch_i, (inputs, labels, _) in enumerate(trn_ds):
+        for epoch_i, ((sigs, seqs, seq_maps, seq_lens), labels, _) in enumerate(
+            trn_ds
+        ):
+            enc_kmers = torch.from_numpy(
+                encoded_kmers.compute_encoded_kmer_batch(
+                    bb, ab, seqs, seq_maps, seq_lens
+                )
+            )
             if torch.cuda.is_available():
-                inputs = (ip.cuda() for ip in inputs)
+                sigs = sigs.cuda()
+                enc_kmers = enc_kmers.cuda()
                 labels = labels.cuda()
-            outputs = model(*inputs)
+            outputs = model(sigs, enc_kmers)
             loss = criterion(outputs, labels)
             opt.zero_grad()
             loss.backward()
