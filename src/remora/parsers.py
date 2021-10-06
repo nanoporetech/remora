@@ -73,11 +73,11 @@ def register_prepare_taiyaki_train_data(parser):
         "position. Default: %(default)s",
     )
     subparser.add_argument(
-        "--max-seq-length",
+        "--min-samples-per-base",
         type=int,
-        default=constants.DEFAULT_MAX_SEQ_LEN,
-        help="Maxiumum bases from a chunk Should be adjusted accordingly with "
-        "--chunk-context. Default: %(default)s",
+        default=constants.DEFAULT_MIN_SAMPLES_PER_BASE,
+        help="Minimum number of samples per base. This sets the size of the "
+        "ragged arrays of chunk sequences. Default: %(default)s",
     )
     subparser.add_argument(
         "--kmer-context-bases",
@@ -157,7 +157,7 @@ def run_prepare_train_data(args):
         args.output_remora_training_file,
         motif,
         args.chunk_context,
-        args.max_seq_length,
+        args.min_samples_per_base,
         args.max_chunks_per_read,
         label_conv,
         args.base_pred,

@@ -17,11 +17,12 @@ def fill_dataset(
     max_chunks_per_read,
 ):
     motif = Motif(*dataset.motif)
+    num_failed_reads = num_short_chunks = 0
     for read in tqdm(input_msf, smoothing=0, total=num_reads, unit="reads"):
         try:
             read = RemoraRead.from_taiyaki_read(read, can_conv, label_conv)
         except RemoraError:
-            # TODO log these failed reads to track down errors
+            num_failed_reads += 1
             continue
         if motif.any_context:
             motif_hits = np.arange(
@@ -41,9 +42,18 @@ def fill_dataset(
             dataset.kmer_context_bases,
             dataset.base_pred,
         ):
-            if chunk.seq_len <= dataset.max_seq_len:
-                dataset.add_chunk(chunk)
+            if chunk.seq_len > dataset.max_seq_len:
+                num_short_chunks += 1
+                LOGGER.debug(
+                    f"Short chunk: {read.read_id} {chunk.sig_focus_pos}"
+                )
+                continue
+            dataset.add_chunk(chunk)
     dataset.clip_chunks()
+    LOGGER.info(
+        f"Processing encountered {num_failed_reads} invalid reads from "
+        f"Taiyaki and {num_short_chunks} short chunks which were discarded."
+    )
 
 
 def extract_chunk_dataset(
@@ -51,7 +61,7 @@ def extract_chunk_dataset(
     output_filename,
     motif,
     chunk_context,
-    max_seq_len,
+    min_samps_per_base,
     max_chunks_per_read,
     label_conv,
     base_pred,
@@ -69,7 +79,7 @@ def extract_chunk_dataset(
     dataset = RemoraDataset.allocate_empty_chunks(
         num_chunks=max_chunks_per_read * num_reads,
         chunk_context=chunk_context,
-        max_seq_len=max_seq_len,
+        min_samps_per_base=min_samps_per_base,
         kmer_context_bases=kmer_context_bases,
         base_pred=base_pred,
         mod_bases=mod_bases,
