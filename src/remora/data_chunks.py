@@ -114,6 +114,7 @@ class RemoraRead:
             fill_en = chunk_len
             if sig_start < 0:
                 fill_st = -sig_start
+                # record offset value by which to shift seq_to_sig_map
                 seq_to_sig_offset = -sig_start
                 sig_start = 0
             if sig_end > self.sig.size:
@@ -128,10 +129,12 @@ class RemoraRead:
             )
             seq_end = np.searchsorted(self.seq_to_sig_map, sig_end, side="left")
 
-        LOGGER.debug(f"sig: {sig_start}-{sig_end} seq: {seq_start}-{seq_end}")
+        # extract/compute sequence to signal mapping for this chunk
         chunk_seq_to_sig = self.seq_to_sig_map[seq_start : seq_end + 1].copy()
-        chunk_seq_to_sig[0] = sig_start - seq_to_sig_offset
+        # shift mapping relative to the chunk
         chunk_seq_to_sig -= sig_start - seq_to_sig_offset
+        # set chunk ends to chunk boundaries
+        chunk_seq_to_sig[0] = 0
         chunk_seq_to_sig[-1] = chunk_len
         chunk_seq_to_sig = chunk_seq_to_sig.astype(np.int32)
 
@@ -322,7 +325,7 @@ class RemoraDataset:
 
     # scalar metadata attributes
     chunk_context: tuple = constants.DEFAULT_CHUNK_CONTEXT
-    max_seq_len: int = constants.DEFAULT_MAX_SEQ_LEN
+    max_seq_len: int = None
     kmer_context_bases: tuple = constants.DEFAULT_KMER_CONTEXT_BASES
     base_pred: bool = False
     mod_bases: str = ""
@@ -340,6 +343,8 @@ class RemoraDataset:
             self.nbatches += 1
 
     def __post_init__(self):
+        if self.max_seq_len is None:
+            self.max_seq_len = self.seq_mappings.shape[1] - 1
         if self.nchunks is None:
             self.nchunks = self.sig_tensor.shape[0]
         elif self.nchunks > self.sig_tensor.shape[0]:
@@ -350,7 +355,7 @@ class RemoraDataset:
         if self.nchunks >= self.sig_tensor.shape[0]:
             raise RemoraError("Cannot add chunk to currently allocated tensors")
         if chunk.seq_len > self.max_seq_len:
-            raise RemoraError("Chunk sequence too long")
+            raise RemoraError("Chunk sequence too long to store")
         self.sig_tensor[self.nchunks, 0] = torch.from_numpy(chunk.signal)
         self.seq_array[
             self.nchunks, : chunk.seq_w_context.size
@@ -577,12 +582,19 @@ class RemoraDataset:
         cls,
         num_chunks,
         chunk_context,
-        max_seq_len,
         kmer_context_bases,
+        max_seq_len=None,
+        min_samps_per_base=None,
         store_read_data=False,
         *args,
         **kwargs,
     ):
+        if max_seq_len is None and min_samps_per_base is None:
+            raise RemoraError(
+                "Must set either max_seq_len or min_samps_per_base"
+            )
+        if max_seq_len is None:
+            max_seq_len = sum(chunk_context) // min_samps_per_base
         sig_tensor = torch.empty(
             (num_chunks, 1, sum(chunk_context)), dtype=torch.float32
         )
