@@ -8,7 +8,7 @@ pytestmark = pytest.mark.main
 
 # These are copied from remora.constants
 #  - can't figure out how to load this from pytest
-FINAL_MODEL_FILENAME = "model_final.checkpoint"
+FINAL_MODEL_FILENAME = "model_final.onnx"
 SAVE_DATASET_FILENAME = "remora_train_data.npz"
 
 MODELS_DIR = Path(__file__).absolute().parent.parent / "models"

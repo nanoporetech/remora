@@ -20,45 +20,156 @@ To install from gitlab source for development, the following commands can be run
    git clone git@git.oxfordnanolabs.local:algorithm/remora.git
    pip install -e remora/[tests]
 
+See help for any Remora command with the ``-h`` flag.
+
 Getting Started
 ---------------
+
+Remora models are trained to perform binary or categorical prediction of modified base content of a nanopore read.
+Models may also be trained to perform canonical base prediction, but this feature may be removed at a later time.
+The rest of the documentation will focus on the modified base task.
+
+The Remora training/prediction input unit (refered to as a chunk) consists of:
+    1. Section of normalized signal
+    2. Canonical bases attributed to the section of signal
+    3. Mapping between these two
+Chunks have a fixed signal length defined at data preparation time and saved as a model attribute.
+A fixed position within the chunk is defined as the "focus position".
+This position is the center of the base of interest for prediction.
+
+Data Preparation
+****************
+
+Remora data preparation begins from Taiyaki mapped signal files generally produced from Megalodon containing modified base annotations.
+An example dataset might be pre-processed with the following commands.
+
+.. code-block:: bash
+
+  megalodon \
+    pcr_fast5s/ \
+    --reference ref.mmi \
+    --output-directory mega_res_pcr \
+    --outputs mappings signal_mappings \
+    --num-reads 10000 \
+    --guppy-config dna_r9.4.1_450bps_fast.cfg \
+    --devices 0 \
+    --processes 40
+  # Note the --ref-mods-all-motifs option defines the modified base characteristics
+  megalodon \
+    sssI_fast5s/ \
+    --ref-mods-all-motifs m 5mC CG 0 \
+    --reference ref.mmi \
+    --output-directory mega_res_sssI \
+    --outputs mappings signal_mappings \
+    --num-reads 10000 \
+    --guppy-config dna_r9.4.1_450bps_fast.cfg \
+    --devices 0 \
+    --processes 40
+
+  python \
+    taiyaki/misc/split_mappedsignalfiles.py \
+    mega_res_pcr/signal_mappings.hdf5 \
+    --output_basename mega_res_pcr/split_signal_mappings \
+    --split_a_proportion 0.01 \
+    --batch_format
+  python \
+    taiyaki/misc/split_mappedsignalfiles.py \
+    mega_res_sssI/signal_mappings.hdf5 \
+    --output_basename mega_res_sssI/split_signal_mappings \
+    --split_a_proportion 0.01 \
+    --batch_format
+
+  python \
+    taiyaki/misc/merge_mappedsignalfiles.py \
+    mapped_signal_train_data.hdf5 \
+    --input mega_res_pcr/split_signal_mappings.split_b.hdf5 None \
+    --input mega_res_sssI/split_signal_mappings.split_b.hdf5 None \
+    --allow_mod_merge \
+    --batch_format
+
+After the construction of a training dataset, chunks must be extracted and saved in a Remora-friendly format.
+The following command performs this task in Remora.
+
+.. code-block:: bash
+  remora \
+    prepare_train_data \
+    mapped_signal_train_data.hdf5 \
+    --output-remora-training-file remora_train_chunks.npz \
+    --motif CG 0 \
+    --mod-bases m \
+    --chunk-context 50 50 \
+    --kmer-context-bases 6 6 \
+    --max-chunks-per-read 20 \
+    --log-filename log.txt
+
+The resulting ``remora_train_chunks.npz`` file can then be used to train a Remora model.
 
 Model Training
 **************
 
-Remora models are trained to perform binary or categorical prediction of modified base content of a nanopore read.
-In the initial implementation, the prediction/training unit is a modified base call at a single position within a read.
-Later implementations may expand to calling many or all bases in a read at once.
+Models are trained with the ``remora train_model`` command.
+For example a model can be trained with the following command.
 
-The input to a Remora model are 1. a stretch of normalized signal, 2. the canonical bases attributed to the stretch of signal and 3. a mapping between these two.
-Depending upon the model design/architecture the training units may be fix width of signal or a fixed width of sequence.
-The Remora interface should provided training chunks for either fixed sequence length or fix signal lengths.
+.. code-block:: bash
 
-In the initial implementation the training data should be provided to Remora scripts in Taiyaki mapped signal format.
-Reads in the mapped signal file should consist of fixed length sequence training units.
-The "base of interest" should be at a fixed offset/position into each "read" in the mapped signal file.
-The modified base content of the base of interest will be the training objective for Remora models.
-Taiyaki mapped signal files represent modified bases with an alphabet defined within the mapped signal file format.
-Modified base reads should contain a modified base at the central position of interest; canonical base training units should have a canonical base.
-The fixed position of interest within each read must be provided to the Remora training scripts along with the mapped signal file.
+  remora \
+    train_model \
+    remora_train_chunks.npz \
+    --model remora/models/ConvLSTM_w_ref.py \
+    --device 0 \
+    --output-path remora_train_results
 
-The training units provided via the mapped signal file may derive from a number of sources, but should result in the above described training units.
-The ``extract_toy_dataset.py`` script provides an example which extracts training data from a mapped signal file containing reads from E. coli native and PCR samples.
-In this example native E. coli presents 6mA (single letter code ``a``) in the ``GATC`` sequence context.
-Thus the first ``GATC`` site in each read is identified and sequence of the specified number of context bases is identified.
-These training units are then output into a new Taiyaki mapped signal file which will be read for Remora model training.
+This command will produce a final model in ONNX format for exporting or using within Remora.
 
-Model Application
-*****************
+Model Inference
+***************
 
-Remora modified base calling is not currently implemented.
-Once implemented, Remora modified base calling should take a model produced from the above described training.
-This model should specify the fixed sequence or signal length in order to apply to signal.
+For testing purposes inference within Remora is provided given Taiyaki mapped signal files as input.
+The below command will call the held out validation dataset from the data preparation section above.
 
-The core Remora API function will accept normalized nanopore signal, sequence (generally the reference sequence from the mapping for this read), and a mapping between the two and produce probabilities that each applicable base is modified.
-Remora may provide a full pipeline to basecall, map, and call modified bases, but the optimized version of this pipeline will likely be implemented in other software (Megalodon, Tombo2 or Bonito).
+.. code-block:: bash
 
-Remora models and API will allow the simultaneous calling of multiple modified bases from a single model (e.g. 5mC, 5hmC, 5caC, 5fC as alternatives to C).
+  remora \
+    infer \
+    mega_res_pcr/split_signal_mappings.split_a.hdf5 \
+    remora_train_results/model_final.onnx \
+    --output-path remora_infer_results_pcr.txt \
+    --device 0
+  remora \
+    infer \
+    mega_res_sssI/split_signal_mappings.split_a.hdf5 \
+    remora_train_results/model_final.onnx \
+    --output-path remora_infer_results_sssI.txt \
+    --device 0
+
+Note that in order to perfrom inference on a GPU device the ``onnxruntime-gpu`` package must be installed.
+
+API
+***
+
+The Remora API can be applied to make modified base calls given a prepared read via a ``RemoraRead`` object.
+
+.. code-block:: python
+  from remora.data_chunks import RemoraRead
+  from remora.model_util import load_onnx_model
+  from remora.inference import call_read_mods
+
+  model, model_metadata = load_onnx_model(
+    "remora_train_results/model_final.onnx",
+    device=0,
+  )
+  read = RemoraRead(sig, seq, sig_to_seq_map, read_id, labels)
+  output, labels, read_data = call_read_mods(
+    read,
+    model,
+    model_metadata,
+    batch_size,
+    focus_offset,
+  )
+
+``outputs`` will contain the categorical predictions from the neural network in a numpy array.
+For example, run ``output.argmax(axis=1)`` to obtain the prediction for each input unit.
+The ``read_data`` object contains the relative position for each prediction within outputs.
 
 Terms and licence
 -----------------

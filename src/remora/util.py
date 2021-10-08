@@ -1,13 +1,10 @@
-import imp
 import os
-from os.path import isfile, realpath, expanduser
+from os.path import realpath, expanduser
 import re
 
 import numpy as np
-import torch
-from sklearn.metrics import precision_recall_curve
 
-from remora import log, RemoraError, encoded_kmers
+from remora import log, RemoraError
 
 LOGGER = log.get_logger()
 
@@ -52,25 +49,11 @@ def to_str(value):
         return value
 
 
-def _load_python_model(model_file, **model_kwargs):
-
-    netmodule = imp.load_source("netmodule", model_file)
-    network = netmodule.network(**model_kwargs)
-    return network
-
-
-def continue_from_checkpoint(ckp_path, model_path=None):
-    if not isfile(ckp_path):
-        raise RemoraError(f"Checkpoint path is not a file ({ckp_path})")
-    LOGGER.info(f"Loading trained model from {ckp_path}")
-    ckpt = torch.load(ckp_path)
-    if ckpt["state_dict"] is None:
-        raise RemoraError("Model state not saved in checkpoint.")
-
-    model_path = ckpt["model_path"] if model_path is None else model_path
-    model = _load_python_model(model_path, **ckpt["model_params"])
-    model.load_state_dict(ckpt["state_dict"])
-    return ckpt, model
+def softmax_axis1(x):
+    """Compute softmax over axis=1"""
+    e_x = np.exp((x.T - np.max(x, axis=1)).T)
+    with np.errstate(divide="ignore"):
+        return (e_x.T / e_x.sum(axis=1)).T
 
 
 class Motif:
@@ -199,85 +182,6 @@ class plotter:
 
         fig1.savefig(os.path.join(self.outdir, "accuracy.png"), format="png")
         fig2.savefig(os.path.join(self.outdir, "loss.png"), format="png")
-
-
-class ValidationLogger:
-    def __init__(self, out_path, base_pred):
-        self.fp = open(out_path / "validation.log", "w", buffering=1)
-        self.base_pred = base_pred
-        if base_pred:
-            self.fp.write(
-                "\t".join(
-                    ("Val_Type", "Iteration", "Accuracy", "Loss", "Num_Calls")
-                )
-                + "\n"
-            )
-        else:
-            self.fp.write(
-                "\t".join(
-                    (
-                        "Val_Type",
-                        "Iteration",
-                        "Accuracy",
-                        "Loss",
-                        "F1",
-                        "Precision",
-                        "Recall",
-                        "Num_Calls",
-                    )
-                )
-                + "\n"
-            )
-
-    def close(self):
-        self.fp.close()
-
-    def validate_model(self, model, criterion, dataset, niter, val_type="val"):
-        bb, ab = dataset.kmer_context_bases
-        with torch.no_grad():
-            model.eval()
-            all_labels = []
-            all_outputs = []
-            all_loss = []
-            for (sigs, seqs, seq_maps, seq_lens), labels, _ in dataset:
-                all_labels.append(labels)
-                enc_kmers = torch.from_numpy(
-                    encoded_kmers.compute_encoded_kmer_batch(
-                        bb, ab, seqs, seq_maps, seq_lens
-                    )
-                )
-                if torch.cuda.is_available():
-                    sigs = sigs.cuda()
-                    enc_kmers = enc_kmers.cuda()
-                output = model(sigs, enc_kmers).detach().cpu()
-                all_outputs.append(output)
-                loss = criterion(output, labels)
-                all_loss.append(loss.detach().cpu().numpy())
-            all_outputs = torch.cat(all_outputs)
-            all_labels = torch.cat(all_labels)
-            acc = (
-                torch.argmax(all_outputs, dim=1) == all_labels
-            ).float().sum() / all_outputs.shape[0]
-            acc = acc.cpu().numpy()
-            mean_loss = np.mean(all_loss)
-            if self.base_pred:
-                self.fp.write(
-                    f"{val_type}\t{niter}\t{acc:.6f}\t{mean_loss:.6f}\t"
-                    f"{len(all_labels)}\n"
-                )
-            else:
-                with np.errstate(invalid="ignore"):
-                    precision, recall, thresholds = precision_recall_curve(
-                        all_labels.numpy(), all_outputs[:, 1].numpy()
-                    )
-                    f1_scores = 2 * recall * precision / (recall + precision)
-                f1_idx = np.argmax(f1_scores)
-                self.fp.write(
-                    f"{val_type}\t{niter}\t{acc:.6f}\t{mean_loss:.6f}\t"
-                    f"{f1_scores[f1_idx]}\t{precision[f1_idx]}\t"
-                    f"{recall[f1_idx]}\t{len(all_labels)}\n"
-                )
-        return acc, mean_loss
 
 
 class BatchLogger:
