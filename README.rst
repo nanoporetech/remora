@@ -91,6 +91,7 @@ After the construction of a training dataset, chunks must be extracted and saved
 The following command performs this task in Remora.
 
 .. code-block:: bash
+  
   remora \
     prepare_train_data \
     mapped_signal_train_data.hdf5 \
@@ -150,6 +151,7 @@ API
 The Remora API can be applied to make modified base calls given a prepared read via a ``RemoraRead`` object.
 
 .. code-block:: python
+  
   from remora.data_chunks import RemoraRead
   from remora.model_util import load_onnx_model
   from remora.inference import call_read_mods
