@@ -171,6 +171,47 @@ The Remora API can be applied to make modified base calls given a prepared read 
 For example, run ``output.argmax(axis=1)`` to obtain the prediction for each input unit.
 The ``read_data`` object contains the relative position for each prediction within outputs.
 
+GPU Troubleshooting
+*******************
+
+Deployment of Remora models is facilitated by the Open Neural Network Exchange (ONNX) format.
+The ``onnxruntime`` python package is used to run the models.
+In order to support running models on GPU resources the GPU compatible package must be installed (``pip install onnxruntime-gpu``).
+
+Once installed the ``remora infer`` command takes a ``--device`` argument.
+Similarly, the API ``remora.model_util.load_onnx_model`` function takes a ``device`` argument.
+These arguments specify the GPU device ID to use for inference.
+
+Once the ``device`` option is specified, Remora will attempt to load the model on the GPU resources.
+If this fails a ``RemoraError`` will be raised.
+The likely cause of this is the required CUDA and cuDNN dependency versions.
+See the requirements on the `onnxruntime documentation page here <https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html#requirements>`_.
+
+To check the versions of the various dependencies see the following commands.
+
+.. code-block:: bash
+
+   # check cuda version
+   nvcc --version
+   # check cuDNN version
+   grep -A 2 "define CUDNN_MAJOR" `whereis cudnn | cut -f2 -d" "`
+   # check onnxruntime version
+   python -c "import onnxruntime as ort; print(ort.__version__)"
+
+These versions should match a row in the table linked above.
+CUDA and cuDNN versions can be downloaded from the NVIDIA website (`cuDNN link <https://developer.nvidia.com/rdp/cudnn-archive>`_; `CUDA link <https://developer.nvidia.com/cuda-toolkit-archive>`_).
+The cuDNN download can be specified at runtime as in the following example.
+
+.. code-block:: bash
+
+   CUDA_PATH=/path/to/cuda/include/cuda.h \
+     CUDNN_H_PATH=/path/to/cuda/include/cudnn.h \
+     remora \
+     infer [arguments]
+
+The ``onnxruntime`` dependency can be set via the python package install command.
+For example `pip install "onnxruntime-gpu<1.7"`.
+
 Terms and licence
 -----------------
 

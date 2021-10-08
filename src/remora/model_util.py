@@ -45,19 +45,22 @@ class ValidationLogger:
         self.fp.close()
 
     def validate_model(self, model, criterion, dataset, niter, val_type="val"):
+        model.eval()
         bb, ab = dataset.kmer_context_bases
+        model.eval()
         with torch.no_grad():
-            model.eval()
             all_labels = []
             all_outputs = []
             all_loss = []
             for (sigs, seqs, seq_maps, seq_lens), labels, _ in dataset:
                 all_labels.append(labels)
+                sigs = torch.from_numpy(sigs)
                 enc_kmers = torch.from_numpy(
                     encoded_kmers.compute_encoded_kmer_batch(
                         bb, ab, seqs, seq_maps, seq_lens
                     )
                 )
+                labels = torch.from_numpy(labels)
                 if torch.cuda.is_available():
                     sigs = sigs.cuda()
                     enc_kmers = enc_kmers.cuda()
@@ -65,12 +68,11 @@ class ValidationLogger:
                 all_outputs.append(output)
                 loss = criterion(output, labels)
                 all_loss.append(loss.detach().cpu().numpy())
-            all_outputs = torch.cat(all_outputs)
-            all_labels = torch.cat(all_labels)
+            all_outputs = np.concatenate(all_outputs, axis=0)
+            all_labels = np.concatenate(all_labels)
             acc = (
-                torch.argmax(all_outputs, dim=1) == all_labels
-            ).float().sum() / all_outputs.shape[0]
-            acc = acc.cpu().numpy()
+                np.argmax(all_outputs, axis=1) == all_labels
+            ).sum() / all_outputs.shape[0]
             mean_loss = np.mean(all_loss)
             if self.base_pred:
                 self.fp.write(
@@ -80,7 +82,7 @@ class ValidationLogger:
             else:
                 with np.errstate(invalid="ignore"):
                     precision, recall, thresholds = precision_recall_curve(
-                        all_labels.numpy(), all_outputs[:, 1].numpy()
+                        all_labels, all_outputs[:, 1]
                     )
                     f1_scores = 2 * recall * precision / (recall + precision)
                 f1_idx = np.argmax(f1_scores)
@@ -122,21 +124,22 @@ def export_model(ckpt, model, save_filename):
         np.zeros((1, kmer_len * 4, sig_len), dtype=np.float32)
     )
     model.eval()
-    torch.onnx.export(
-        model,
-        (sig, seq),
-        save_filename,
-        export_params=True,
-        opset_version=10,
-        do_constant_folding=True,
-        input_names=["sig", "seq"],
-        output_names=["output"],
-        dynamic_axes={
-            "sig": {0: "batch_size"},
-            "seq": {0: "batch_size"},
-            "output": {0: "batch_size"},
-        },
-    )
+    with torch.no_grad():
+        torch.onnx.export(
+            model,
+            (sig, seq),
+            save_filename,
+            export_params=True,
+            opset_version=10,
+            do_constant_folding=True,
+            input_names=["sig", "seq"],
+            output_names=["output"],
+            dynamic_axes={
+                "sig": {0: "batch_size"},
+                "seq": {0: "batch_size"},
+                "output": {0: "batch_size"},
+            },
+        )
     onnx_model = onnx.load(save_filename)
     meta = onnx_model.metadata_props.add()
     meta.key = "creation_date"
@@ -168,26 +171,50 @@ def export_model(ckpt, model, save_filename):
 
 
 def load_onnx_model(model_filename, device=None):
-    """Load onnx model. If device is specified load onto specified device."""
+    """Load onnx model. If device is specified load onto specified device.
+
+    Args:
+        model_filename (str): Model path
+        device (int): GPU device ID
+
+    Returns:
+        2-tuple containing:
+          1. ort.InferenceSession object for calling mods
+          2. Model metadata dictionary with information concerning data prep
+    """
     providers = None
+    provider_options = None
     if device is not None:
+        LOGGER.info("Loading model onto GPU")
         if ort.get_device() != "GPU":
             raise RemoraError(
-                "GPU execution not available. Install compatible package via "
-                "`pip install onnxruntime-gpu`"
+                "onnxruntime not compatible with GPU execution. Install "
+                "compatible package via `pip install onnxruntime-gpu`"
             )
         providers = [
-            (
-                "CUDAExecutionProvider",
-                {
-                    "device_id": device,
-                },
-            ),
-            "CPUExecutionProvider",
+            "CUDAExecutionProvider",
+        ]
+        provider_options = [
+            {
+                "device_id": str(device),
+                "arena_extend_strategy": "kNextPowerOfTwo",
+                "gpu_mem_limit": str(2 * 1024 * 1024 * 1024),
+                "cudnn_conv_algo_search": "EXHAUSTIVE",
+                "do_copy_in_default_stream": "True",
+            },
         ]
     so = ort.SessionOptions()
     so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    model_sess = ort.InferenceSession(model_filename, so, providers=providers)
+    model_sess = ort.InferenceSession(
+        model_filename, providers=providers, provider_options=provider_options
+    )
+    LOGGER.debug(model_sess.get_providers())
+    if device is not None and model_sess.get_providers()[0].startswith("CPU"):
+        raise RemoraError(
+            "Model not loaded on GPU. Check install settings. See "
+            "requirements here https://onnxruntime.ai/docs"
+            "/execution-providers/CUDA-ExecutionProvider.html#requirements"
+        )
     model_metadata = dict(model_sess.get_modelmeta().custom_metadata_map)
     model_metadata["base_pred"] = model_metadata["base_pred"] == "True"
     if model_metadata["mod_bases"] == "None":

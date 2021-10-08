@@ -2,7 +2,6 @@ from collections import Counter
 from dataclasses import dataclass
 
 import numpy as np
-import torch
 
 from remora import constants, log, RemoraError, util
 
@@ -42,6 +41,17 @@ class RemoraRead:
         if check_read:
             read.check()
         return read
+
+    @classmethod
+    def test_read(cls, nbases=20, signal_per_base=10):
+        """Spoofed read for testing"""
+        return cls(
+            np.zeros(nbases * signal_per_base),
+            np.arange(nbases) % 4,
+            np.arange(nbases * signal_per_base + 1, step=signal_per_base),
+            "read0",
+            np.zeros(nbases, dtype=np.long),
+        )
 
     def check(self):
         if self.seq_to_sig_map.size != self.can_seq.size + 1:
@@ -315,11 +325,11 @@ class RemoraDataset:
     """
 
     # data attributes
-    sig_tensor: torch.Tensor
+    sig_tensor: np.ndarray
     seq_array: np.ndarray
     seq_mappings: np.ndarray
     seq_lens: np.ndarray
-    labels: torch.LongTensor
+    labels: np.ndarray
     read_data: list
     nchunks: int = None
 
@@ -356,7 +366,7 @@ class RemoraDataset:
             raise RemoraError("Cannot add chunk to currently allocated tensors")
         if chunk.seq_len > self.max_seq_len:
             raise RemoraError("Chunk sequence too long to store")
-        self.sig_tensor[self.nchunks, 0] = torch.from_numpy(chunk.signal)
+        self.sig_tensor[self.nchunks, 0] = chunk.signal
         self.seq_array[
             self.nchunks, : chunk.seq_w_context.size
         ] = chunk.seq_w_context
@@ -427,7 +437,7 @@ class RemoraDataset:
     def shuffle_dataset(self):
         if not self.is_trimmed:
             raise RemoraError("Cannot shuffle an untrimmed dataset.")
-        shuf_idx = torch.randperm(self.nchunks)
+        shuf_idx = np.random.permutation(self.nchunks)
         self.sig_tensor = self.sig_tensor[shuf_idx]
         self.seq_array = self.seq_array[shuf_idx]
         self.seq_mappings = self.seq_mappings[shuf_idx]
@@ -467,7 +477,7 @@ class RemoraDataset:
         return self.nbatches
 
     def get_label_counts(self):
-        return Counter(self.labels.numpy())
+        return Counter(self.labels)
 
     def split_data(self, val_prop):
         if not self.is_trimmed:
@@ -549,11 +559,6 @@ class RemoraDataset:
     def load_from_file(cls, filename, *args, **kwargs):
         # use allow_pickle=True to allow None type in read_data
         data = np.load(filename, allow_pickle=True)
-        sig_tensor = torch.from_numpy(data["sig_tensor"])
-        seq_array = data["seq_array"]
-        seq_mappings = data["seq_mappings"]
-        seq_lens = data["seq_lens"]
-        labels = torch.from_numpy(data["labels"])
         read_data = data["read_data"].tolist()
         chunk_context = tuple(data["chunk_context"].tolist())
         kmer_context_bases = tuple(data["kmer_context_bases"].tolist())
@@ -561,11 +566,11 @@ class RemoraDataset:
         mod_bases = data["mod_bases"].item()
         motif = (data["motif"].item(), int(data["motif_offset"].item()))
         return cls(
-            sig_tensor,
-            seq_array,
-            seq_mappings,
-            seq_lens,
-            labels,
+            data["sig_tensor"],
+            data["seq_array"],
+            data["seq_mappings"],
+            data["seq_lens"],
+            data["labels"],
             read_data,
             chunk_context=chunk_context,
             kmer_context_bases=kmer_context_bases,
@@ -595,8 +600,8 @@ class RemoraDataset:
             )
         if max_seq_len is None:
             max_seq_len = sum(chunk_context) // min_samps_per_base
-        sig_tensor = torch.empty(
-            (num_chunks, 1, sum(chunk_context)), dtype=torch.float32
+        sig_tensor = np.empty(
+            (num_chunks, 1, sum(chunk_context)), dtype=np.float32
         )
         seq_array = np.empty(
             (num_chunks, max_seq_len + sum(kmer_context_bases)),
@@ -607,7 +612,7 @@ class RemoraDataset:
             dtype=np.short,
         )
         seq_lens = np.empty(num_chunks, dtype=np.short)
-        labels = torch.empty(num_chunks, dtype=torch.long)
+        labels = np.empty(num_chunks, dtype=np.long)
         read_data = [] if store_read_data else None
         return cls(
             sig_tensor,

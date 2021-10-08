@@ -57,6 +57,23 @@ def call_read_mods(
     batch_size=constants.DEFAULT_BATCH_SIZE,
     focus_offset=None,
 ):
+    """Call modified bases on a read.
+
+    Args:
+        read (RemoraRead): Read to be called
+        model (ort.InferenceSession): Inference model
+            (see remora.model_util.load_onnx_model)
+        model_metadata (ort.InferenceSession): Inference model metadata
+        batch_size (int): Number of chunks to call per-batch
+        focus_offset (int): Specific base to call within read
+            Default: Use motif from model
+
+    Returns:
+        3-tuple containing:
+          1. Modified base predictions (dim: num_calls, num_mods + 1)
+          2. Labels for each base (-1 if labels not provided)
+          3. List of positions within the read
+    """
     read_outputs, all_read_data, read_labels = [], [], []
 
     motif = Motif(*model_metadata["motif"])
@@ -104,9 +121,7 @@ def call_read_mods(
         enc_kmers = encoded_kmers.compute_encoded_kmer_batch(
             bb, ab, seqs, seq_maps, seq_lens
         )
-        read_outputs.append(
-            model.run([], {"sig": sigs.numpy(), "seq": enc_kmers})[0]
-        )
+        read_outputs.append(model.run([], {"sig": sigs, "seq": enc_kmers})[0])
         read_labels.append(labels)
         all_read_data.extend(read_data)
     read_outputs = np.concatenate(read_outputs, axis=0)
