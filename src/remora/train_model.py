@@ -172,11 +172,13 @@ def train_model(
         for epoch_i, ((sigs, seqs, seq_maps, seq_lens), labels, _) in enumerate(
             trn_ds
         ):
+            sigs = torch.from_numpy(sigs)
             enc_kmers = torch.from_numpy(
                 encoded_kmers.compute_encoded_kmer_batch(
                     bb, ab, seqs, seq_maps, seq_lens
                 )
             )
+            labels = torch.from_numpy(labels)
             if torch.cuda.is_available():
                 sigs = sigs.cuda()
                 enc_kmers = enc_kmers.cuda()
