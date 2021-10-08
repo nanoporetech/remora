@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from remora import constants, util, log, RemoraError, encoded_kmers
+from remora import constants, util, log, RemoraError, encoded_kmers, model_util
 from remora.data_chunks import RemoraDataset
 
 LOGGER = log.get_logger()
@@ -82,7 +82,7 @@ def train_model(
         f"              motif : {dataset.motif}\n"
     )
 
-    val_fp = util.ValidationLogger(out_path, dataset.base_pred)
+    val_fp = model_util.ValidationLogger(out_path, dataset.base_pred)
     atexit.register(val_fp.close)
     batch_fp = util.BatchLogger(out_path)
     atexit.register(batch_fp.close)
@@ -96,7 +96,7 @@ def train_model(
         "kmer_len": sum(dataset.kmer_context_bases) + 1,
         "num_out": num_out,
     }
-    model = util._load_python_model(copy_model_path, **model_params)
+    model = model_util._load_python_model(copy_model_path, **model_params)
     LOGGER.info(f"Model structure:\n{model}")
 
     LOGGER.info("Preparing training settings")
@@ -162,6 +162,7 @@ def train_model(
         "mod_bases": dataset.mod_bases,
         "base_pred": dataset.base_pred,
         "kmer_context_bases": dataset.kmer_context_bases,
+        "model_version": constants.MODEL_VERSION,
     }
     bb, ab = dataset.kmer_context_bases
     for epoch in range(epochs):
@@ -225,6 +226,11 @@ def train_model(
     torch.save(
         ckpt_save_data,
         os.path.join(out_path, constants.FINAL_MODEL_FILENAME),
+    )
+    model_util.export_model(
+        ckpt_save_data,
+        model,
+        os.path.join(out_path, constants.FINAL_ONNX_MODEL_FILENAME),
     )
     LOGGER.info("Training complete")
 

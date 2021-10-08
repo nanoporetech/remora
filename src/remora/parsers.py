@@ -328,6 +328,45 @@ def run_train_model(args):
     )
 
 
+#######################
+# remora export_model #
+#######################
+
+
+def register_export_model(parser):
+    subparser = parser.add_parser(
+        "export_model",
+        description="Export a model to ONNX format for inference.",
+        help="Export a model to ONNX format for inference.",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    subparser.add_argument(
+        "checkpoint_path",
+        help="Path to a pretrained model checkpoint.",
+    )
+    subparser.add_argument(
+        "output_path",
+        help="Path to save the onnx model file.",
+    )
+    subparser.add_argument(
+        "--model-path",
+        help="Path to a model architecture. Default: Use path from checkpoint.",
+    )
+
+    subparser.set_defaults(func=run_export_model)
+
+
+def run_export_model(args):
+    from remora.model_util import continue_from_checkpoint, export_model
+
+    LOGGER.info("Loading model")
+    ckpt, model = continue_from_checkpoint(
+        args.checkpoint_path, args.model_path
+    )
+    LOGGER.info("Exporting model to ONNX format")
+    export_model(ckpt, model, args.output_path)
+
+
 ################
 # remora infer #
 ################
@@ -345,12 +384,8 @@ def register_infer(parser):
         help="Taiyaki mapped signal file on which to perform inference.",
     )
     subparser.add_argument(
-        "checkpoint_path",
-        help="Path to a pretrained model checkpoint.",
-    )
-    subparser.add_argument(
-        "--model-path",
-        help="Path to a model architecture. Default: Use path from checkpoint.",
+        "onnx_model",
+        help="Path to a pretrained model in onnx format.",
     )
     subparser.add_argument(
         "--focus-offset",
@@ -408,8 +443,7 @@ def run_infer(args):
     infer(
         input_msf,
         out_path,
-        args.checkpoint_path,
-        args.model_path,
+        args.onnx_model,
         args.batch_size,
         args.device,
         args.focus_offset,
