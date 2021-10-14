@@ -150,6 +150,11 @@ def export_model(ckpt, model, save_filename):
     meta = onnx_model.metadata_props.add()
     meta.key = "mod_bases"
     meta.value = str(ckpt["mod_bases"])
+    if ckpt["mod_bases"] is not None:
+        for mod_idx in range(len(ckpt["mod_bases"])):
+            meta = onnx_model.metadata_props.add()
+            meta.key = f"mod_long_names_{mod_idx}"
+            meta.value = str(ckpt["mod_long_names"][mod_idx])
     for key in ("chunk_context", "kmer_context_bases"):
         for idx in range(2):
             meta = onnx_model.metadata_props.add()
@@ -170,12 +175,13 @@ def export_model(ckpt, model, save_filename):
     onnx.save(onnx_model, save_filename)
 
 
-def load_onnx_model(model_filename, device=None):
+def load_onnx_model(model_filename, device=None, quiet=False):
     """Load onnx model. If device is specified load onto specified device.
 
     Args:
         model_filename (str): Model path
         device (int): GPU device ID
+        quiet (bool): Don't log full model loading info
 
     Returns:
         2-tuple containing:
@@ -208,7 +214,7 @@ def load_onnx_model(model_filename, device=None):
     model_sess = ort.InferenceSession(
         model_filename, providers=providers, provider_options=provider_options
     )
-    LOGGER.debug(model_sess.get_providers())
+    LOGGER.debug(f"Remora model ONNX providers: {model_sess.get_providers()}")
     if device is not None and model_sess.get_providers()[0].startswith("CPU"):
         raise RemoraError(
             "Model not loaded on GPU. Check install settings. See "
@@ -219,6 +225,13 @@ def load_onnx_model(model_filename, device=None):
     model_metadata["base_pred"] = model_metadata["base_pred"] == "True"
     if model_metadata["mod_bases"] == "None":
         model_metadata["mod_bases"] = None
+        model_metadata["mod_long_names"] = None
+    else:
+        model_metadata["mod_long_names"] = []
+        for mod_idx in range(len(model_metadata["mod_bases"])):
+            model_metadata["mod_long_names"].append(
+                model_metadata[f"mod_long_names_{mod_idx}"]
+            )
     model_metadata["motif_offset"] = int(model_metadata["motif_offset"])
     model_metadata["kmer_context_bases"] = (
         int(model_metadata["kmer_context_bases_0"]),
@@ -237,5 +250,6 @@ def load_onnx_model(model_filename, device=None):
     ckpt_attrs = "\n".join(
         f"  {k: >20} : {v}" for k, v in model_metadata.items()
     )
-    LOGGER.debug(f"Loaded model attrs\n{ckpt_attrs}\n")
+    if not quiet:
+        LOGGER.debug(f"Loaded Remora model attrs\n{ckpt_attrs}\n")
     return model_sess, model_metadata
