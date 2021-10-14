@@ -108,6 +108,7 @@ def call_read_mods(
         kmer_context_bases=model_metadata["kmer_context_bases"],
         base_pred=model_metadata["base_pred"],
         mod_bases=model_metadata["mod_bases"],
+        mod_long_names=model_metadata["mod_long_names"],
         motif=motif.to_tuple(),
         store_read_data=True,
         batch_size=batch_size,

@@ -66,6 +66,7 @@ def extract_chunk_dataset(
     label_conv,
     base_pred,
     mod_bases,
+    mod_long_names,
     kmer_context_bases,
 ):
     alphabet_info = input_msf.get_alphabet_information()
@@ -83,6 +84,7 @@ def extract_chunk_dataset(
         kmer_context_bases=kmer_context_bases,
         base_pred=base_pred,
         mod_bases=mod_bases,
+        mod_long_names=mod_long_names,
         motif=motif.to_tuple(),
     )
     LOGGER.info("Processing reads")

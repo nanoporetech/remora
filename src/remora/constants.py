@@ -21,4 +21,4 @@ FINAL_MODEL_FILENAME = "model_final.checkpoint"
 FINAL_ONNX_MODEL_FILENAME = "model_final.onnx"
 SAVE_DATASET_FILENAME = "remora_train_data.npz"
 # should be an int to store in onnx
-MODEL_VERSION = 1
+MODEL_VERSION = 2

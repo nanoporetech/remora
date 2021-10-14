@@ -73,10 +73,10 @@ class RemoraRead:
             )
             raise RemoraError("Invalid read: mapping end")
         if self.can_seq.max() > 3:
-            LOGGER.debug("Invalid read: Invalid base {self.can_seq.max()}")
+            LOGGER.debug(f"Invalid read: Invalid base {self.can_seq.max()}")
             raise RemoraError("Invalid read: Invalid base")
         if self.can_seq.min() < -1:
-            LOGGER.debug("Invalid read: Invalid base {self.can_seq.min()}")
+            LOGGER.debug(f"Invalid read: Invalid base {self.can_seq.min()}")
             raise RemoraError("Invalid read: Invalid base")
         # TODO add more logic to these tests
 
@@ -315,6 +315,7 @@ class RemoraDataset:
             the encoded k-mer presented as input.
         base_pred (bool): Are labels predicting base? Default is mod_bases.
         mod_bases (str): Modified base single letter codes represented by labels
+        mod_long_names (list): Modified base long names represented by labels
         store_read_data (bool): Is read data stored? Mostly for validation
         batch_size (int): Size of batches to be produced
         shuffle_on_iter (bool): Shuffle data before each iteration over batches
@@ -339,6 +340,7 @@ class RemoraDataset:
     kmer_context_bases: tuple = constants.DEFAULT_KMER_CONTEXT_BASES
     base_pred: bool = False
     mod_bases: str = ""
+    mod_long_names: list = None
     motif: tuple = ("N", 0)
 
     # batch attributes (defaults set for training)
@@ -359,6 +361,13 @@ class RemoraDataset:
             self.nchunks = self.sig_tensor.shape[0]
         elif self.nchunks > self.sig_tensor.shape[0]:
             raise RemoraError("More chunks indicated than provided.")
+        if not self.base_pred and len(self.mod_bases) != len(
+            self.mod_long_names
+        ):
+            raise RemoraError(
+                f"mod_long_names ({self.mod_long_names}) must be same length "
+                f"as mod_bases ({self.mod_bases})"
+            )
         self.set_nbatches()
 
     def add_chunk(self, chunk):
@@ -492,6 +501,7 @@ class RemoraDataset:
             "kmer_context_bases": self.kmer_context_bases,
             "base_pred": self.base_pred,
             "mod_bases": self.mod_bases,
+            "mod_long_names": self.mod_long_names,
             "store_read_data": self.store_read_data,
             "batch_size": self.batch_size,
         }
@@ -547,6 +557,7 @@ class RemoraDataset:
             kmer_context_bases=self.kmer_context_bases,
             base_pred=self.base_pred,
             mod_bases=self.mod_bases,
+            mod_long_names=self.mod_long_names,
             motif=self.motif[0],
             motif_offset=self.motif[1],
         )
@@ -564,6 +575,7 @@ class RemoraDataset:
         kmer_context_bases = tuple(data["kmer_context_bases"].tolist())
         base_pred = data["base_pred"].item()
         mod_bases = data["mod_bases"].item()
+        mod_long_names = tuple(data["mod_long_names"].tolist())
         motif = (data["motif"].item(), int(data["motif_offset"].item()))
         return cls(
             data["sig_tensor"],
@@ -576,6 +588,7 @@ class RemoraDataset:
             kmer_context_bases=kmer_context_bases,
             base_pred=base_pred,
             mod_bases=mod_bases,
+            mod_long_names=mod_long_names,
             motif=motif,
             store_read_data=read_data is not None,
             *args,

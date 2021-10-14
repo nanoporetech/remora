@@ -160,6 +160,7 @@ def train_model(
         "fixed_seq_len_chunks": model._variable_width_possible,
         "motif": dataset.motif,
         "mod_bases": dataset.mod_bases,
+        "mod_long_names": dataset.mod_long_names,
         "base_pred": dataset.base_pred,
         "kmer_context_bases": dataset.kmer_context_bases,
         "model_version": constants.MODEL_VERSION,

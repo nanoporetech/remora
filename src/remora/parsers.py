@@ -162,6 +162,7 @@ def run_prepare_train_data(args):
         label_conv,
         args.base_pred,
         args.mod_bases,
+        alphabet_info.mod_long_names,
         args.kmer_context_bases,
     )
 
