@@ -188,29 +188,22 @@ def load_onnx_model(model_filename, device=None, quiet=False):
           1. ort.InferenceSession object for calling mods
           2. Model metadata dictionary with information concerning data prep
     """
-    providers = None
+    providers = ["CPUExecutionProvider"]
     provider_options = None
     if device is not None:
-        LOGGER.info("Loading model onto GPU")
+        if quiet:
+            LOGGER.debug("Loading Remora model onto GPU")
+        else:
+            LOGGER.info("Loading Remora model onto GPU")
         if ort.get_device() != "GPU":
             raise RemoraError(
                 "onnxruntime not compatible with GPU execution. Install "
                 "compatible package via `pip install onnxruntime-gpu`"
             )
-        providers = [
-            "CUDAExecutionProvider",
-        ]
-        provider_options = [
-            {
-                "device_id": str(device),
-                "arena_extend_strategy": "kNextPowerOfTwo",
-                "gpu_mem_limit": str(2 * 1024 * 1024 * 1024),
-                "cudnn_conv_algo_search": "EXHAUSTIVE",
-                "do_copy_in_default_stream": "True",
-            },
-        ]
-    so = ort.SessionOptions()
-    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        providers = ["CUDAExecutionProvider"]
+        provider_options = [{"device_id": str(device)}]
+    # set severity to error so CPU fallback messages are masked
+    ort.set_default_logger_severity(3)
     model_sess = ort.InferenceSession(
         model_filename, providers=providers, provider_options=provider_options
     )
