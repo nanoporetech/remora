@@ -2,6 +2,8 @@ import atexit
 import os
 from shutil import copyfile
 
+from thop import profile
+
 import numpy as np
 import torch
 from tqdm import tqdm
@@ -98,6 +100,16 @@ def train_model(
     }
     model = model_util._load_python_model(copy_model_path, **model_params)
     LOGGER.info(f"Model structure:\n{model}")
+
+    kmer_dim = int((sum(dataset.kmer_context_bases) + 1) * 4)
+    test_input_sig = torch.randn(batch_size, 1, sum(dataset.chunk_context))
+    test_input_seq = torch.randn(
+        batch_size, kmer_dim, sum(dataset.chunk_context)
+    )
+    macs, params = profile(model, inputs=(test_input_sig, test_input_seq))
+    LOGGER.info(
+        f" Params (k) {params / (1000):.2f} | MACs (M) {macs / (1000 ** 2):.2f}"
+    )
 
     LOGGER.info("Preparing training settings")
     criterion = torch.nn.CrossEntropyLoss()
@@ -207,7 +219,12 @@ def train_model(
 
         if int(epoch + 1) % save_freq == 0:
             ckpt_save_data["epoch"] = epoch + 1
-            ckpt_save_data["state_dict"] = model.state_dict()
+            state_dict = model.state_dict()
+            if "total_ops" in state_dict.keys():
+                state_dict.pop("total_ops", None)
+            if "total_params" in state_dict.keys():
+                state_dict.pop("total_params", None)
+            ckpt_save_data["state_dict"] = state_dict
             ckpt_save_data["opt"] = opt.state_dict()
             torch.save(
                 ckpt_save_data,
@@ -224,7 +241,12 @@ def train_model(
     pbar.close()
     LOGGER.info("Saving final model checkpoint")
     ckpt_save_data["epoch"] = epoch + 1
-    ckpt_save_data["state_dict"] = model.state_dict()
+    state_dict = model.state_dict()
+    if "total_ops" in state_dict.keys():
+        state_dict.pop("total_ops", None)
+    if "total_params" in state_dict.keys():
+        state_dict.pop("total_params", None)
+    ckpt_save_data["state_dict"] = state_dict
     ckpt_save_data["opt"] = opt.state_dict()
     torch.save(
         ckpt_save_data,
