@@ -124,6 +124,8 @@ def export_model(ckpt, model, save_filename):
         np.zeros((1, kmer_len * 4, sig_len), dtype=np.float32)
     )
     model.eval()
+    if next(model.parameters()).is_cuda:
+        model = model.cpu()
     with torch.no_grad():
         torch.onnx.export(
             model,
