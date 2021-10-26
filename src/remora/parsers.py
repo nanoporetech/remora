@@ -115,7 +115,12 @@ def register_prepare_taiyaki_train_data(parser):
 def run_prepare_train_data(args):
     import atexit
 
-    from taiyaki.mapped_signal_files import MappedSignalReader
+    try:
+        from taiyaki.mapped_signal_files import MappedSignalReader
+    except ImportError:
+        raise RemoraError(
+            "Taiyaki install required for remora prepare_train_data command"
+        )
 
     from remora.util import Motif, validate_mod_bases, get_can_converter
     from remora.prepare_train_data import extract_chunk_dataset
@@ -422,7 +427,10 @@ def register_infer(parser):
 def run_infer(args):
     import atexit
 
-    from taiyaki.mapped_signal_files import MappedSignalReader
+    try:
+        from taiyaki.mapped_signal_files import MappedSignalReader
+    except ImportError:
+        raise RemoraError("Taiyaki install required for remora infer command")
 
     from remora.inference import infer
 

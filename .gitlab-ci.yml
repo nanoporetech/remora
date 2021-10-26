@@ -7,7 +7,7 @@ before_script:
    - python -m venv venv
    - source venv/bin/activate
    - pip install -U pip
-   - pip install .[tests]
+   - pip install .[data_prep,tests]
 
 format:py36:
     image: python:3.6
