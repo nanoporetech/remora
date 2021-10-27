@@ -282,6 +282,13 @@ def register_train_model(parser):
         help="Weight decay setting. Default: %(default)f",
     )
     train_grp.add_argument(
+        "--early-stopping",
+        default=0,
+        type=int,
+        help="Stops training after a number of epochs without improvement."
+        "If set to 0 no stopping is done. Default: %(default)f",
+    )
+    train_grp.add_argument(
         "--seed", default=1, type=int, help="Seed value. Default: %(default)d"
     )
 
@@ -326,6 +333,7 @@ def run_train_model(args):
         args.lr_decay_gamma,
         args.epochs,
         args.save_freq,
+        args.early_stopping,
     )
 
 
