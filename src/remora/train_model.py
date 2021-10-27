@@ -137,7 +137,9 @@ def train_model(
     test_input_seq = torch.randn(
         batch_size, kmer_dim, sum(dataset.chunk_context)
     )
-    macs, params = profile(model, inputs=(test_input_sig, test_input_seq))
+    macs, params = profile(
+        model, inputs=(test_input_sig, test_input_seq), verbose=False
+    )
     LOGGER.info(
         f" Params (k) {params / (1000):.2f} | MACs (M) {macs / (1000 ** 2):.2f}"
     )
@@ -253,12 +255,15 @@ def train_model(
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             early_stop_epochs = 0
+            LOGGER.debug(
+                f"Saving best model after {epoch + 1} epochs with "
+                f"val_acc {val_acc}"
+            )
             save_model(
                 model, ckpt_save_data, out_path, epoch, opt, as_onnx=True
             )
         else:
-            if early_stopping:
-                early_stop_epochs += 1
+            early_stop_epochs += 1
 
         if int(epoch + 1) % save_freq == 0:
             save_model(
@@ -277,9 +282,9 @@ def train_model(
             loss_train=f"{trn_loss:.6f}",
         )
         ebar.update()
-        if early_stopping and early_stop_epochs == early_stopping:
+        if early_stopping and early_stop_epochs >= early_stopping:
             LOGGER.info(
-                f"No validation accuracy improvement after"
+                "No validation accuracy improvement after"
                 f" {early_stopping} epoch(s). Stopping training early."
             )
             break
