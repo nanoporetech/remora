@@ -38,6 +38,36 @@ def load_optimizer(optimizer, model, lr, weight_decay, momentum=0.9):
     raise RemoraError(f"Invalid optimizer specified ({optimizer})")
 
 
+def save_model(
+    model,
+    ckpt_save_data,
+    out_path,
+    epoch,
+    opt,
+    model_name=constants.BEST_MODEL_FILENAME,
+    as_onnx=False,
+    model_name_onnx=constants.BEST_ONNX_MODEL_FILENAME,
+):
+    ckpt_save_data["epoch"] = epoch + 1
+    state_dict = model.state_dict()
+    if "total_ops" in state_dict.keys():
+        state_dict.pop("total_ops", None)
+    if "total_params" in state_dict.keys():
+        state_dict.pop("total_params", None)
+    ckpt_save_data["state_dict"] = state_dict
+    ckpt_save_data["opt"] = opt.state_dict()
+    torch.save(
+        ckpt_save_data,
+        os.path.join(out_path, model_name),
+    )
+    if as_onnx:
+        model_util.export_model(
+            ckpt_save_data,
+            model,
+            os.path.join(out_path, model_name_onnx),
+        )
+
+
 def train_model(
     seed,
     device,
@@ -56,6 +86,7 @@ def train_model(
     lr_decay_gamma,
     epochs,
     save_freq,
+    early_stopping,
 ):
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -178,6 +209,8 @@ def train_model(
         "model_version": constants.MODEL_VERSION,
     }
     bb, ab = dataset.kmer_context_bases
+    best_val_acc = 0
+    early_stop_epochs = 0
     for epoch in range(epochs):
         model.train()
         pbar.n = 0
@@ -217,19 +250,26 @@ def train_model(
 
         scheduler.step()
 
-        if int(epoch + 1) % save_freq == 0:
-            ckpt_save_data["epoch"] = epoch + 1
-            state_dict = model.state_dict()
-            if "total_ops" in state_dict.keys():
-                state_dict.pop("total_ops", None)
-            if "total_params" in state_dict.keys():
-                state_dict.pop("total_params", None)
-            ckpt_save_data["state_dict"] = state_dict
-            ckpt_save_data["opt"] = opt.state_dict()
-            torch.save(
-                ckpt_save_data,
-                os.path.join(out_path, f"model_{epoch + 1:06d}.checkpoint"),
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            early_stop_epochs = 0
+            save_model(
+                model, ckpt_save_data, out_path, epoch, opt, as_onnx=True
             )
+        else:
+            if early_stopping:
+                early_stop_epochs += 1
+
+        if int(epoch + 1) % save_freq == 0:
+            save_model(
+                model,
+                ckpt_save_data,
+                out_path,
+                epoch,
+                opt,
+                f"model_{epoch + 1:06d}.checkpoint",
+            )
+
         ebar.set_postfix(
             acc_val=f"{val_acc:.4f}",
             acc_train=f"{trn_acc:.4f}",
@@ -237,25 +277,24 @@ def train_model(
             loss_train=f"{trn_loss:.6f}",
         )
         ebar.update()
+        if early_stopping and early_stop_epochs == early_stopping:
+            LOGGER.info(
+                f"No validation accuracy improvement after"
+                f" {early_stopping} epoch(s). Stopping training early."
+            )
+            break
     ebar.close()
     pbar.close()
     LOGGER.info("Saving final model checkpoint")
-    ckpt_save_data["epoch"] = epoch + 1
-    state_dict = model.state_dict()
-    if "total_ops" in state_dict.keys():
-        state_dict.pop("total_ops", None)
-    if "total_params" in state_dict.keys():
-        state_dict.pop("total_params", None)
-    ckpt_save_data["state_dict"] = state_dict
-    ckpt_save_data["opt"] = opt.state_dict()
-    torch.save(
-        ckpt_save_data,
-        os.path.join(out_path, constants.FINAL_MODEL_FILENAME),
-    )
-    model_util.export_model(
-        ckpt_save_data,
+    save_model(
         model,
-        os.path.join(out_path, constants.FINAL_ONNX_MODEL_FILENAME),
+        ckpt_save_data,
+        out_path,
+        epoch,
+        opt,
+        constants.FINAL_MODEL_FILENAME,
+        True,
+        constants.FINAL_ONNX_MODEL_FILENAME,
     )
     LOGGER.info("Training complete")
 

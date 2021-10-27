@@ -2,6 +2,7 @@ import datetime
 import imp
 from os.path import isfile
 
+import copy
 import numpy as np
 import onnx
 import onnxruntime as ort
@@ -125,10 +126,12 @@ def export_model(ckpt, model, save_filename):
     )
     model.eval()
     if next(model.parameters()).is_cuda:
-        model = model.cpu()
+        model_to_save = copy.deepcopy(model).cpu()
+    else:
+        model_to_save = model
     with torch.no_grad():
         torch.onnx.export(
-            model,
+            model_to_save,
             (sig, seq),
             save_filename,
             export_params=True,
