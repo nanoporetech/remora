@@ -294,7 +294,10 @@ def register_train_model(parser):
         "If set to 0 no stopping is done. Default: %(default)f",
     )
     train_grp.add_argument(
-        "--seed", default=1, type=int, help="Seed value. Default: %(default)d"
+        "--seed",
+        default=None,
+        type=int,
+        help="Seed value. Default: %(default)d",
     )
 
     comp_grp = subparser.add_argument_group("Compute Arguments")
