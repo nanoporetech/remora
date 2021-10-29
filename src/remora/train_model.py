@@ -12,6 +12,8 @@ from remora import constants, util, log, RemoraError, encoded_kmers, model_util
 from remora.data_chunks import RemoraDataset
 
 LOGGER = log.get_logger()
+BREACH_THRESHOLD = 0.8
+REGRESSION_THRESHOLD = 0.7
 
 
 def load_optimizer(optimizer, model, lr, weight_decay, momentum=0.9):
@@ -88,6 +90,14 @@ def train_model(
     save_freq,
     early_stopping,
 ):
+
+    seed = (
+        np.random.randint(0, np.iinfo(np.uint32).max, dtype=np.uint32)
+        if seed is None
+        else seed
+    )
+    LOGGER.info(f"Seed selected is {seed}")
+
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -213,6 +223,7 @@ def train_model(
     bb, ab = dataset.kmer_context_bases
     best_val_acc = 0
     early_stop_epochs = 0
+    breached = False
     for epoch in range(epochs):
         model.train()
         pbar.n = 0
@@ -251,6 +262,12 @@ def train_model(
         )
 
         scheduler.step()
+
+        if val_acc >= BREACH_THRESHOLD:
+            breached = True
+            LOGGER.debug("Remora model surpassed 80% accuracy during training")
+        if breached and val_acc <= REGRESSION_THRESHOLD:
+            LOGGER.warning("Remora training unstable")
 
         if val_acc > best_val_acc:
             best_val_acc = val_acc
