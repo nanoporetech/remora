@@ -205,14 +205,17 @@ class RemoraRead:
                 + self.seq_to_sig_map[focus_base_idx + 1]
             ) // 2
             label = -1 if self.labels is None else self.labels[focus_base_idx]
-            yield self.extract_chunk(
-                focus_sig_idx,
-                chunk_context,
-                kmer_context_bases,
-                label=label,
-                base_pred=base_pred,
-                read_seq_pos=focus_base_idx,
-            )
+            try:
+                yield self.extract_chunk(
+                    focus_sig_idx,
+                    chunk_context,
+                    kmer_context_bases,
+                    label=label,
+                    base_pred=base_pred,
+                    read_seq_pos=focus_base_idx,
+                )
+            except Exception as e:
+                LOGGER.debug(f"FAILED_CHUNK_EXTRACT {e}")
 
 
 @dataclass

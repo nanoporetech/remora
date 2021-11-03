@@ -102,7 +102,7 @@ def call_read_mods(
             [],
         )
     read_dataset = RemoraDataset.allocate_empty_chunks(
-        num_chunks=len(motif_hits),
+        num_chunks=len(chunks),
         chunk_context=model_metadata["chunk_context"],
         max_seq_len=max(c.seq_len for c in chunks),
         kmer_context_bases=model_metadata["kmer_context_bases"],
