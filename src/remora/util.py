@@ -26,6 +26,26 @@ SINGLE_LETTER_CODE = {
     "W": "AT",
     "Y": "CT",
 }
+SEQ_MIN = np.array(["A"], dtype="S1").view(np.uint8)[0]
+SEQ_TO_INT_ARR = np.full(26, -1, dtype=np.int)
+SEQ_TO_INT_ARR[0] = 0
+SEQ_TO_INT_ARR[2] = 1
+SEQ_TO_INT_ARR[6] = 2
+SEQ_TO_INT_ARR[19] = 3
+
+
+def seq_to_int(seq):
+    """Convert string sequence to integer encoded array
+
+    Args:
+        seq (str): Neucleotide sequence
+
+    Returns:
+        np.array containing integer encoded sequence
+    """
+    return SEQ_TO_INT_ARR[
+        np.array(list(seq), dtype="c").view(np.uint8) - SEQ_MIN
+    ]
 
 
 def resolve_path(fn_path):
