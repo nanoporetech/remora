@@ -8,7 +8,7 @@ import onnx
 import onnxruntime as ort
 import torch
 from sklearn.metrics import precision_recall_curve
-
+from sklearn.metrics import confusion_matrix
 from remora import log, RemoraError, encoded_kmers
 
 LOGGER = log.get_logger()
@@ -21,7 +21,14 @@ class ValidationLogger:
         if base_pred:
             self.fp.write(
                 "\t".join(
-                    ("Val_Type", "Iteration", "Accuracy", "Loss", "Num_Calls")
+                    (
+                        "Val_Type",
+                        "Iteration",
+                        "Accuracy",
+                        "Loss",
+                        "Num_Calls",
+                        "Confusion",
+                    )
                 )
                 + "\n"
             )
@@ -37,6 +44,7 @@ class ValidationLogger:
                         "Precision",
                         "Recall",
                         "Num_Calls",
+                        "Confusion",
                     )
                 )
                 + "\n"
@@ -70,15 +78,18 @@ class ValidationLogger:
                 loss = criterion(output, labels)
                 all_loss.append(loss.detach().cpu().numpy())
             all_outputs = np.concatenate(all_outputs, axis=0)
+            pred_labels = np.argmax(all_outputs, axis=1)
             all_labels = np.concatenate(all_labels)
-            acc = (
-                np.argmax(all_outputs, axis=1) == all_labels
-            ).sum() / all_outputs.shape[0]
+            acc = (pred_labels == all_labels).sum() / all_outputs.shape[0]
             mean_loss = np.mean(all_loss)
+            conf_mat = confusion_matrix(all_labels, pred_labels)
+            cm_flat_str = np.array2string(
+                conf_mat.flatten(), separator=","
+            ).replace("\n", "")
             if self.base_pred:
                 self.fp.write(
                     f"{val_type}\t{niter}\t{acc:.6f}\t{mean_loss:.6f}\t"
-                    f"{len(all_labels)}\n"
+                    f"{len(all_labels)}\t{cm_flat_str}\n"
                 )
             else:
                 with np.errstate(invalid="ignore"):
@@ -90,7 +101,7 @@ class ValidationLogger:
                 self.fp.write(
                     f"{val_type}\t{niter}\t{acc:.6f}\t{mean_loss:.6f}\t"
                     f"{f1_scores[f1_idx]}\t{precision[f1_idx]}\t"
-                    f"{recall[f1_idx]}\t{len(all_labels)}\n"
+                    f"{recall[f1_idx]}\t{len(all_labels)}\t{cm_flat_str}\n"
                 )
         return acc, mean_loss
 
