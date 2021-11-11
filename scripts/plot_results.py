@@ -1,8 +1,12 @@
 import argparse
 import os
 
+import matplotlib
+
+matplotlib.use("pdf")
 import matplotlib.pyplot as plt
 import pandas as pd
+import numpy as np
 
 
 class plotter:
@@ -26,6 +30,7 @@ class plotter:
             "F1": trn_ext["F1"],
             "Precision": trn_ext["Precision"],
             "Recall": trn_ext["Recall"],
+            "Confusion": trn_ext["Confusion"],
         }
         val_results = {
             "Loss": val_ext["Loss"],
@@ -34,6 +39,7 @@ class plotter:
             "F1": val_ext["F1"],
             "Precision": val_ext["Precision"],
             "Recall": val_ext["Recall"],
+            "Confusion": val_ext["Confusion"],
         }
         folder = dir.rsplit("/", 1)[-1]
 
@@ -82,6 +88,39 @@ class plotter:
 
         fig.savefig(os.path.join(args.out_path, "results.pdf"), format="pdf")
 
+    def plot_conf_mat(self, args):
+
+        folders = []
+        fig, ax = plt.subplots(figsize=(7.5, 7.5))
+        for i, arg in enumerate(args.paths):
+            res, folder = self.extract_results(arg)
+            folders.append(folder + "_training")
+            folders.append(folder)
+            lres = res[0]["Confusion"].shape[0]
+            last_idx = res[0]["Confusion"].index[lres - 1]
+            mat_str = res[0]["Confusion"][last_idx]
+            mat_str = mat_str.replace("[", "")
+            mat_str = mat_str.replace("]", "")
+            conf_matrix = np.fromstring(mat_str, dtype=int, sep=",")
+            cl_nr = int(np.sqrt(len(conf_matrix)))
+            conf_matrix = np.reshape(conf_matrix, (cl_nr, cl_nr))
+            ax.matshow(conf_matrix, cmap=plt.cm.Blues, alpha=0.3)
+            for i in range(conf_matrix.shape[0]):
+                for j in range(conf_matrix.shape[1]):
+                    ax.text(
+                        x=j,
+                        y=i,
+                        s=conf_matrix[i, j],
+                        va="center",
+                        ha="center",
+                        size="xx-large",
+                    )
+            plt.xlabel("Predictions", fontsize=18)
+            plt.ylabel("Ground Truth", fontsize=18)
+            fig.savefig(
+                os.path.join(args.out_path, "conf_matrix.pdf"), format="pdf"
+            )
+
 
 if __name__ == "__main__":
 
@@ -98,3 +137,4 @@ if __name__ == "__main__":
 
     plotting = plotter()
     plotting.plot_results(args)
+    plotting.plot_conf_mat(args)
