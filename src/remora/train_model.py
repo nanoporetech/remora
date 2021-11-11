@@ -263,11 +263,15 @@ def train_model(
 
         scheduler.step()
 
-        if val_acc >= BREACH_THRESHOLD:
-            breached = True
-            LOGGER.debug("Remora model surpassed 80% accuracy during training")
-        if breached and val_acc <= REGRESSION_THRESHOLD:
-            LOGGER.warning("Remora training unstable")
+        if breached:
+            if val_acc <= REGRESSION_THRESHOLD:
+                LOGGER.warning("Remora training unstable")
+        else:
+            if val_acc >= BREACH_THRESHOLD:
+                breached = True
+                LOGGER.debug(
+                    f"{BREACH_THRESHOLD * 100}% accuracy threshold surpassed"
+                )
 
         if val_acc > best_val_acc:
             best_val_acc = val_acc
