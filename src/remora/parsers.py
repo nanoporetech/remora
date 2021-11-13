@@ -154,8 +154,10 @@ def run_prepare_train_data(args):
             )
         label_conv = get_can_converter(alphabet, collapse_alphabet)
     else:
+        # TODO use mod_bases from alphabet_info.mod_bases and assert that all
+        # derive from a single canonical base
         label_conv = validate_mod_bases(
-            args.mod_bases, motif, alphabet, collapse_alphabet
+            alphabet_info.mod_bases, motif, alphabet, collapse_alphabet
         )
     extract_chunk_dataset(
         input_msf,
@@ -166,7 +168,7 @@ def run_prepare_train_data(args):
         args.max_chunks_per_read,
         label_conv,
         args.base_pred,
-        args.mod_bases,
+        alphabet_info.mod_bases,
         alphabet_info.mod_long_names,
         args.kmer_context_bases,
     )
@@ -343,6 +345,119 @@ def run_train_model(args):
         args.save_freq,
         args.early_stopping,
     )
+
+
+#########################
+# remora split_by_label #
+#########################
+
+
+def register_split_by_label(parser):
+    subparser = parser.add_parser(
+        "split_by_label",
+        description="Split Remora dataset by label",
+        help="Split Remora dataset by label",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    subparser.add_argument(
+        "remora_dataset_path",
+        help="Remora training dataset",
+    )
+    subparser.set_defaults(func=run_split_by_label)
+
+
+def run_split_by_label(args):
+    from remora.data_chunks import RemoraDataset
+
+    dataset = RemoraDataset.load_from_file(
+        args.remora_dataset_path,
+        shuffle_on_iter=False,
+        drop_last=False,
+    )
+    out_basename = os.path.splitext(args.remora_dataset_path)[0]
+    for label, label_dataset in dataset.split_by_label():
+        label_dataset.save_dataset(f"{out_basename}.{label}.npz")
+        LOGGER.info(
+            f"Wrote {label_dataset.nchunks} chunks to "
+            f"{out_basename}.{label}.npz"
+        )
+
+
+##########################
+# remora inspect_dataset #
+##########################
+
+
+def register_inspect_dataset(parser):
+    subparser = parser.add_parser(
+        "inspect_dataset",
+        description="Inspect Remora dataset",
+        help="Inspect Remora dataset",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    subparser.add_argument(
+        "remora_dataset_path",
+        help="Remora training dataset",
+    )
+    subparser.set_defaults(func=run_inspect_dataset)
+
+
+def run_inspect_dataset(args):
+    from remora.data_chunks import RemoraDataset
+
+    dataset = RemoraDataset.load_from_file(
+        args.remora_dataset_path,
+        shuffle_on_iter=False,
+        drop_last=False,
+    )
+    LOGGER.info(
+        "Loaded data info from file:\n"
+        f"          base_pred : {dataset.base_pred}\n"
+        f"          mod_bases : {dataset.mod_bases}\n"
+        f"     mod_long_names : {dataset.mod_long_names}\n"
+        f" kmer_context_bases : {dataset.kmer_context_bases}\n"
+        f"      chunk_context : {dataset.chunk_context}\n"
+        f"              motif : {dataset.motif}\n"
+    )
+    LOGGER.info(f"Label distribution: {dataset.get_label_counts()}")
+    LOGGER.info(f"Total num chunks: {dataset.nchunks}")
+
+
+#########################
+# remora merge_datasets #
+#########################
+
+
+def register_merge_datasets(parser):
+    subparser = parser.add_parser(
+        "merge_datasets",
+        description="Merge Remora datasets",
+        help="Merge Remora datasets",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    subparser.add_argument(
+        "--input-dataset",
+        nargs=2,
+        action="append",
+        help="1) Remora training dataset path and 2) max number of chunks "
+        "to extract from this dataset.",
+    )
+    subparser.add_argument(
+        "--output-dataset",
+        required=True,
+        help="Output path for dataset",
+    )
+    subparser.set_defaults(func=run_merge_datasets)
+
+
+def run_merge_datasets(args):
+    from remora.data_chunks import merge_datasets
+
+    input_datasets = [
+        (ds_path, int(num_chunks)) for ds_path, num_chunks in args.input_dataset
+    ]
+    output_dataset = merge_datasets(input_datasets)
+    output_dataset.save_dataset(args.output_dataset)
 
 
 #######################
