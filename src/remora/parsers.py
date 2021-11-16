@@ -447,6 +447,11 @@ def register_merge_datasets(parser):
         required=True,
         help="Output path for dataset",
     )
+    subparser.add_argument(
+        "--balance",
+        action="store_true",
+        help="Automatically balance classes when merging",
+    )
     subparser.set_defaults(func=run_merge_datasets)
 
 
@@ -456,7 +461,7 @@ def run_merge_datasets(args):
     input_datasets = [
         (ds_path, int(num_chunks)) for ds_path, num_chunks in args.input_dataset
     ]
-    output_dataset = merge_datasets(input_datasets)
+    output_dataset = merge_datasets(input_datasets, args.balance)
     output_dataset.save_dataset(args.output_dataset)
 
 

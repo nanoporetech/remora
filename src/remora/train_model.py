@@ -125,7 +125,7 @@ def train_model(
         f"              motif : {dataset.motif}\n"
     )
 
-    val_fp = model_util.ValidationLogger(out_path, dataset.base_pred)
+    val_fp = model_util.ValidationLogger(out_path, dataset.is_multiclass)
     atexit.register(val_fp.close)
     batch_fp = util.BatchLogger(out_path)
     atexit.register(batch_fp.close)
@@ -175,7 +175,9 @@ def train_model(
 
     LOGGER.info("Running initial validation")
     # assess accuracy before first iteration
-    val_acc, val_loss = val_fp.validate_model(model, criterion, val_ds, 0)
+    val_acc, val_loss = val_fp.validate_model(
+        model, criterion, val_ds, 0, "val"
+    )
     trn_acc, trn_loss = val_fp.validate_model(
         model, criterion, val_trn_ds, 0, "trn"
     )
@@ -255,10 +257,18 @@ def train_model(
             pbar.refresh()
 
         val_acc, val_loss = val_fp.validate_model(
-            model, criterion, val_ds, (epoch + 1) * len(trn_ds)
+            model,
+            criterion,
+            val_ds,
+            (epoch + 1) * len(trn_ds),
+            "val",
         )
         trn_acc, trn_loss = val_fp.validate_model(
-            model, criterion, val_trn_ds, (epoch + 1) * len(trn_ds), "trn"
+            model,
+            criterion,
+            val_trn_ds,
+            (epoch + 1) * len(trn_ds),
+            "trn",
         )
 
         scheduler.step()
