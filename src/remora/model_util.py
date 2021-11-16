@@ -15,10 +15,10 @@ LOGGER = log.get_logger()
 
 
 class ValidationLogger:
-    def __init__(self, out_path, base_pred):
+    def __init__(self, out_path, multiclass=False):
         self.fp = open(out_path / "validation.log", "w", buffering=1)
-        self.base_pred = base_pred
-        if base_pred:
+        self.multiclass = multiclass
+        if multiclass:
             self.fp.write(
                 "\t".join(
                     (
@@ -86,7 +86,8 @@ class ValidationLogger:
             cm_flat_str = np.array2string(
                 conf_mat.flatten(), separator=","
             ).replace("\n", "")
-            if self.base_pred:
+
+            if self.multiclass:
                 self.fp.write(
                     f"{val_type}\t{niter}\t{acc:.6f}\t{mean_loss:.6f}\t"
                     f"{len(all_labels)}\t{cm_flat_str}\n"
@@ -103,6 +104,7 @@ class ValidationLogger:
                     f"{f1_scores[f1_idx]}\t{precision[f1_idx]}\t"
                     f"{recall[f1_idx]}\t{len(all_labels)}\t{cm_flat_str}\n"
                 )
+
         return acc, mean_loss
 
 

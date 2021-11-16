@@ -395,7 +395,7 @@ class RemoraDataset:
     def add_batch(self, b_sig, b_seq, b_ss_map, b_seq_lens, b_labels, b_rd):
         batch_size = b_labels.size
         b_st, b_en = self.nchunks, self.nchunks + batch_size
-        if self.nchunks + batch_size >= self.labels.size:
+        if self.nchunks + batch_size > self.labels.size:
             raise RemoraError("Cannot add batch to currently allocated tensors")
         # TODO check that applicable dims are compatible
         self.sig_tensor[b_st:b_en] = b_sig
@@ -632,6 +632,10 @@ class RemoraDataset:
     def is_trimmed(self):
         return self.nchunks == self.sig_tensor.shape[0]
 
+    @property
+    def is_multiclass(self):
+        return self.base_pred or len(self.mod_bases) > 1
+
     @classmethod
     def load_from_file(cls, filename, *args, **kwargs):
         # use allow_pickle=True to allow None type in read_data
@@ -710,7 +714,7 @@ class RemoraDataset:
         )
 
 
-def merge_datasets(input_datasets):
+def merge_datasets(input_datasets, balance=False):
     def load_dataset(ds_path, num_chunks):
         dataset = RemoraDataset.load_from_file(
             ds_path,
@@ -820,4 +824,50 @@ def merge_datasets(input_datasets):
             f"Copied {num_chunks} chunks. New label distribution: "
             f"{output_dataset.get_label_counts()}"
         )
+
+    if balance:
+        min_class_len = min(output_dataset.get_label_counts().values())
+        if base_pred:
+            outs = 4
+        else:
+            outs = len(all_mod_bases) + 1
+        balanced_dataset = RemoraDataset.allocate_empty_chunks(
+            num_chunks=outs * min_class_len,
+            chunk_context=chunk_context,
+            max_seq_len=max_seq_len,
+            kmer_context_bases=kmer_context_bases,
+            base_pred=base_pred,
+            mod_bases=all_mod_bases,
+            mod_long_names=all_mod_long_names,
+            motif=motif,
+        )
+
+        choices = []
+        for i in range(outs):
+            choices.append(
+                np.random.choice(
+                    np.where(output_dataset.labels == i)[0],
+                    min_class_len,
+                    replace=False,
+                )
+            )
+
+        choices = np.concatenate(choices)
+        np.random.shuffle(choices)
+        b_rd = None if b_rd is None else [b_rd[idx] for idx in choices]
+        balanced_dataset.add_batch(
+            output_dataset.sig_tensor[choices],
+            output_dataset.seq_array[choices],
+            output_dataset.seq_mappings[choices],
+            output_dataset.seq_lens[choices],
+            output_dataset.labels[choices],
+            b_rd,
+        )
+
+        LOGGER.info(
+            f"Balanced out to {outs*min_class_len} chunks. New label distribution: "
+            f"{balanced_dataset.get_label_counts()}"
+        )
+        return balanced_dataset
+
     return output_dataset
