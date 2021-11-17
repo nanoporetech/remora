@@ -8,8 +8,8 @@ import onnx
 import onnxruntime as ort
 import torch
 from sklearn.metrics import precision_recall_curve
-from sklearn.metrics import confusion_matrix
-from remora import log, RemoraError, encoded_kmers
+from sklearn.metrics import confusion_matrix, classification_report
+from remora import log, RemoraError, encoded_kmers, util, constants
 
 LOGGER = log.get_logger()
 
@@ -28,6 +28,8 @@ class ValidationLogger:
                         "Loss",
                         "Num_Calls",
                         "Confusion",
+                        "Conf_frac",
+                        "Min_F1",
                     )
                 )
                 + "\n"
@@ -45,6 +47,7 @@ class ValidationLogger:
                         "Recall",
                         "Num_Calls",
                         "Confusion",
+                        "Conf_frac",
                     )
                 )
                 + "\n"
@@ -53,7 +56,15 @@ class ValidationLogger:
     def close(self):
         self.fp.close()
 
-    def validate_model(self, model, criterion, dataset, niter, val_type="val"):
+    def validate_model(
+        self,
+        model,
+        criterion,
+        dataset,
+        niter,
+        val_type="val",
+        conf_thr=constants.DEFAULT_CONF_THR,
+    ):
         model.eval()
         bb, ab = dataset.kmer_context_bases
         model.eval()
@@ -82,7 +93,24 @@ class ValidationLogger:
             all_labels = np.concatenate(all_labels)
             acc = (pred_labels == all_labels).sum() / all_outputs.shape[0]
             mean_loss = np.mean(all_loss)
-            conf_mat = confusion_matrix(all_labels, pred_labels)
+            cl_rep = classification_report(
+                all_labels,
+                pred_labels,
+                digits=3,
+                output_dict=True,
+                zero_division=0,
+            )
+            min_f1 = min(
+                cl_rep[str(k)]["f1-score"] for k in np.unique(all_labels)
+            )
+
+            all_out_soft = util.softmax_axis1(all_outputs)
+            conf_ids = np.max(all_out_soft > conf_thr, axis=1)
+            conf_calls = all_out_soft[conf_ids]
+            pred_conf_labels = np.argmax(conf_calls, axis=1)
+            conf_mat = confusion_matrix(all_labels[conf_ids], pred_conf_labels)
+            conf_frac = len(all_labels[conf_ids]) / len(all_labels)
+
             cm_flat_str = np.array2string(
                 conf_mat.flatten(), separator=","
             ).replace("\n", "")
@@ -90,7 +118,8 @@ class ValidationLogger:
             if self.multiclass:
                 self.fp.write(
                     f"{val_type}\t{niter}\t{acc:.6f}\t{mean_loss:.6f}\t"
-                    f"{len(all_labels)}\t{cm_flat_str}\n"
+                    f"{len(all_labels)}\t{cm_flat_str}\t{conf_frac:.2f}\t"
+                    f"{min_f1:.6f}\n"
                 )
             else:
                 with np.errstate(invalid="ignore"):
@@ -102,7 +131,8 @@ class ValidationLogger:
                 self.fp.write(
                     f"{val_type}\t{niter}\t{acc:.6f}\t{mean_loss:.6f}\t"
                     f"{f1_scores[f1_idx]}\t{precision[f1_idx]}\t"
-                    f"{recall[f1_idx]}\t{len(all_labels)}\t{cm_flat_str}\n"
+                    f"{recall[f1_idx]}\t{len(all_labels)}\t"
+                    f"{cm_flat_str}\t{conf_frac:.2f}\n"
                 )
 
         return acc, mean_loss
