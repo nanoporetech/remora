@@ -301,6 +301,12 @@ def register_train_model(parser):
         type=int,
         help="Seed value. Default: %(default)d",
     )
+    train_grp.add_argument(
+        "--conf-thr",
+        default=constants.DEFAULT_CONF_THR,
+        type=float,
+        help="Confidence threshold for the confusion matrix. Default: %(default)f",
+    )
 
     comp_grp = subparser.add_argument_group("Compute Arguments")
     comp_grp.add_argument(
@@ -344,6 +350,7 @@ def run_train_model(args):
         args.epochs,
         args.save_freq,
         args.early_stopping,
+        args.conf_thr,
     )
 
 

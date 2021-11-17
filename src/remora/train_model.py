@@ -89,6 +89,7 @@ def train_model(
     epochs,
     save_freq,
     early_stopping,
+    conf_thr,
 ):
 
     seed = (
@@ -176,10 +177,15 @@ def train_model(
     LOGGER.info("Running initial validation")
     # assess accuracy before first iteration
     val_acc, val_loss = val_fp.validate_model(
-        model, criterion, val_ds, 0, "val"
+        model, criterion, val_ds, 0, "val", conf_thr
     )
     trn_acc, trn_loss = val_fp.validate_model(
-        model, criterion, val_trn_ds, 0, "trn"
+        model,
+        criterion,
+        val_trn_ds,
+        0,
+        "trn",
+        conf_thr,
     )
 
     LOGGER.info("Start training")
@@ -262,6 +268,7 @@ def train_model(
             val_ds,
             (epoch + 1) * len(trn_ds),
             "val",
+            conf_thr,
         )
         trn_acc, trn_loss = val_fp.validate_model(
             model,
@@ -269,6 +276,7 @@ def train_model(
             val_trn_ds,
             (epoch + 1) * len(trn_ds),
             "trn",
+            conf_thr,
         )
 
         scheduler.step()
