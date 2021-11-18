@@ -44,14 +44,15 @@ def test_prep_mod(mod_chunks):
 @pytest.mark.unit
 @pytest.mark.parametrize("model_path", MODEL_PATHS)
 def test_train_mod(model_path, tmpdir_factory, mod_chunks, train_cli_args):
-    """Run `train_model` on the command line."""
-    print(f"Running command line `remora train_model` with model {model_path}")
+    """Run `model train` on the command line."""
+    print(f"Running command line `remora model train` with model {model_path}")
     out_dir = tmpdir_factory.mktemp("remora_tests") / "train_mod_model"
     print(f"Output file: {out_dir}")
     check_call(
         [
             "remora",
-            "train_model",
+            "model",
+            "train",
             str(mod_chunks),
             "--output-path",
             str(out_dir),
@@ -70,6 +71,7 @@ def test_mod_infer(tmpdir_factory, mod_tai_map_sig, fw_mod_model_dir):
         [
             "remora",
             "infer",
+            "from_taiyaki_mapped_signal",
             mod_tai_map_sig,
             str(fw_mod_model_dir / FINAL_MODEL_FILENAME),
             "--batch-size",
@@ -87,6 +89,7 @@ def test_can_infer(tmpdir_factory, can_tai_map_sig, fw_mod_model_dir):
         [
             "remora",
             "infer",
+            "from_taiyaki_mapped_signal",
             can_tai_map_sig,
             str(fw_mod_model_dir / FINAL_MODEL_FILENAME),
             "--batch-size",
@@ -106,14 +109,15 @@ def test_can_infer(tmpdir_factory, can_tai_map_sig, fw_mod_model_dir):
 def test_train_base_pred(
     model_path, tmpdir_factory, can_chunks, train_cli_args
 ):
-    """Run `train_model` on the command line with base prediction option."""
+    """Run `model train` on the command line with base prediction option."""
     print(f"Running command line `remora train_model` with model {model_path}")
     out_dir = tmpdir_factory.mktemp("remora_tests") / "train_base_pred_model"
     print(f"Output file: {out_dir}")
     check_call(
         [
             "remora",
-            "train_model",
+            "model",
+            "train",
             str(can_chunks),
             "--output-path",
             str(out_dir),
@@ -135,6 +139,7 @@ def test_base_pred_infer(
         [
             "remora",
             "infer",
+            "from_taiyaki_mapped_signal",
             can_tai_map_sig,
             str(fw_base_pred_model_dir / FINAL_MODEL_FILENAME),
             "--batch-size",
