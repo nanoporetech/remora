@@ -33,14 +33,31 @@ class SubcommandHelpFormatter(argparse.RawDescriptionHelpFormatter):
         return parts
 
 
-#####################################
-# remora prepare_taiyaki_train_data #
-#####################################
+##################
+# remora dataset #
+##################
 
 
-def register_prepare_taiyaki_train_data(parser):
+def register_dataset(parser):
     subparser = parser.add_parser(
-        "prepare_train_data",
+        "dataset",
+        description="Remora dataset operations",
+        help="Create or perform operations on a Remora dataset",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    ssubparser = subparser.add_subparsers(title="dataset commands")
+    #  Since `dataset` has several sub-commands, print help as default
+    subparser.set_defaults(func=lambda x: subparser.print_help())
+    #  Register dataset sub commands
+    register_dataset_prepare(ssubparser)
+    register_dataset_split_by_label(ssubparser)
+    register_dataset_merge(ssubparser)
+    register_dataset_inspect(ssubparser)
+
+
+def register_dataset_prepare(parser):
+    subparser = parser.add_parser(
+        "prepare",
         description="Prepare Remora training dataset",
         help="Prepare Remora training dataset.",
         formatter_class=SubcommandHelpFormatter,
@@ -109,17 +126,17 @@ def register_prepare_taiyaki_train_data(parser):
         help="Log filename. Default: Don't output log file.",
     )
 
-    subparser.set_defaults(func=run_prepare_train_data)
+    subparser.set_defaults(func=run_dataset_prepare)
 
 
-def run_prepare_train_data(args):
+def run_dataset_prepare(args):
     import atexit
 
     try:
         from taiyaki.mapped_signal_files import MappedSignalReader
     except ImportError:
         raise RemoraError(
-            "Taiyaki install required for remora prepare_train_data command"
+            "Taiyaki install required for `remora dataset prepare` command"
         )
 
     from remora.util import Motif, validate_mod_bases, get_can_converter
@@ -174,14 +191,132 @@ def run_prepare_train_data(args):
     )
 
 
-######################
-# remora train_model #
-######################
-
-
-def register_train_model(parser):
+def register_dataset_split_by_label(parser):
     subparser = parser.add_parser(
-        "train_model",
+        "split_by_label",
+        description="Split Remora dataset by label",
+        help="Split Remora dataset by label",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    subparser.add_argument(
+        "remora_dataset_path",
+        help="Remora training dataset",
+    )
+    subparser.set_defaults(func=run_dataset_split_by_label)
+
+
+def run_dataset_split_by_label(args):
+    from remora.data_chunks import RemoraDataset
+
+    dataset = RemoraDataset.load_from_file(
+        args.remora_dataset_path,
+        shuffle_on_iter=False,
+        drop_last=False,
+    )
+    out_basename = os.path.splitext(args.remora_dataset_path)[0]
+    for label, label_dataset in dataset.split_by_label():
+        label_dataset.save_dataset(f"{out_basename}.{label}.npz")
+        LOGGER.info(
+            f"Wrote {label_dataset.nchunks} chunks to "
+            f"{out_basename}.{label}.npz"
+        )
+
+
+def register_dataset_inspect(parser):
+    subparser = parser.add_parser(
+        "inspect",
+        description="Inspect Remora dataset",
+        help="Inspect Remora dataset",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    subparser.add_argument(
+        "remora_dataset_path",
+        help="Remora training dataset",
+    )
+    subparser.set_defaults(func=run_dataset_inspect)
+
+
+def run_dataset_inspect(args):
+    from remora.data_chunks import RemoraDataset
+
+    dataset = RemoraDataset.load_from_file(
+        args.remora_dataset_path,
+        shuffle_on_iter=False,
+        drop_last=False,
+    )
+    LOGGER.info(
+        "Loaded data info from file:\n"
+        f"          base_pred : {dataset.base_pred}\n"
+        f"          mod_bases : {dataset.mod_bases}\n"
+        f"     mod_long_names : {dataset.mod_long_names}\n"
+        f" kmer_context_bases : {dataset.kmer_context_bases}\n"
+        f"      chunk_context : {dataset.chunk_context}\n"
+        f"              motif : {dataset.motif}\n"
+    )
+    LOGGER.info(f"Label distribution: {dataset.get_label_counts()}")
+    LOGGER.info(f"Total num chunks: {dataset.nchunks}")
+
+
+def register_dataset_merge(parser):
+    subparser = parser.add_parser(
+        "merge",
+        description="Merge Remora datasets",
+        help="Merge Remora datasets",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    subparser.add_argument(
+        "--input-dataset",
+        nargs=2,
+        action="append",
+        help="1) Remora training dataset path and 2) max number of chunks "
+        "to extract from this dataset.",
+    )
+    subparser.add_argument(
+        "--output-dataset",
+        required=True,
+        help="Output path for dataset",
+    )
+    subparser.add_argument(
+        "--balance",
+        action="store_true",
+        help="Automatically balance classes when merging",
+    )
+    subparser.set_defaults(func=run_dataset_merge)
+
+
+def run_dataset_merge(args):
+    from remora.data_chunks import merge_datasets
+
+    input_datasets = [
+        (ds_path, int(num_chunks)) for ds_path, num_chunks in args.input_dataset
+    ]
+    output_dataset = merge_datasets(input_datasets, args.balance)
+    output_dataset.save_dataset(args.output_dataset)
+
+
+################
+# remora model #
+################
+
+
+def register_model(parser):
+    subparser = parser.add_parser(
+        "model",
+        description="Remora model operations",
+        help="Train or perform operations on Remora models",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    ssubparser = subparser.add_subparsers(title="model commands")
+    #  Since `model` has several sub-commands, print help as default
+    subparser.set_defaults(func=lambda x: subparser.print_help())
+    #  Register model sub commands
+    register_model_train(ssubparser)
+    register_model_export(ssubparser)
+
+
+def register_model_train(parser):
+    subparser = parser.add_parser(
+        "train",
         description="Train Remora model",
         help="Train Remora model",
         formatter_class=SubcommandHelpFormatter,
@@ -293,19 +428,20 @@ def register_train_model(parser):
         default=0,
         type=int,
         help="Stops training after a number of epochs without improvement."
-        "If set to 0 no stopping is done. Default: %(default)f",
+        "If set to 0 no stopping is done. Default: %(default)d",
     )
     train_grp.add_argument(
         "--seed",
         default=None,
         type=int,
-        help="Seed value. Default: %(default)d",
+        help="Seed value. Default: Random seed",
     )
     train_grp.add_argument(
         "--conf-thr",
         default=constants.DEFAULT_CONF_THR,
         type=float,
-        help="Confidence threshold for the confusion matrix. Default: %(default)f",
+        help="Confidence threshold for the confusion matrix. "
+        "Default: %(default)f",
     )
 
     comp_grp = subparser.add_argument_group("Compute Arguments")
@@ -315,10 +451,10 @@ def register_train_model(parser):
         help="ID of GPU that is used for training. Default: Use CPU.",
     )
 
-    subparser.set_defaults(func=run_train_model)
+    subparser.set_defaults(func=run_model_train)
 
 
-def run_train_model(args):
+def run_model_train(args):
     from remora.train_model import train_model
 
     out_path = Path(args.output_path)
@@ -354,132 +490,9 @@ def run_train_model(args):
     )
 
 
-#########################
-# remora split_by_label #
-#########################
-
-
-def register_split_by_label(parser):
+def register_model_export(parser):
     subparser = parser.add_parser(
-        "split_by_label",
-        description="Split Remora dataset by label",
-        help="Split Remora dataset by label",
-        formatter_class=SubcommandHelpFormatter,
-    )
-    subparser.add_argument(
-        "remora_dataset_path",
-        help="Remora training dataset",
-    )
-    subparser.set_defaults(func=run_split_by_label)
-
-
-def run_split_by_label(args):
-    from remora.data_chunks import RemoraDataset
-
-    dataset = RemoraDataset.load_from_file(
-        args.remora_dataset_path,
-        shuffle_on_iter=False,
-        drop_last=False,
-    )
-    out_basename = os.path.splitext(args.remora_dataset_path)[0]
-    for label, label_dataset in dataset.split_by_label():
-        label_dataset.save_dataset(f"{out_basename}.{label}.npz")
-        LOGGER.info(
-            f"Wrote {label_dataset.nchunks} chunks to "
-            f"{out_basename}.{label}.npz"
-        )
-
-
-##########################
-# remora inspect_dataset #
-##########################
-
-
-def register_inspect_dataset(parser):
-    subparser = parser.add_parser(
-        "inspect_dataset",
-        description="Inspect Remora dataset",
-        help="Inspect Remora dataset",
-        formatter_class=SubcommandHelpFormatter,
-    )
-    subparser.add_argument(
-        "remora_dataset_path",
-        help="Remora training dataset",
-    )
-    subparser.set_defaults(func=run_inspect_dataset)
-
-
-def run_inspect_dataset(args):
-    from remora.data_chunks import RemoraDataset
-
-    dataset = RemoraDataset.load_from_file(
-        args.remora_dataset_path,
-        shuffle_on_iter=False,
-        drop_last=False,
-    )
-    LOGGER.info(
-        "Loaded data info from file:\n"
-        f"          base_pred : {dataset.base_pred}\n"
-        f"          mod_bases : {dataset.mod_bases}\n"
-        f"     mod_long_names : {dataset.mod_long_names}\n"
-        f" kmer_context_bases : {dataset.kmer_context_bases}\n"
-        f"      chunk_context : {dataset.chunk_context}\n"
-        f"              motif : {dataset.motif}\n"
-    )
-    LOGGER.info(f"Label distribution: {dataset.get_label_counts()}")
-    LOGGER.info(f"Total num chunks: {dataset.nchunks}")
-
-
-#########################
-# remora merge_datasets #
-#########################
-
-
-def register_merge_datasets(parser):
-    subparser = parser.add_parser(
-        "merge_datasets",
-        description="Merge Remora datasets",
-        help="Merge Remora datasets",
-        formatter_class=SubcommandHelpFormatter,
-    )
-    subparser.add_argument(
-        "--input-dataset",
-        nargs=2,
-        action="append",
-        help="1) Remora training dataset path and 2) max number of chunks "
-        "to extract from this dataset.",
-    )
-    subparser.add_argument(
-        "--output-dataset",
-        required=True,
-        help="Output path for dataset",
-    )
-    subparser.add_argument(
-        "--balance",
-        action="store_true",
-        help="Automatically balance classes when merging",
-    )
-    subparser.set_defaults(func=run_merge_datasets)
-
-
-def run_merge_datasets(args):
-    from remora.data_chunks import merge_datasets
-
-    input_datasets = [
-        (ds_path, int(num_chunks)) for ds_path, num_chunks in args.input_dataset
-    ]
-    output_dataset = merge_datasets(input_datasets, args.balance)
-    output_dataset.save_dataset(args.output_dataset)
-
-
-#######################
-# remora export_model #
-#######################
-
-
-def register_export_model(parser):
-    subparser = parser.add_parser(
-        "export_model",
+        "export",
         description="Export a model to ONNX format for inference.",
         help="Export a model to ONNX format for inference.",
         formatter_class=SubcommandHelpFormatter,
@@ -497,10 +510,10 @@ def register_export_model(parser):
         help="Path to a model architecture. Default: Use path from checkpoint.",
     )
 
-    subparser.set_defaults(func=run_export_model)
+    subparser.set_defaults(func=run_model_export)
 
 
-def run_export_model(args):
+def run_model_export(args):
     from remora.model_util import continue_from_checkpoint, export_model
 
     LOGGER.info("Loading model")
@@ -519,6 +532,20 @@ def run_export_model(args):
 def register_infer(parser):
     subparser = parser.add_parser(
         "infer",
+        description="Perform Remora model inference",
+        help="Perform Remora model inference",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    ssubparser = subparser.add_subparsers(title="infer commands")
+    #  Since `infer` has several sub-commands, print help as default
+    subparser.set_defaults(func=lambda x: subparser.print_help())
+    #  Register infer sub commands
+    register_infer_from_taiyaki_mapped_signal(ssubparser)
+
+
+def register_infer_from_taiyaki_mapped_signal(parser):
+    subparser = parser.add_parser(
+        "from_taiyaki_mapped_signal",
         description="Run a model for inference on a given dataset.",
         help="Use modified base model for inference.",
         formatter_class=SubcommandHelpFormatter,
@@ -559,10 +586,10 @@ def register_infer(parser):
         help="Overwrite existing output directory if existing.",
     )
 
-    subparser.set_defaults(func=run_infer)
+    subparser.set_defaults(func=run_infer_from_taiyaki_mapped_signal)
 
 
-def run_infer(args):
+def run_infer_from_taiyaki_mapped_signal(args):
     import atexit
 
     try:

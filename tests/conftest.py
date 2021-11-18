@@ -50,7 +50,8 @@ def can_chunks(tmpdir_factory, can_tai_map_sig):
     check_call(
         [
             "remora",
-            "prepare_train_data",
+            "dataset",
+            "prepare",
             str(can_tai_map_sig),
             "--output-remora-training-file",
             str(output),
@@ -69,7 +70,8 @@ def mod_chunks(tmpdir_factory, mod_tai_map_sig):
     check_call(
         [
             "remora",
-            "prepare_train_data",
+            "dataset",
+            "prepare",
             str(mod_tai_map_sig),
             "--output-remora-training-file",
             str(output),
@@ -124,7 +126,8 @@ def fw_base_pred_model_dir(
     check_call(
         [
             "remora",
-            "train_model",
+            "model",
+            "train",
             str(can_chunks),
             "--output-path",
             str(out_dir),
@@ -147,7 +150,8 @@ def fw_mod_model_dir(fw_model_path, tmpdir_factory, mod_chunks, train_cli_args):
     check_call(
         [
             "remora",
-            "train_model",
+            "model",
+            "train",
             str(mod_chunks),
             "--output-path",
             str(out_dir),
