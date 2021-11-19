@@ -825,6 +825,7 @@ def merge_datasets(input_datasets, balance=False):
             f"{output_dataset.get_label_counts()}"
         )
 
+    output_dataset.clip_chunks()
     if balance:
         min_class_len = min(output_dataset.get_label_counts().values())
         if base_pred:
