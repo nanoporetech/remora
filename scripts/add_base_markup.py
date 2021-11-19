@@ -7,7 +7,7 @@ from taiyaki.mapped_signal_files import MappedSignalReader, MappedSignalWriter
 from taiyaki.alphabet import AlphabetInfo
 
 
-def get_threshold(mod_scores_path, percentile):
+def get_all_reads_mods(mod_scores_path):
     all_mod_scores = defaultdict(list)
     with open(mod_scores_path) as fp:
         header = fp.readline().split()
@@ -21,6 +21,11 @@ def get_threshold(mod_scores_path, percentile):
                 )
             )
 
+    return dict(all_mod_scores)
+
+
+def get_threshold(all_mod_scores, percentile):
+
     probs = [
         site_data[2]
         for read_data in all_mod_scores.values()
@@ -28,7 +33,7 @@ def get_threshold(mod_scores_path, percentile):
     ]
     threshold = np.percentile(probs, 100 - percentile)
 
-    return dict(all_mod_scores), threshold
+    return threshold
 
 
 def update_alphabet(alphabet_info, new_base):
@@ -75,9 +80,8 @@ def main(args):
 
     # Find the probability at which the threshold is set
     sys.stderr.write("reading in mod base calls\n")
-    all_reads_mods, threshold = get_threshold(
-        args.input_per_read_mod_scores, args.percentile
-    )
+    all_reads_mods = get_all_reads_mods(args.input_per_read_mod_scores)
+    threshold = get_threshold(all_reads_mods, args.percentile)
 
     # loading in the 5mC mapping summary text file from the mega/remora run
     map_summs = {}
@@ -200,6 +204,7 @@ def get_parser():
         default=28,
         help="Set upper percentile cutoff for markup. Default: %(default)f",
     )
+
     return parser
 
 
