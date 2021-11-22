@@ -1,3 +1,4 @@
+import array
 import os
 from os.path import realpath, expanduser
 import re
@@ -9,6 +10,7 @@ from remora import log, RemoraError
 LOGGER = log.get_logger()
 
 CAN_ALPHABET = "ACGT"
+CONV_ALPHABET = "ACGTN"
 SINGLE_LETTER_CODE = {
     "A": "A",
     "C": "C",
@@ -38,7 +40,7 @@ def seq_to_int(seq):
     """Convert string sequence to integer encoded array
 
     Args:
-        seq (str): Neucleotide sequence
+        seq (str): Nucleotide sequence
 
     Returns:
         np.array containing integer encoded sequence
@@ -46,6 +48,22 @@ def seq_to_int(seq):
     return SEQ_TO_INT_ARR[
         np.array(list(seq), dtype="c").view(np.uint8) - SEQ_MIN
     ]
+
+
+def int_to_seq(np_seq, alphabet=CONV_ALPHABET):
+    """Convert integer encoded array to string sequence
+
+    Args:
+        np_seq (np.array): integer encoded sequence
+
+    Returns:
+        String nucleotide sequence
+    """
+    if np_seq.shape[0] == 0:
+        return ""
+    if np_seq.max() >= len(alphabet):
+        raise RemoraError(f"Invalid value in int sequence ({np_seq.max()})")
+    return "".join(alphabet[b] for b in np_seq)
 
 
 def resolve_path(fn_path):
@@ -214,3 +232,61 @@ class BatchLogger:
 
     def log_batch(self, loss, niter):
         self.fp.write(f"{niter}\t{loss:.6f}\n")
+
+
+def format_mm_ml_tags(seq, poss, probs, mod_bases, can_base):
+    """Format MM and ML tags for BAM output. See
+    https://samtools.github.io/hts-specs/SAMtags.pdf for format details.
+
+    Args:
+        seq (str): read-centric read sequence. For reference-anchored calls
+            this should be the reverse complement sequence.
+        poss (list): positions relative to seq
+        probs (np.array): probabilties for modified bases
+        mod_bases (str): modified base single letter codes
+        can_base (str): canonical base
+
+    Returns:
+        MM string tag and ML array tag
+    """
+
+    # initialize dict with all called mods to make sure all called mods are
+    # shown in resulting tags
+    per_mod_probs = dict((mod_base, []) for mod_base in mod_bases)
+    for pos, mod_probs in sorted(zip(poss, probs)):
+        # mod_lps is set to None if invalid sequence is encountered or too
+        # few events are found around a mod
+        if mod_probs is None:
+            continue
+        for mod_prob, mod_base in zip(mod_probs, mod_bases):
+            mod_prob = mod_prob
+            per_mod_probs[mod_base].append((pos, mod_prob))
+
+    mm_tag, ml_tag = "", array.array("B")
+    for mod_base, pos_probs in per_mod_probs.items():
+        if len(pos_probs) == 0:
+            continue
+        mod_poss, probs = zip(*sorted(pos_probs))
+        # compute modified base positions relative to the running total of the
+        # associated canonical base
+        can_base_mod_poss = (
+            np.cumsum([1 if b == can_base else 0 for b in seq])[
+                np.array(mod_poss)
+            ]
+            - 1
+        )
+        mm_tag += "{}+{}{};".format(
+            can_base,
+            mod_base,
+            "".join(
+                ",{}".format(d)
+                for d in np.diff(np.insert(can_base_mod_poss, 0, -1)) - 1
+            ),
+        )
+        # extract mod scores and scale to 0-255 range
+        scaled_probs = np.floor(np.array(probs) * 256)
+        # last interval includes prob=1
+        scaled_probs[scaled_probs == 256] = 255
+        ml_tag.extend(scaled_probs.astype(np.uint8))
+
+    return mm_tag, ml_tag

@@ -8,10 +8,11 @@ from tqdm import tqdm
 from remora import constants, log, RemoraError, encoded_kmers
 from remora.data_chunks import RemoraDataset, RemoraRead
 from remora.util import (
+    format_mm_ml_tags,
+    get_can_converter,
     softmax_axis1,
     Motif,
     validate_mod_bases,
-    get_can_converter,
 )
 from remora.model_util import load_onnx_model
 
@@ -50,7 +51,7 @@ class resultsWriter:
         self.out_fp.close()
 
 
-def call_read_mods(
+def call_read_mods_core(
     read,
     model,
     model_metadata,
@@ -83,7 +84,7 @@ def call_read_mods(
     elif motif.any_context:
         motif_hits = np.arange(
             motif.focus_pos,
-            read.can_seq.size - motif.num_bases_after_focus,
+            read.int_seq.size - motif.num_bases_after_focus,
         )
     else:
         motif_hits = np.fromiter(read.iter_motif_hits(motif), int)
@@ -128,6 +129,56 @@ def call_read_mods(
     read_outputs = np.concatenate(read_outputs, axis=0)
     read_labels = np.concatenate(read_labels)
     return read_outputs, read_labels, list(zip(*all_read_data))[1]
+
+
+def call_read_mods(
+    read,
+    model,
+    model_metadata,
+    batch_size=constants.DEFAULT_BATCH_SIZE,
+    focus_offset=None,
+    return_mm_ml_tags=False,
+    return_mod_probs=False,
+):
+    """Call modified bases on a read.
+
+    Args:
+        read (RemoraRead): Read to be called
+        model (ort.InferenceSession): Inference model
+            (see remora.model_util.load_onnx_model)
+        model_metadata (ort.InferenceSession): Inference model metadata
+        batch_size (int): Number of chunks to call per-batch
+        focus_offset (int): Specific base to call within read
+            Default: Use motif from model
+        return_mm_ml_tags (bool): Return MM and ML tags for SAM tags.
+        return_mod_probs (bool): Convert returned neural network score to
+            probabilities
+
+    Returns:
+        If return_mm_ml_tags, MM string tag and ML array tag
+        Else if return_mod_probs, 3-tuple containing:
+          1. Modified base probabilties (dim: num_calls, num_mods)
+          2. Labels for each base (-1 if labels not provided)
+          3. List of positions within the read
+       Else, return value from call_read_mods_core
+    """
+    nn_out, labels, pos = call_read_mods_core(
+        read,
+        model,
+        model_metadata,
+    )
+    if not return_mod_probs and not return_mm_ml_tags:
+        return nn_out, labels, pos
+    probs = softmax_axis1(nn_out)[:, 1:].astype(np.float64)
+    if return_mm_ml_tags:
+        return format_mm_ml_tags(
+            read.str_seq,
+            pos,
+            probs,
+            model_metadata["mod_bases"],
+            model_metadata["can_base"],
+        )
+    return probs, labels, pos
 
 
 def infer(
@@ -184,8 +235,8 @@ def infer(
             read,
             model,
             model_metadata,
-            batch_size,
-            focus_offset,
+            batch_size=batch_size,
+            focus_offset=focus_offset,
         )
         rw.write_results(output, labels, read_pos, read.read_id)
 
