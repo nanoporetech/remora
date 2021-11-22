@@ -91,9 +91,9 @@ After the construction of a training dataset, chunks must be extracted and saved
 The following command performs this task in Remora.
 
 .. code-block:: bash
-  
+
   remora \
-    prepare_train_data \
+    dataset prepare \
     mapped_signal_train_data.hdf5 \
     --output-remora-training-file remora_train_chunks.npz \
     --motif CG 0 \
@@ -114,7 +114,7 @@ For example a model can be trained with the following command.
 .. code-block:: bash
 
   remora \
-    train_model \
+    model train \
     remora_train_chunks.npz \
     --model remora/models/ConvLSTM_w_ref.py \
     --device 0 \
@@ -131,13 +131,13 @@ The below command will call the held out validation dataset from the data prepar
 .. code-block:: bash
 
   remora \
-    infer \
+    infer from_taiyaki_mapped_signal \
     mega_res_pcr/split_signal_mappings.split_a.hdf5 \
     remora_train_results/model_final.onnx \
     --output-path remora_infer_results_pcr.txt \
     --device 0
   remora \
-    infer \
+    infer from_taiyaki_mapped_signal \
     mega_res_sssI/split_signal_mappings.split_a.hdf5 \
     remora_train_results/model_final.onnx \
     --output-path remora_infer_results_sssI.txt \
@@ -151,7 +151,7 @@ API
 The Remora API can be applied to make modified base calls given a prepared read via a ``RemoraRead`` object.
 
 .. code-block:: python
-  
+
   from remora.data_chunks import RemoraRead
   from remora.model_util import load_onnx_model
   from remora.inference import call_read_mods
@@ -217,7 +217,7 @@ For example `pip install "onnxruntime-gpu<1.7"`.
 Terms and licence
 -----------------
 
-This is a research release provided under the terms of the Oxford Nanopore Technologies' Public Licence. 
+This is a research release provided under the terms of the Oxford Nanopore Technologies' Public Licence.
 Research releases are provided as technology demonstrators to provide early access to features or stimulate Community development of tools.
 Support for this software will be minimal and is only provided directly by the developers. Feature requests, improvements, and discussions are welcome and can be implemented by forking and pull requests.
 Much as we would like to rectify every issue, the developers may have limited resource for support of this software.
