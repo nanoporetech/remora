@@ -17,26 +17,49 @@ class RemoraRead:
 
     Args:
         sig (np.ndarray): Normalized signal
-        seq (np.ndarray): Encoded sequence for training/validation
         seq_to_sig_map (np.ndarray): Position within signal array assigned to
             each base in seq
+        int_seq (np.ndarray): Encoded sequence for training/validation.
+            See remora.util.seq_to_int
+        str_seq (str): String sequence for training/validation. Ignored if
+            int_seq is provided.
         read_id (str): Read identifier
+
+    Note: Must provide either int_seq or str_seq. If str_seq is provided
+    int_seq will be derived on init.
     """
 
     sig: np.ndarray
-    can_seq: np.ndarray
     seq_to_sig_map: np.ndarray
+    int_seq: np.ndarray = None
+    str_seq: str = None
     read_id: str = None
     labels: np.ndarray = None
+
+    def __post_init__(self):
+        if self.int_seq is None:
+            if self.str_seq is None:
+                raise RemoraError(
+                    "Must provide sequence to initialize RemoraRead"
+                )
+            # if int_seq is not set, set from str_seq provided
+            self.int_seq = util.seq_to_int(self.str_seq)
+        else:
+            # set str_seq from int_seq to ensure the sequences match
+            self.str_seq = util.int_to_seq(self.int_seq)
 
     @classmethod
     def from_taiyaki_read(cls, read, can_conv, label_conv, check_read=True):
         sig = read.get_current(read.get_mapped_dacs_region())
-        can_seq = can_conv[read.Reference]
+        int_seq = can_conv[read.Reference]
         seq_to_sig_map = read.Ref_to_signal - read.Ref_to_signal[0]
         labels = None if label_conv is None else label_conv[read.Reference]
         read = cls(
-            sig, can_seq, seq_to_sig_map, util.to_str(read.read_id), labels
+            sig,
+            seq_to_sig_map,
+            int_seq=int_seq,
+            read_id=util.to_str(read.read_id),
+            labels=labels,
         )
         if check_read:
             read.check()
@@ -47,17 +70,17 @@ class RemoraRead:
         """Spoofed read for testing"""
         return cls(
             np.zeros(nbases * signal_per_base),
-            np.arange(nbases) % 4,
             np.arange(nbases * signal_per_base + 1, step=signal_per_base),
+            np.arange(nbases) % 4,
             "read0",
             np.zeros(nbases, dtype=np.long),
         )
 
     def check(self):
-        if self.seq_to_sig_map.size != self.can_seq.size + 1:
+        if self.seq_to_sig_map.size != self.int_seq.size + 1:
             LOGGER.debug(
                 "Invalid read: seq and mapping mismatch "
-                f"{self.seq_to_sig_map.size} != {self.can_seq.size + 1}"
+                f"{self.seq_to_sig_map.size} != {self.int_seq.size + 1}"
             )
             raise RemoraError("Invalid read: seq and mapping mismatch")
         if self.seq_to_sig_map[0] != 0:
@@ -72,11 +95,11 @@ class RemoraRead:
                 f"{self.seq_to_sig_map[-1]} != {self.sig.size}"
             )
             raise RemoraError("Invalid read: mapping end")
-        if self.can_seq.max() > 3:
-            LOGGER.debug(f"Invalid read: Invalid base {self.can_seq.max()}")
+        if self.int_seq.max() > 3:
+            LOGGER.debug(f"Invalid read: Invalid base {self.int_seq.max()}")
             raise RemoraError("Invalid read: Invalid base")
-        if self.can_seq.min() < -1:
-            LOGGER.debug(f"Invalid read: Invalid base {self.can_seq.min()}")
+        if self.int_seq.min() < -1:
+            LOGGER.debug(f"Invalid read: Invalid base {self.int_seq.min()}")
             raise RemoraError("Invalid read: Invalid base")
         # TODO add more logic to these tests
 
@@ -85,8 +108,8 @@ class RemoraRead:
             np.logical_and.reduce(
                 [
                     np.isin(
-                        self.can_seq[
-                            po : self.can_seq.size
+                        self.int_seq[
+                            po : self.int_seq.size
                             - len(motif.int_pattern)
                             + po
                             + 1
@@ -152,9 +175,9 @@ class RemoraRead:
         kmer_before_bases, kmer_after_bases = kmer_context_bases
         if (
             seq_start >= kmer_before_bases
-            and seq_end + kmer_after_bases <= self.can_seq.size
+            and seq_end + kmer_after_bases <= self.int_seq.size
         ):
-            chunk_seq = self.can_seq[
+            chunk_seq = self.int_seq[
                 seq_start - kmer_before_bases : seq_end + kmer_after_bases
             ]
         else:
@@ -170,10 +193,10 @@ class RemoraRead:
             if seq_start < kmer_before_bases:
                 fill_st = kmer_before_bases - seq_start
                 chunk_seq_st = 0
-            if seq_end + kmer_after_bases > self.can_seq.size:
-                fill_en -= seq_end + kmer_after_bases - self.can_seq.size
-                chunk_seq_en = self.can_seq.size
-            chunk_seq[fill_st:fill_en] = self.can_seq[chunk_seq_st:chunk_seq_en]
+            if seq_end + kmer_after_bases > self.int_seq.size:
+                fill_en -= seq_end + kmer_after_bases - self.int_seq.size
+                chunk_seq_en = self.int_seq.size
+            chunk_seq[fill_st:fill_en] = self.int_seq[chunk_seq_st:chunk_seq_en]
         chunk = Chunk(
             chunk_sig,
             chunk_seq,

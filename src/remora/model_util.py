@@ -288,9 +288,26 @@ def load_onnx_model(model_filename, device=None, quiet=False):
         model_metadata["motif"],
         int(model_metadata["motif_offset"]),
     )
-    ckpt_attrs = "\n".join(
-        f"  {k: >20} : {v}" for k, v in model_metadata.items()
+    model_metadata["can_base"] = model_metadata["motif"][0][
+        model_metadata["motif"][1]
+    ]
+    mod_str = "; ".join(
+        f"{mod_b}={mln}"
+        for mod_b, mln in zip(
+            model_metadata["mod_bases"], model_metadata["mod_long_names"]
+        )
+    )
+    model_metadata["alphabet_str"] = (
+        "loaded modified base model to call (alt to "
+        f"{model_metadata['can_base']}): {mod_str}"
     )
     if not quiet:
+        ckpt_attrs = "\n".join(
+            f"  {k: >20} : {v}" for k, v in model_metadata.items()
+        )
         LOGGER.debug(f"Loaded Remora model attrs\n{ckpt_attrs}\n")
     return model_sess, model_metadata
+
+
+def load_model(model_filename, device=None, quiet=True):
+    return load_onnx_model(model_filename, device=device, quiet=quiet)

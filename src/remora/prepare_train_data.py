@@ -27,7 +27,7 @@ def fill_dataset(
         if motif.any_context:
             motif_hits = np.arange(
                 motif.focus_pos,
-                read.can_seq.size - motif.num_bases_after_focus,
+                read.int_seq.size - motif.num_bases_after_focus,
             )
         else:
             motif_hits = np.fromiter(read.iter_motif_hits(motif), int)

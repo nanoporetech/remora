@@ -17,7 +17,7 @@ To install from gitlab source for development, the following commands can be run
 
 ::
 
-   git clone git@git.oxfordnanolabs.local:algorithm/remora.git
+   git clone git@github.com:nanoporetech/remora.git
    pip install -e remora/[data_prep,tests]
 
 See help for any Remora command with the ``-h`` flag.
@@ -27,15 +27,16 @@ Getting Started
 
 Remora models are trained to perform binary or categorical prediction of modified base content of a nanopore read.
 Models may also be trained to perform canonical base prediction, but this feature may be removed at a later time.
-The rest of the documentation will focus on the modified base task.
+The rest of the documentation will focus on the modified base detection task.
 
 The Remora training/prediction input unit (refered to as a chunk) consists of:
     1. Section of normalized signal
     2. Canonical bases attributed to the section of signal
     3. Mapping between these two
+
 Chunks have a fixed signal length defined at data preparation time and saved as a model attribute.
 A fixed position within the chunk is defined as the "focus position".
-This position is the center of the base of interest for prediction.
+This position is the center of the base of interest.
 
 Data Preparation
 ****************
@@ -53,7 +54,7 @@ An example dataset might be pre-processed with the following commands.
     --num-reads 10000 \
     --guppy-config dna_r9.4.1_450bps_fast.cfg \
     --devices 0 \
-    --processes 40
+    --processes 20
   # Note the --ref-mods-all-motifs option defines the modified base characteristics
   megalodon \
     sssI_fast5s/ \
@@ -64,26 +65,13 @@ An example dataset might be pre-processed with the following commands.
     --num-reads 10000 \
     --guppy-config dna_r9.4.1_450bps_fast.cfg \
     --devices 0 \
-    --processes 40
-
-  python \
-    taiyaki/misc/split_mappedsignalfiles.py \
-    mega_res_pcr/signal_mappings.hdf5 \
-    --output_basename mega_res_pcr/split_signal_mappings \
-    --split_a_proportion 0.01 \
-    --batch_format
-  python \
-    taiyaki/misc/split_mappedsignalfiles.py \
-    mega_res_sssI/signal_mappings.hdf5 \
-    --output_basename mega_res_sssI/split_signal_mappings \
-    --split_a_proportion 0.01 \
-    --batch_format
+    --processes 20
 
   python \
     taiyaki/misc/merge_mappedsignalfiles.py \
     mapped_signal_train_data.hdf5 \
-    --input mega_res_pcr/split_signal_mappings.split_b.hdf5 None \
-    --input mega_res_sssI/split_signal_mappings.split_b.hdf5 None \
+    --input mega_res_pcr/signal_mappings.hdf5 None \
+    --input mega_res_sssI/signal_mappings.hdf5 None \
     --allow_mod_merge \
     --batch_format
 
@@ -108,7 +96,7 @@ The resulting ``remora_train_chunks.npz`` file can then be used to train a Remor
 Model Training
 **************
 
-Models are trained with the ``remora train_model`` command.
+Models are trained with the ``remora model train`` command.
 For example a model can be trained with the following command.
 
 .. code-block:: bash
@@ -120,7 +108,7 @@ For example a model can be trained with the following command.
     --device 0 \
     --output-path remora_train_results
 
-This command will produce a final model in ONNX format for exporting or using within Remora.
+This command will produce a final model in ONNX format for use in Bonito, Megalodon or ``remora infer`` commands.
 
 Model Inference
 ***************
@@ -133,13 +121,13 @@ The below command will call the held out validation dataset from the data prepar
   remora \
     infer from_taiyaki_mapped_signal \
     mega_res_pcr/split_signal_mappings.split_a.hdf5 \
-    remora_train_results/model_final.onnx \
+    remora_train_results/model_best.onnx \
     --output-path remora_infer_results_pcr.txt \
     --device 0
   remora \
     infer from_taiyaki_mapped_signal \
     mega_res_sssI/split_signal_mappings.split_a.hdf5 \
-    remora_train_results/model_final.onnx \
+    remora_train_results/model_best.onnx \
     --output-path remora_infer_results_sssI.txt \
     --device 0
 
@@ -148,40 +136,42 @@ Note that in order to perfrom inference on a GPU device the ``onnxruntime-gpu`` 
 API
 ***
 
-The Remora API can be applied to make modified base calls given a prepared read via a ``RemoraRead`` object.
+The Remora API can be applied to make modified base calls given a basecalled read via a ``RemoraRead`` object.
+``sig`` should be a float32 numpy array.
+``seq`` is a string derived from ``sig`` (can be either basecalls or other downstream derived sequence; e.g. mapped reference positions).
+``seq_to_sig_map`` should be an int32 numpy array of length ``len(seq) + 1`` and elements should be indices within ``sig`` array assigned to each base in ``seq``.
 
 .. code-block:: python
 
+  from remora.model_util import load_model
   from remora.data_chunks import RemoraRead
-  from remora.model_util import load_onnx_model
   from remora.inference import call_read_mods
 
-  model, model_metadata = load_onnx_model(
-    "remora_train_results/model_final.onnx",
-    device=0,
-  )
-  read = RemoraRead(sig, seq, sig_to_seq_map, read_id, labels)
-  output, labels, read_data = call_read_mods(
+  model, model_metadata = load_model("remora_train_results/model_best.onnx")
+  read = RemoraRead(sig, seq_to_sig_map, str_seq=seq)
+  mod_probs, _, pos = call_read_mods(
     read,
     model,
     model_metadata,
-    batch_size,
-    focus_offset,
+    return_mod_probs=True,
   )
 
-``outputs`` will contain the categorical predictions from the neural network in a numpy array.
-For example, run ``output.argmax(axis=1)`` to obtain the prediction for each input unit.
-The ``read_data`` object contains the relative position for each prediction within outputs.
+``mod_probs`` will contain the probability of each modeled modified base as found in model_metadata["mod_long_names"].
+For example, run ``mod_probs.argmax(axis=1)`` to obtain the prediction for each input unit.
+``pos`` contains the position (index in input sequence) for each prediction within ``mod_probs``.
 
 GPU Troubleshooting
 *******************
+
+Note that standard Remora models are small enough to run quite quickly on CPU resources and this is the primary recommandation.
+Running Remora models on GPU compute resources is considered experimental with minimal support.
 
 Deployment of Remora models is facilitated by the Open Neural Network Exchange (ONNX) format.
 The ``onnxruntime`` python package is used to run the models.
 In order to support running models on GPU resources the GPU compatible package must be installed (``pip install onnxruntime-gpu``).
 
 Once installed the ``remora infer`` command takes a ``--device`` argument.
-Similarly, the API ``remora.model_util.load_onnx_model`` function takes a ``device`` argument.
+Similarly, the API ``remora.model_util.load_model`` function takes a ``device`` argument.
 These arguments specify the GPU device ID to use for inference.
 
 Once the ``device`` option is specified, Remora will attempt to load the model on the GPU resources.
