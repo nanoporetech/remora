@@ -126,7 +126,8 @@ def train_model(
         f"              motif : {dataset.motif}\n"
     )
 
-    val_fp = model_util.ValidationLogger(out_path, dataset.is_multiclass)
+    out_log = out_path / "validation.log"
+    val_fp = model_util.ValidationLogger(out_log, dataset.is_multiclass)
     atexit.register(val_fp.close)
     batch_fp = util.BatchLogger(out_path)
     atexit.register(batch_fp.close)
