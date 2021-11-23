@@ -541,6 +541,7 @@ def register_infer(parser):
     subparser.set_defaults(func=lambda x: subparser.print_help())
     #  Register infer sub commands
     register_infer_from_taiyaki_mapped_signal(ssubparser)
+    register_infer_from_remora_dataset(ssubparser)
 
 
 def register_infer_from_taiyaki_mapped_signal(parser):
@@ -621,4 +622,78 @@ def run_infer_from_taiyaki_mapped_signal(args):
         args.batch_size,
         args.device,
         args.focus_offset,
+    )
+
+
+def register_infer_from_remora_dataset(parser):
+    subparser = parser.add_parser(
+        "from_remora_dataset",
+        description="Run validation on external Remora dataset",
+        help="Validate on Remora dataset",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    subparser.add_argument(
+        "remora_dataset_path",
+        help="Remora training dataset",
+    )
+    subparser.add_argument(
+        "onnx_model",
+        help="Path to a pretrained model in onnx format.",
+    )
+    subparser.add_argument(
+        "--out-file",
+        help="Output path for the validation result file.",
+    )
+    subparser.add_argument(
+        "--batch-size",
+        default=constants.DEFAULT_BATCH_SIZE,
+        type=int,
+        help="Number of input units per batch. Default: %(default)d",
+    )
+    subparser.add_argument(
+        "--device",
+        type=int,
+        help="ID of GPU that is used for inference. Default: CPU",
+    )
+
+    subparser.set_defaults(func=run_infer_from_remora_dataset)
+
+
+def run_infer_from_remora_dataset(args):
+    from remora.data_chunks import RemoraDataset
+    from remora.model_util import ValidationLogger, load_onnx_model
+    import torch
+
+    LOGGER.info("Loading dataset from Remora file")
+    dataset = RemoraDataset.load_from_file(
+        args.remora_dataset_path,
+        batch_size=args.batch_size,
+    )
+
+    LOGGER.info("Loading model")
+    model, model_metadata = load_onnx_model(args.onnx_model, args.device)
+
+    dataset.trim_kmer_context_bases(model_metadata["kmer_context_bases"])
+    dataset.trim_chunk_context(model_metadata["chunk_context"])
+    LOGGER.info(
+        "Loaded data info from file:\n"
+        f"          base_pred : {dataset.base_pred}\n"
+        f"          mod_bases : {dataset.mod_bases}\n"
+        f" kmer_context_bases : {dataset.kmer_context_bases}\n"
+        f"      chunk_context : {dataset.chunk_context}\n"
+        f"              motif : {dataset.motif}\n"
+    )
+
+    val_fp = ValidationLogger(Path(args.out_file), dataset.is_multiclass)
+
+    criterion = torch.nn.CrossEntropyLoss()
+
+    LOGGER.info("Running external validation")
+    val_acc, val_loss = val_fp.validate_onnx_model(
+        model, criterion, dataset, 0, "val", 0.8
+    )
+    LOGGER.info(
+        "Validation results:\n"
+        f"Validation accuracy : {val_acc:.6f}\n"
+        f"    Validation loss : {val_loss:.6f}\n"
     )

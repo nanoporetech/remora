@@ -16,7 +16,7 @@ LOGGER = log.get_logger()
 
 class ValidationLogger:
     def __init__(self, out_path, multiclass=False):
-        self.fp = open(out_path / "validation.log", "w", buffering=1)
+        self.fp = open(out_path, "w", buffering=1)
         self.multiclass = multiclass
         if multiclass:
             self.fp.write(
@@ -56,6 +56,58 @@ class ValidationLogger:
     def close(self):
         self.fp.close()
 
+    def get_results(
+        self,
+        all_outputs,
+        all_labels,
+        all_loss,
+        conf_thr,
+        val_type,
+        niter,
+    ):
+        pred_labels = np.argmax(all_outputs, axis=1)
+        acc = (pred_labels == all_labels).sum() / all_outputs.shape[0]
+        mean_loss = np.mean(all_loss)
+        cl_rep = classification_report(
+            all_labels,
+            pred_labels,
+            digits=3,
+            output_dict=True,
+            zero_division=0,
+        )
+        min_f1 = min(cl_rep[str(k)]["f1-score"] for k in np.unique(all_labels))
+        all_out_soft = util.softmax_axis1(all_outputs)
+        conf_ids = np.max(all_out_soft > conf_thr, axis=1)
+        conf_calls = all_out_soft[conf_ids]
+        pred_conf_labels = np.argmax(conf_calls, axis=1)
+        conf_mat = confusion_matrix(all_labels[conf_ids], pred_conf_labels)
+        conf_frac = len(all_labels[conf_ids]) / len(all_labels)
+
+        cm_flat_str = np.array2string(
+            conf_mat.flatten(), separator=","
+        ).replace("\n", "")
+
+        if self.multiclass:
+            self.fp.write(
+                f"{val_type}\t{niter}\t{acc:.6f}\t{mean_loss:.6f}\t"
+                f"{len(all_labels)}\t{cm_flat_str}\t{conf_frac:.2f}\t"
+                f"{min_f1:.6f}\n"
+            )
+        else:
+            with np.errstate(invalid="ignore"):
+                precision, recall, thresholds = precision_recall_curve(
+                    all_labels, all_outputs[:, 1]
+                )
+                f1_scores = 2 * recall * precision / (recall + precision)
+            f1_idx = np.argmax(f1_scores)
+            self.fp.write(
+                f"{val_type}\t{niter}\t{acc:.6f}\t{mean_loss:.6f}\t"
+                f"{f1_scores[f1_idx]}\t{precision[f1_idx]}\t"
+                f"{recall[f1_idx]}\t{len(all_labels)}\t"
+                f"{cm_flat_str}\t{conf_frac:.2f}\n"
+            )
+        return acc, mean_loss
+
     def validate_model(
         self,
         model,
@@ -67,7 +119,6 @@ class ValidationLogger:
     ):
         model.eval()
         bb, ab = dataset.kmer_context_bases
-        model.eval()
         with torch.no_grad():
             all_labels = []
             all_outputs = []
@@ -89,53 +140,38 @@ class ValidationLogger:
                 loss = criterion(output, labels)
                 all_loss.append(loss.detach().cpu().numpy())
             all_outputs = np.concatenate(all_outputs, axis=0)
-            pred_labels = np.argmax(all_outputs, axis=1)
             all_labels = np.concatenate(all_labels)
-            acc = (pred_labels == all_labels).sum() / all_outputs.shape[0]
-            mean_loss = np.mean(all_loss)
-            cl_rep = classification_report(
-                all_labels,
-                pred_labels,
-                digits=3,
-                output_dict=True,
-                zero_division=0,
+        return self.get_results(
+            all_outputs, all_labels, all_loss, conf_thr, val_type, niter
+        )
+
+    def validate_onnx_model(
+        self,
+        model,
+        criterion,
+        dataset,
+        niter,
+        val_type="val",
+        conf_thr=constants.DEFAULT_CONF_THR,
+    ):
+        bb, ab = dataset.kmer_context_bases
+        all_labels = []
+        all_outputs = []
+        all_loss = []
+        for (sigs, seqs, seq_maps, seq_lens), labels, _ in dataset:
+            all_labels.append(labels)
+            enc_kmers = encoded_kmers.compute_encoded_kmer_batch(
+                bb, ab, seqs, seq_maps, seq_lens
             )
-            min_f1 = min(
-                cl_rep[str(k)]["f1-score"] for k in np.unique(all_labels)
-            )
-
-            all_out_soft = util.softmax_axis1(all_outputs)
-            conf_ids = np.max(all_out_soft > conf_thr, axis=1)
-            conf_calls = all_out_soft[conf_ids]
-            pred_conf_labels = np.argmax(conf_calls, axis=1)
-            conf_mat = confusion_matrix(all_labels[conf_ids], pred_conf_labels)
-            conf_frac = len(all_labels[conf_ids]) / len(all_labels)
-
-            cm_flat_str = np.array2string(
-                conf_mat.flatten(), separator=","
-            ).replace("\n", "")
-
-            if self.multiclass:
-                self.fp.write(
-                    f"{val_type}\t{niter}\t{acc:.6f}\t{mean_loss:.6f}\t"
-                    f"{len(all_labels)}\t{cm_flat_str}\t{conf_frac:.2f}\t"
-                    f"{min_f1:.6f}\n"
-                )
-            else:
-                with np.errstate(invalid="ignore"):
-                    precision, recall, thresholds = precision_recall_curve(
-                        all_labels, all_outputs[:, 1]
-                    )
-                    f1_scores = 2 * recall * precision / (recall + precision)
-                f1_idx = np.argmax(f1_scores)
-                self.fp.write(
-                    f"{val_type}\t{niter}\t{acc:.6f}\t{mean_loss:.6f}\t"
-                    f"{f1_scores[f1_idx]}\t{precision[f1_idx]}\t"
-                    f"{recall[f1_idx]}\t{len(all_labels)}\t"
-                    f"{cm_flat_str}\t{conf_frac:.2f}\n"
-                )
-
-        return acc, mean_loss
+            output = model.run([], {"sig": sigs, "seq": enc_kmers})[0]
+            all_outputs.append(output)
+            loss = criterion(torch.from_numpy(output), torch.from_numpy(labels))
+            all_loss.append(loss.numpy())
+        all_outputs = np.concatenate(all_outputs, axis=0)
+        all_labels = np.concatenate(all_labels)
+        return self.get_results(
+            all_outputs, all_labels, all_loss, conf_thr, val_type, niter
+        )
 
 
 def _load_python_model(model_file, **model_kwargs):
