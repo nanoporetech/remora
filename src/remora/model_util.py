@@ -7,6 +7,7 @@ import pkg_resources
 import sys
 
 import numpy as np
+import pandas as pd
 import onnx
 import onnxruntime as ort
 import torch
@@ -470,17 +471,47 @@ def load_model(
     return load_onnx_model(path, device)
 
 
-def get_pretrained_models():
+def get_pretrained_models(
+    pore=None,
+    basecall_model_type=None,
+    basecall_model_version=None,
+    modified_bases=None,
+    remora_model_type=None,
+    remora_model_version=None,
+):
+    def filter_dataframe(models, args):
+        running_sequence = []
+        for x, y in zip(args, models.columns):
+            if x is None:
+                continue
+            else:
+                if y in ["Pore", "Basecall_Model_Type"]:
+                    x = x.lower()
+                elif y in ["Modified_Bases"]:
+                    x = "_".join(sorted(z.lower() for z in x))
+                elif y in ["Remora_Model_Type"]:
+                    x = x.upper()
+                running_sequence.append(x)
+                models = models[models[y] == x]
+                if len(models) == 0:
+                    LOGGER.info(
+                        f" {y} {','.join(running_sequence)} not found in library of pre-trained models."
+                    )
+                    sys.exit(1)
+
+        return models
+
     header = [
         "Pore",
-        "Basecall Model Type",
-        "Basecall Model Version",
-        "Modified Bases",
-        "Remora Model Type",
-        "Remora Model Version",
+        "Basecall_Model_Type",
+        "Basecall_Model_Version",
+        "Modified_Bases",
+        "Remora_Model_Type",
+        "Remora_Model_Version",
     ]
+
     models = []
-    for pore, bc_types in constants.MODEL_DICT.items():
+    for pore_type, bc_types in constants.MODEL_DICT.items():
         for bc_type, bc_vers in bc_types.items():
             for bc_ver, mod_bases in bc_vers.items():
                 for mod_base, remora_types in mod_bases.items():
@@ -488,7 +519,7 @@ def get_pretrained_models():
                         for remora_ver in remora_vers:
                             models.append(
                                 (
-                                    pore,
+                                    pore_type,
                                     bc_type,
                                     bc_ver,
                                     mod_base,
@@ -496,4 +527,18 @@ def get_pretrained_models():
                                     remora_ver,
                                 )
                             )
+    models = pd.DataFrame(models)
+    models.columns = header
+
+    args = [
+        pore,
+        basecall_model_type,
+        basecall_model_version,
+        modified_bases,
+        remora_model_type,
+        remora_model_version,
+    ]
+
+    models = filter_dataframe(models, args)
+
     return models, header
