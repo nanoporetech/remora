@@ -312,6 +312,7 @@ def register_model(parser):
     #  Register model sub commands
     register_model_train(ssubparser)
     register_model_export(ssubparser)
+    register_model_list_pretrained(ssubparser)
 
 
 def register_model_train(parser):
@@ -524,6 +525,28 @@ def run_model_export(args):
     export_model(ckpt, model, args.output_path)
 
 
+def register_model_list_pretrained(parser):
+    subparser = parser.add_parser(
+        "list_pretrained",
+        description="List pre-trained modified base models.",
+        help="List pre-trained modified base models.",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    # TODO allow filtering of model by attributes
+    subparser.set_defaults(func=run_list_pretrained)
+
+
+def run_list_pretrained(args):
+    from remora.model_util import get_pretrained_models
+    from tabulate import tabulate
+
+    models, header = get_pretrained_models()
+    LOGGER.info(
+        "Remora pretrained modified base models:\n"
+        + tabulate(models, headers=header)
+    )
+
+
 ################
 # remora infer #
 ################
@@ -556,8 +579,36 @@ def register_infer_from_taiyaki_mapped_signal(parser):
         help="Taiyaki mapped signal file on which to perform inference.",
     )
     subparser.add_argument(
-        "onnx_model",
+        "--onnx-model",
         help="Path to a pretrained model in onnx format.",
+    )
+    subparser.add_argument(
+        "--pore",
+        help="Choose the type of pore the Remora model has been trained on "
+        "(e.g. dna_r10.4_e8.1)",
+    )
+    subparser.add_argument(
+        "--basecall-model-type",
+        help="Choose the basecaller model type (choose from fast, hac or sup)",
+    )
+    subparser.add_argument(
+        "--basecall-model-version",
+        help="Choose a specific basecaller version",
+    )
+    subparser.add_argument(
+        "--modified-bases",
+        nargs="+",
+        help="Long name of the modified bases to call (e.g., 5mc, 5hmc).",
+    )
+    subparser.add_argument(
+        "--remora-model-type",
+        help="Choose the specific motif of the model you want to load. "
+        "If None, load CG model.",
+    )
+    subparser.add_argument(
+        "--remora-model-version",
+        type=int,
+        help="Choose the remora model version. If None, use latest.",
     )
     subparser.add_argument(
         "--focus-offset",
@@ -622,6 +673,12 @@ def run_infer_from_taiyaki_mapped_signal(args):
         args.batch_size,
         args.device,
         args.focus_offset,
+        args.pore,
+        args.basecall_model_type,
+        args.basecall_model_version,
+        args.modified_bases,
+        args.remora_model_type,
+        args.remora_model_version,
     )
 
 
