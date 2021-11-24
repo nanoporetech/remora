@@ -73,7 +73,31 @@ def test_mod_infer(tmpdir_factory, mod_tai_map_sig, fw_mod_model_dir):
             "infer",
             "from_taiyaki_mapped_signal",
             mod_tai_map_sig,
+            "--onnx-model",
             str(fw_mod_model_dir / FINAL_MODEL_FILENAME),
+            "--batch-size",
+            "20",
+            "--output-path",
+            out_dir,
+        ],
+    )
+
+
+@pytest.mark.unit
+def test_mod_infer_pretrain(tmpdir_factory, mod_tai_map_sig):
+    out_dir = tmpdir_factory.mktemp("remora_tests") / "mod_infer_pretrain"
+    check_call(
+        [
+            "remora",
+            "infer",
+            "from_taiyaki_mapped_signal",
+            mod_tai_map_sig,
+            "--pore",
+            "dna_r9.4.1_e8",
+            "--basecall-model-type",
+            "fast",
+            "--modified-bases",
+            "5mC",
             "--batch-size",
             "20",
             "--output-path",
@@ -91,6 +115,7 @@ def test_can_infer(tmpdir_factory, can_tai_map_sig, fw_mod_model_dir):
             "infer",
             "from_taiyaki_mapped_signal",
             can_tai_map_sig,
+            "--onnx-model",
             str(fw_mod_model_dir / FINAL_MODEL_FILENAME),
             "--batch-size",
             "20",
@@ -141,6 +166,7 @@ def test_base_pred_infer(
             "infer",
             "from_taiyaki_mapped_signal",
             can_tai_map_sig,
+            "--onnx-model",
             str(fw_base_pred_model_dir / FINAL_MODEL_FILENAME),
             "--batch-size",
             "20",

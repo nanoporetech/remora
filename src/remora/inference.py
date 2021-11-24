@@ -14,7 +14,7 @@ from remora.util import (
     Motif,
     validate_mod_bases,
 )
-from remora.model_util import load_onnx_model
+from remora.model_util import load_model
 
 LOGGER = log.get_logger()
 
@@ -188,6 +188,12 @@ def infer(
     batch_size,
     device,
     focus_offset,
+    pore,
+    basecall_model_type,
+    basecall_model_version,
+    modified_bases,
+    remora_model_type,
+    remora_model_version,
 ):
     LOGGER.info("Performing Remora inference")
     alphabet_info = input_msf.get_alphabet_information()
@@ -203,7 +209,16 @@ def infer(
     atexit.register(rw.close)
 
     LOGGER.info("Loading model")
-    model, model_metadata = load_onnx_model(onnx_model_path, device)
+    model, model_metadata = load_model(
+        onnx_model_path,
+        pore=pore,
+        basecall_model_type=basecall_model_type,
+        basecall_model_version=basecall_model_version,
+        modified_bases=modified_bases,
+        remora_model_type=remora_model_type,
+        remora_model_version=remora_model_version,
+        device=device,
+    )
 
     if model_metadata["base_pred"]:
         if alphabet != "ACGT":

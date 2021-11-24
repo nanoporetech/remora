@@ -1,17 +1,22 @@
+import copy
 import datetime
 import imp
+import os
 from os.path import isfile
+import pkg_resources
+import sys
 
-import copy
 import numpy as np
 import onnx
 import onnxruntime as ort
 import torch
 from sklearn.metrics import precision_recall_curve
 from sklearn.metrics import confusion_matrix, classification_report
+
 from remora import log, RemoraError, encoded_kmers, util, constants
 
 LOGGER = log.get_logger()
+MODEL_DATA_DIR_NAME = "trained_models"
 
 
 class ValidationLogger:
@@ -345,5 +350,150 @@ def load_onnx_model(model_filename, device=None, quiet=False):
     return model_sess, model_metadata
 
 
-def load_model(model_filename, device=None, quiet=True):
-    return load_onnx_model(model_filename, device=device, quiet=quiet)
+def load_model(
+    model_filename=None,
+    *,
+    pore=None,
+    basecall_model_type=None,
+    basecall_model_version=None,
+    modified_bases=None,
+    remora_model_type=None,
+    remora_model_version=None,
+    device=None,
+):
+    if model_filename is not None:
+        if not isfile(model_filename):
+            raise RemoraError(
+                f"Remora model file ({model_filename}) not found."
+            )
+        return load_onnx_model(model_filename, device)
+
+    if pore is None:
+        raise RemoraError("Must specify a pore.")
+    try:
+        pore = pore.lower()
+        submodels = constants.MODEL_DICT[pore]
+    except (AttributeError, KeyError):
+        pores = ", ".join(constants.MODEL_DICT.keys())
+        raise RemoraError(
+            f"No trained Remora models for {pore}. Options: {pores}"
+        )
+
+    if basecall_model_type is None:
+        raise RemoraError("Must specify a basecall model type.")
+    try:
+        basecall_model_type = basecall_model_type.lower()
+        submodels = submodels[basecall_model_type]
+    except (AttributeError, KeyError):
+        model_types = ", ".join(submodels.keys())
+        raise RemoraError(
+            f"No trained Remora models for {basecall_model_type} "
+            f"(with {pore}). Options: {model_types}"
+        )
+
+    if basecall_model_version is None:
+        LOGGER.info(
+            "Basecall model version not supplied. Using default Remora model "
+            f"for {pore}_{basecall_model_type}."
+        )
+        basecall_model_version = constants.DEFAULT_BASECALL_MODEL_VERSION
+    try:
+        submodels = submodels[basecall_model_version]
+    except KeyError:
+        LOGGER.warning(
+            "Remora model for basecall model version "
+            f"({basecall_model_version}) not found. Using default Remora "
+            f"model for {pore}_{basecall_model_type}."
+        )
+        basecall_model_version = constants.DEFAULT_BASECALL_MODEL_VERSION
+        submodels = submodels[basecall_model_version]
+
+    if modified_bases is None:
+        LOGGER.info(
+            "Modified bases not supplied. Using default "
+            f"{constants.DEFAULT_MOD_BASE}."
+        )
+        modified_bases = constants.DEFAULT_MOD_BASE
+    try:
+        modified_bases = "_".join(sorted(x.lower() for x in modified_bases))
+        submodels = submodels[modified_bases]
+    except (AttributeError, KeyError):
+        LOGGER.error(
+            "Remora model for modified bases {modified_bases} not found "
+            f"for {pore}_{basecall_model_type}@{basecall_model_version}."
+        )
+        sys.exit(1)
+
+    if remora_model_type is None:
+        LOGGER.info(
+            "Modified bases model type not supplied. Using default "
+            f"{constants.DEFAULT_MODEL_TYPE}."
+        )
+        remora_model_type = constants.DEFAULT_MODEL_TYPE
+    try:
+        submodels = submodels[remora_model_type]
+    except (AttributeError, KeyError):
+        LOGGER.error(
+            "Remora model type {remora_model_type} not found "
+            f"for {pore}_{basecall_model_type}@{basecall_model_version} "
+            f"{modified_bases}."
+        )
+        sys.exit(1)
+
+    if remora_model_version is None:
+        LOGGER.info("Remora model version not specified. Using latest.")
+        remora_model_version = submodels[-1]
+    if remora_model_version not in submodels:
+        LOGGER.warning(
+            f"Remora model version {remora_model_version} not found. "
+            "Using latest."
+        )
+        remora_model_version = submodels[-1]
+    remora_model_version = f"v{remora_model_version}"
+
+    path = pkg_resources.resource_filename(
+        "remora",
+        os.path.join(
+            MODEL_DATA_DIR_NAME,
+            pore,
+            basecall_model_type,
+            basecall_model_version,
+            modified_bases,
+            remora_model_type,
+            remora_model_version,
+            constants.MODBASE_MODEL_NAME,
+        ),
+    )
+    if not os.path.exists(path):
+        raise RemoraError("No pre-trained Remora model for this configuration.")
+
+    return load_onnx_model(path, device)
+
+
+def get_pretrained_models():
+    header = [
+        "Pore",
+        "Basecall Model Type",
+        "Basecall Model Version",
+        "Modified Bases",
+        "Remora Model Type",
+        "Remora Model Version",
+    ]
+    models = []
+    for pore, bc_types in constants.MODEL_DICT.items():
+        for bc_type, bc_vers in bc_types.items():
+            for bc_ver, mod_bases in bc_vers.items():
+                for mod_base, remora_types in mod_bases.items():
+                    for remora_type, remora_vers in remora_types.items():
+                        for remora_ver in remora_vers:
+                            models.append(
+                                (
+                                    pore,
+                                    bc_type,
+                                    bc_ver,
+                                    mod_base,
+                                    remora_type,
+                                    remora_ver,
+                                )
+                            )
+    return models, header

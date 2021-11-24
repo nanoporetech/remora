@@ -97,6 +97,7 @@ def train_model(
         if seed is None
         else seed
     )
+
     LOGGER.info(f"Seed selected is {seed}")
 
     np.random.seed(seed)

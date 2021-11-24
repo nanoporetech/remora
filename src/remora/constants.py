@@ -24,5 +24,64 @@ SAVE_DATASET_FILENAME = "remora_train_data.npz"
 
 BEST_MODEL_FILENAME = "model_best.checkpoint"
 BEST_ONNX_MODEL_FILENAME = "model_best.onnx"
+
 # should be an int to store in onnx
 MODEL_VERSION = 2
+
+DEFAULT_BASECALL_MODEL_VERSION = "0.0.0"
+DEFAULT_MOD_BASE = ["5mc"]
+DEFAULT_MODEL_TYPE = "CG"
+MODBASE_MODEL_NAME = "modbase_model.onnx"
+MODEL_DICT = {
+    "dna_r9.4.1_e8": {
+        "fast": {
+            DEFAULT_BASECALL_MODEL_VERSION: {
+                "5mc": {"CG": [0]},
+            }
+        },
+        "hac": {
+            DEFAULT_BASECALL_MODEL_VERSION: {
+                "5mc": {"CG": [0]},
+            }
+        },
+        "sup": {
+            DEFAULT_BASECALL_MODEL_VERSION: {
+                "5mc": {"CG": [0]},
+            }
+        },
+    },
+    "dna_r9.4.1_e8.1": {
+        "fast": {
+            DEFAULT_BASECALL_MODEL_VERSION: {
+                "5mc": {"CG": [0]},
+            }
+        },
+        "hac": {
+            DEFAULT_BASECALL_MODEL_VERSION: {
+                "5mc": {"CG": [0]},
+            }
+        },
+        "sup": {
+            DEFAULT_BASECALL_MODEL_VERSION: {
+                "5mc": {"CG": [0]},
+            }
+        },
+    },
+    "dna_r10.4_e8.1": {
+        "fast": {
+            DEFAULT_BASECALL_MODEL_VERSION: {
+                "5mc": {"CG": [0]},
+            }
+        },
+        "hac": {
+            DEFAULT_BASECALL_MODEL_VERSION: {
+                "5mc": {"CG": [0]},
+            }
+        },
+        "sup": {
+            DEFAULT_BASECALL_MODEL_VERSION: {
+                "5mc": {"CG": [0]},
+            },
+        },
+    },
+}
