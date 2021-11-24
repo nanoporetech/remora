@@ -532,6 +532,26 @@ def register_model_list_pretrained(parser):
         help="List pre-trained modified base models.",
         formatter_class=SubcommandHelpFormatter,
     )
+    subparser.add_argument("--pore", help="specify pore type")
+    subparser.add_argument(
+        "--basecall-model-type",
+        help="specify the basecaller model type (e.g., fast, hac or sup)",
+    )
+    subparser.add_argument(
+        "--basecall-model-version", help="specify the version of the basecaller"
+    )
+    subparser.add_argument(
+        "--modified-bases",
+        nargs="+",
+        help="specify the modified base models you are interested in",
+    )
+    subparser.add_argument(
+        "--remora-model-type",
+        help="specify the motif or context that the remora model has been trained on",
+    )
+    subparser.add_argument(
+        "--remora-model-version", help="specify the remora model version"
+    )
     # TODO allow filtering of model by attributes
     subparser.set_defaults(func=run_list_pretrained)
 
@@ -540,7 +560,14 @@ def run_list_pretrained(args):
     from remora.model_util import get_pretrained_models
     from tabulate import tabulate
 
-    models, header = get_pretrained_models()
+    models, header = get_pretrained_models(
+        args.pore,
+        args.basecall_model_type,
+        args.basecall_model_version,
+        args.modified_bases,
+        args.remora_model_type,
+        args.remora_model_version,
+    )
     LOGGER.info(
         "Remora pretrained modified base models:\n"
         + tabulate(models, headers=header)
