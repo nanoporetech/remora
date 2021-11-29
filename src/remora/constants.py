@@ -37,16 +37,19 @@ MODEL_DICT = {
         "fast": {
             DEFAULT_BASECALL_MODEL_VERSION: {
                 "5mc": {"CG": [0]},
+                "5hmc_5mc": {"CG": [0]},
             }
         },
         "hac": {
             DEFAULT_BASECALL_MODEL_VERSION: {
                 "5mc": {"CG": [0]},
+                "5hmc_5mc": {"CG": [0]},
             }
         },
         "sup": {
             DEFAULT_BASECALL_MODEL_VERSION: {
                 "5mc": {"CG": [0]},
+                "5hmc_5mc": {"CG": [0]},
             }
         },
     },
@@ -71,16 +74,19 @@ MODEL_DICT = {
         "fast": {
             DEFAULT_BASECALL_MODEL_VERSION: {
                 "5mc": {"CG": [0]},
+                "5hmc_5mc": {"CG": [0]},
             }
         },
         "hac": {
             DEFAULT_BASECALL_MODEL_VERSION: {
                 "5mc": {"CG": [0]},
+                "5hmc_5mc": {"CG": [0]},
             }
         },
         "sup": {
             DEFAULT_BASECALL_MODEL_VERSION: {
                 "5mc": {"CG": [0]},
+                "5hmc_5mc": {"CG": [0]},
             },
         },
     },
