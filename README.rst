@@ -7,13 +7,13 @@ Remora
 """"""
 
 Methylation/modified base calling separated from basecalling.
-
-Detailed documentation for all ``remora`` commands and algorithms can be found on the `TODO Remora documentation page <https://nanoporetech.github.io/remora/>`_.
+Remora primarily provides an API to call modified bases for basecaller programs such as Bonito.
+Remora also provides the tools to prepare datasets, train modified base models and run simple inference.
 
 Installation
 ------------
 
-To install from gitlab source for development, the following commands can be run.
+To install from github source for development, the following commands can be run.
 
 ::
 
@@ -30,6 +30,7 @@ Models may also be trained to perform canonical base prediction, but this featur
 The rest of the documentation will focus on the modified base detection task.
 
 The Remora training/prediction input unit (refered to as a chunk) consists of:
+
     1. Section of normalized signal
     2. Canonical bases attributed to the section of signal
     3. Mapping between these two
@@ -37,6 +38,39 @@ The Remora training/prediction input unit (refered to as a chunk) consists of:
 Chunks have a fixed signal length defined at data preparation time and saved as a model attribute.
 A fixed position within the chunk is defined as the "focus position".
 This position is the center of the base of interest.
+
+Pre-trained Models
+******************
+
+Pre-trained models are included in the Remora repository.
+To see the selection of models included in the current installation run ``remora model list_pretrained``.
+
+API
+***
+
+The Remora API can be applied to make modified base calls given a basecalled read via a ``RemoraRead`` object.
+``sig`` should be a float32 numpy array.
+``seq`` is a string derived from ``sig`` (can be either basecalls or other downstream derived sequence; e.g. mapped reference positions).
+``seq_to_sig_map`` should be an int32 numpy array of length ``len(seq) + 1`` and elements should be indices within ``sig`` array assigned to each base in ``seq``.
+
+.. code-block:: python
+
+  from remora.model_util import load_model
+  from remora.data_chunks import RemoraRead
+  from remora.inference import call_read_mods
+
+  model, model_metadata = load_model("remora_train_results/model_best.onnx")
+  read = RemoraRead(sig, seq_to_sig_map, str_seq=seq)
+  mod_probs, _, pos = call_read_mods(
+    read,
+    model,
+    model_metadata,
+    return_mod_probs=True,
+  )
+
+``mod_probs`` will contain the probability of each modeled modified base as found in model_metadata["mod_long_names"].
+For example, run ``mod_probs.argmax(axis=1)`` to obtain the prediction for each input unit.
+``pos`` contains the position (index in input sequence) for each prediction within ``mod_probs``.
 
 Data Preparation
 ****************
@@ -133,33 +167,6 @@ The below command will call the held out validation dataset from the data prepar
 
 Note that in order to perfrom inference on a GPU device the ``onnxruntime-gpu`` package must be installed.
 
-API
-***
-
-The Remora API can be applied to make modified base calls given a basecalled read via a ``RemoraRead`` object.
-``sig`` should be a float32 numpy array.
-``seq`` is a string derived from ``sig`` (can be either basecalls or other downstream derived sequence; e.g. mapped reference positions).
-``seq_to_sig_map`` should be an int32 numpy array of length ``len(seq) + 1`` and elements should be indices within ``sig`` array assigned to each base in ``seq``.
-
-.. code-block:: python
-
-  from remora.model_util import load_model
-  from remora.data_chunks import RemoraRead
-  from remora.inference import call_read_mods
-
-  model, model_metadata = load_model("remora_train_results/model_best.onnx")
-  read = RemoraRead(sig, seq_to_sig_map, str_seq=seq)
-  mod_probs, _, pos = call_read_mods(
-    read,
-    model,
-    model_metadata,
-    return_mod_probs=True,
-  )
-
-``mod_probs`` will contain the probability of each modeled modified base as found in model_metadata["mod_long_names"].
-For example, run ``mod_probs.argmax(axis=1)`` to obtain the prediction for each input unit.
-``pos`` contains the position (index in input sequence) for each prediction within ``mod_probs``.
-
 GPU Troubleshooting
 *******************
 
@@ -215,3 +222,8 @@ Research releases may be unstable and subject to rapid change by Oxford Nanopore
 
 © 2021 Oxford Nanopore Technologies Ltd.
 Remora is distributed under the terms of the Oxford Nanopore Technologies' Public Licence.
+
+Research Release
+----------------
+
+Research releases are provided as technology demonstrators to provide early access to features or stimulate Community development of tools. Support for this software will be minimal and is only provided directly by the developers. Feature requests, improvements, and discussions are welcome and can be implemented by forking and pull requests. However much as we would like to rectify every issue and piece of feedback users may have, the developers may have limited resource for support of this software. Research releases may be unstable and subject to rapid iteration by Oxford Nanopore Technologies.
