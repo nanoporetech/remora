@@ -18,7 +18,7 @@ To install from github source for development, the following commands can be run
 ::
 
    git clone git@github.com:nanoporetech/remora.git
-   pip install -e remora/[data_prep,tests]
+   pip install -e remora/[tests]
 
 See help for any Remora command with the ``-h`` flag.
 
@@ -76,6 +76,8 @@ Data Preparation
 ****************
 
 Remora data preparation begins from Taiyaki mapped signal files generally produced from Megalodon containing modified base annotations.
+This requires installation of Taiyaki via ``pip install git+https://github.com/nanoporetech/taiyaki``.
+
 An example dataset might be pre-processed with the following commands.
 
 .. code-block:: bash
