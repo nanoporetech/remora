@@ -547,12 +547,12 @@ def register_model_list_pretrained(parser):
     )
     subparser.add_argument(
         "--remora-model-type",
-        help="specify the motif or context that the remora model has been trained on",
+        help="specify the motif or context that the remora model has been "
+        "trained on",
     )
     subparser.add_argument(
         "--remora-model-version", help="specify the remora model version"
     )
-    # TODO allow filtering of model by attributes
     subparser.set_defaults(func=run_list_pretrained)
 
 
@@ -570,7 +570,7 @@ def run_list_pretrained(args):
     )
     LOGGER.info(
         "Remora pretrained modified base models:\n"
-        + tabulate(models, headers=header)
+        + tabulate(models, headers=header, showindex=False)
     )
 
 
