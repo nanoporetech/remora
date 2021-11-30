@@ -13,14 +13,23 @@ Remora also provides the tools to prepare datasets, train modified base models a
 Installation
 ------------
 
-To install from github source for development, the following commands can be run.
+Install from pypi:
+
+::
+
+   pip install ont-remora
+
+Install from github source for development:
 
 ::
 
    git clone git@github.com:nanoporetech/remora.git
    pip install -e remora/[tests]
 
-See help for any Remora command with the ``-h`` flag.
+It is recommended that Remora be installed in a virtual environment.
+For example ``python3.8 -m venv --prompt remora --copies venv; source venv/bin/activate``.
+
+See help for any Remora sub-command with the ``-h`` flag.
 
 Getting Started
 ---------------
