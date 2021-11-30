@@ -361,13 +361,14 @@ def load_model(
     remora_model_type=None,
     remora_model_version=None,
     device=None,
+    quiet=True,
 ):
     if model_filename is not None:
         if not isfile(model_filename):
             raise RemoraError(
                 f"Remora model file ({model_filename}) not found."
             )
-        return load_onnx_model(model_filename, device)
+        return load_onnx_model(model_filename, device, quiet=quiet)
 
     if pore is None:
         raise RemoraError("Must specify a pore.")
@@ -468,7 +469,7 @@ def load_model(
     if not os.path.exists(path):
         raise RemoraError("No pre-trained Remora model for this configuration.")
 
-    return load_onnx_model(path, device)
+    return load_onnx_model(path, device, quiet=quiet)
 
 
 def get_pretrained_models(
