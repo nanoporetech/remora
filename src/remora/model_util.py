@@ -421,7 +421,7 @@ def load_model(
         submodels = submodels[modified_bases]
     except (AttributeError, KeyError):
         LOGGER.error(
-            "Remora model for modified bases {modified_bases} not found "
+            f"Remora model for modified bases {modified_bases} not found "
             f"for {pore}_{basecall_model_type}@{basecall_model_version}."
         )
         sys.exit(1)
@@ -467,7 +467,9 @@ def load_model(
         ),
     )
     if not os.path.exists(path):
-        raise RemoraError("No pre-trained Remora model for this configuration.")
+        raise RemoraError(
+            f"No pre-trained Remora model for this configuration {path}."
+        )
 
     return load_onnx_model(path, device, quiet=quiet)
 
@@ -496,7 +498,8 @@ def get_pretrained_models(
                 models = models[models[y] == x]
                 if len(models) == 0:
                     LOGGER.info(
-                        f" {y} {','.join(running_sequence)} not found in library of pre-trained models."
+                        f" {y} {','.join(running_sequence)} not found in "
+                        "library of pre-trained models."
                     )
                     sys.exit(1)
 
