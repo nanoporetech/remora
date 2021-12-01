@@ -40,22 +40,22 @@ The rest of the documentation will focus on the modified base detection task.
 
 The Remora training/prediction input unit (refered to as a chunk) consists of:
 
-    1. Section of normalized signal
-    2. Canonical bases attributed to the section of signal
-    3. Mapping between these two
+1. Section of normalized signal
+2. Canonical bases attributed to the section of signal
+3. Mapping between these two
 
 Chunks have a fixed signal length defined at data preparation time and saved as a model attribute.
 A fixed position within the chunk is defined as the "focus position".
 This position is the center of the base of interest.
 
 Pre-trained Models
-******************
+------------------
 
 Pre-trained models are included in the Remora repository.
 To see the selection of models included in the current installation run ``remora model list_pretrained``.
 
-API
-***
+Python API
+----------
 
 The Remora API can be applied to make modified base calls given a basecalled read via a ``RemoraRead`` object.
 ``sig`` should be a float32 numpy array.
@@ -82,7 +82,7 @@ For example, run ``mod_probs.argmax(axis=1)`` to obtain the prediction for each 
 ``pos`` contains the position (index in input sequence) for each prediction within ``mod_probs``.
 
 Data Preparation
-****************
+----------------
 
 Remora data preparation begins from Taiyaki mapped signal files generally produced from Megalodon containing modified base annotations.
 This requires installation of Taiyaki via ``pip install git+https://github.com/nanoporetech/taiyaki``.
@@ -139,7 +139,7 @@ The following command performs this task in Remora.
 The resulting ``remora_train_chunks.npz`` file can then be used to train a Remora model.
 
 Model Training
-**************
+--------------
 
 Models are trained with the ``remora model train`` command.
 For example a model can be trained with the following command.
@@ -149,14 +149,14 @@ For example a model can be trained with the following command.
   remora \
     model train \
     remora_train_chunks.npz \
-    --model remora/models/ConvLSTM_w_ref.py \
+    --model remora/models/Conv_w_ref.py \
     --device 0 \
     --output-path remora_train_results
 
 This command will produce a final model in ONNX format for use in Bonito, Megalodon or ``remora infer`` commands.
 
 Model Inference
-***************
+---------------
 
 For testing purposes inference within Remora is provided given Taiyaki mapped signal files as input.
 The below command will call the held out validation dataset from the data preparation section above.
@@ -179,7 +179,7 @@ The below command will call the held out validation dataset from the data prepar
 Note that in order to perfrom inference on a GPU device the ``onnxruntime-gpu`` package must be installed.
 
 GPU Troubleshooting
-*******************
+-------------------
 
 Note that standard Remora models are small enough to run quite quickly on CPU resources and this is the primary recommandation.
 Running Remora models on GPU compute resources is considered experimental with minimal support.
@@ -222,7 +222,7 @@ The cuDNN download can be specified at runtime as in the following example.
 The ``onnxruntime`` dependency can be set via the python package install command.
 For example `pip install "onnxruntime-gpu<1.7"`.
 
-Terms and licence
+Terms and Licence
 -----------------
 
 This is a research release provided under the terms of the Oxford Nanopore Technologies' Public Licence.
