@@ -52,6 +52,7 @@ def register_dataset(parser):
     register_dataset_prepare(ssubparser)
     register_dataset_split_by_label(ssubparser)
     register_dataset_merge(ssubparser)
+    register_dataset_stratified_split(ssubparser)
     register_dataset_inspect(ssubparser)
 
 
@@ -292,6 +293,47 @@ def run_dataset_merge(args):
     ]
     output_dataset = merge_datasets(input_datasets, args.balance)
     output_dataset.save_dataset(args.output_dataset)
+
+
+def register_dataset_stratified_split(parser):
+    subparser = parser.add_parser(
+        "stratified_split",
+        description="split Remora datasets in a stratified manner",
+        help="split Remora datasets in a stratified manner",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    subparser.add_argument(
+        "--input-dataset",
+        help="Path to Remora dataset that is to be split",
+    )
+    subparser.add_argument(
+        "--output-basename",
+        help="Name of output split files",
+    )
+    subparser.add_argument(
+        "--val-prop",
+        type=float,
+        help="The proportion of data to be split into validation set, where val-prop in [0,0.5)",
+    )
+    subparser.set_defaults(func=run_dataset_stratified_split)
+
+
+def run_dataset_stratified_split(args):
+    from remora.data_chunks import RemoraDataset
+
+    dataset = RemoraDataset.load_from_file(
+        args.input_dataset,
+        shuffle_on_iter=False,
+        drop_last=False,
+    )
+
+    trn_set, val_trn_set, val_set = dataset.split_data(
+        args.val_prop, stratified=True
+    )
+
+    trn_set.save_dataset(f"{args.output}.split_train.npz")
+    val_trn_set.save_dataset(f"{args.output}.split_valtrain.npz")
+    val_set.save_dataset(f"{args.output}.split_val.npz")
 
 
 ################

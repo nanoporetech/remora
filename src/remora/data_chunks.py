@@ -531,13 +531,17 @@ class RemoraDataset:
     def get_label_counts(self):
         return Counter(self.labels[: self.nchunks])
 
-    def split_data(self, val_prop):
+    def split_data(self, val_prop, stratified=True):
         if not self.is_trimmed:
             raise RemoraError("Cannot split an untrimmed dataset.")
         elif self.sig_tensor.shape[0] < int(1 / val_prop) * 2:
             raise RemoraError(
                 "Too few chunks to extract validation proportion "
                 f"({self.sig_tensor.shape[0]} < {int(1 / val_prop) * 2})"
+            )
+        elif val_prop > 0.5:
+            raise RemoraError(
+                "Validation set size must be less than half of full training set"
             )
         common_kwargs = {
             "chunk_context": self.chunk_context,
@@ -553,24 +557,58 @@ class RemoraDataset:
         if not self.shuffled:
             self.shuffle_dataset()
         val_idx = int(self.sig_tensor.shape[0] * val_prop)
+        if stratified:
+            class_counts = self.get_label_counts()
+            class_num_vals = (
+                val_prop * np.fromiter(class_counts.values(), dtype=int)
+            ).astype(int)
+
+            val_indices = []
+            val_trn_indices = []
+            trn_indices = []
+
+            for class_label in range(len(class_counts)):
+                class_indices = np.where(self.labels == class_label)[0]
+                np.random.shuffle(class_indices)
+                val_indices.append(class_indices[: class_num_vals[class_label]])
+                val_trn_indices.append(
+                    class_indices[
+                        class_num_vals[class_label] : class_num_vals[
+                            class_label
+                        ]
+                        * 2
+                    ]
+                )
+                trn_indices.append(class_indices[class_num_vals[class_label] :])
+
+            val_indices = np.concatenate(val_indices)
+            val_trn_indices = np.concatenate(val_trn_indices)
+            trn_indices = np.concatenate(trn_indices)
+        else:
+            val_indices = np.arange(0, val_idx)
+            val_trn_indices = np.arange(val_idx, val_idx + val_idx)
+            trn_indices = np.arange(val_idx, self.sig_tensor.shape[0])
+
         val_ds = RemoraDataset(
-            self.sig_tensor[:val_idx],
-            self.seq_array[:val_idx],
-            self.seq_mappings[:val_idx],
-            self.seq_lens[:val_idx],
-            self.labels[:val_idx],
-            self.read_data[:val_idx] if self.store_read_data else None,
+            self.sig_tensor[val_indices],
+            self.seq_array[val_indices],
+            self.seq_mappings[val_indices],
+            self.seq_lens[val_indices],
+            self.labels[val_indices],
+            [self.read_data[idx] for idx in val_indices]
+            if self.store_read_data
+            else None,
             shuffle_on_iter=False,
             drop_last=False,
             **common_kwargs,
         )
         val_trn_ds = RemoraDataset(
-            self.sig_tensor[val_idx : val_idx + val_idx],
-            self.seq_array[val_idx : val_idx + val_idx],
-            self.seq_mappings[val_idx : val_idx + val_idx],
-            self.seq_lens[val_idx : val_idx + val_idx],
-            self.labels[val_idx : val_idx + val_idx],
-            self.read_data[val_idx : val_idx + val_idx]
+            self.sig_tensor[val_trn_indices],
+            self.seq_array[val_trn_indices],
+            self.seq_mappings[val_trn_indices],
+            self.seq_lens[val_trn_indices],
+            self.labels[val_trn_indices],
+            [self.read_data[idx] for idx in val_trn_indices]
             if self.store_read_data
             else None,
             shuffle_on_iter=False,
@@ -578,13 +616,15 @@ class RemoraDataset:
             **common_kwargs,
         )
         trn_ds = RemoraDataset(
-            self.sig_tensor[val_idx:],
-            self.seq_array[val_idx:],
-            self.seq_mappings[val_idx:],
-            self.seq_lens[val_idx:],
-            self.labels[val_idx:],
-            self.read_data[val_idx:] if self.store_read_data else None,
-            shuffle_on_iter=False,
+            self.sig_tensor[trn_indices],
+            self.seq_array[trn_indices],
+            self.seq_mappings[trn_indices],
+            self.seq_lens[trn_indices],
+            self.labels[trn_indices],
+            [self.read_data[idx] for idx in trn_indices]
+            if self.store_read_data
+            else None,
+            shuffle_on_iter=True,
             drop_last=False,
             **common_kwargs,
         )
