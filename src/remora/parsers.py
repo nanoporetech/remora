@@ -399,6 +399,12 @@ def register_model_train(parser):
         "k-mer (derived from the reference) passed into the model along with "
         "each signal position.",
     )
+    data_grp.add_argument(
+        "--ext-val",
+        nargs="+",
+        help="Path to a file with a list of paths for the external validation "
+        "Remora datasets.",
+    )
 
     out_grp = subparser.add_argument_group("Output Arguments")
     out_grp.add_argument(
@@ -530,6 +536,7 @@ def run_model_train(args):
         args.save_freq,
         args.early_stopping,
         args.conf_thr,
+        args.ext_val,
     )
 
 

@@ -89,6 +89,7 @@ def train_model(
     save_freq,
     early_stopping,
     conf_thr,
+    ext_val,
 ):
 
     seed = (
@@ -127,7 +128,7 @@ def train_model(
     )
 
     out_log = out_path / "validation.log"
-    val_fp = model_util.ValidationLogger(out_log, dataset.is_multiclass)
+    val_fp = model_util.ValidationLogger(out_log)
     atexit.register(val_fp.close)
     batch_fp = util.BatchLogger(out_path)
     atexit.register(batch_fp.close)
@@ -143,6 +144,20 @@ def train_model(
     }
     model = model_util._load_python_model(copy_model_path, **model_params)
     LOGGER.info(f"Model structure:\n{model}")
+
+    if ext_val:
+        ext_sets = []
+        for path in ext_val:
+            ext_val_set = RemoraDataset.load_from_file(
+                path.strip(), batch_size=batch_size
+            )
+            if ext_val_set.mod_long_names != dataset.mod_long_names:
+                ext_val_set.add_fake_base(
+                    dataset.mod_long_names, dataset.mod_bases
+                )
+            ext_val_set.trim_kmer_context_bases(kmer_context_bases)
+            ext_val_set.trim_chunk_context(chunk_context)
+            ext_sets.append(ext_val_set)
 
     kmer_dim = int((sum(dataset.kmer_context_bases) + 1) * 4)
     test_input_sig = torch.randn(batch_size, 1, sum(dataset.chunk_context))
@@ -188,6 +203,18 @@ def train_model(
         "trn",
         conf_thr,
     )
+
+    if ext_val:
+        best_alt_val_accs = [0] * len(ext_sets)
+        for e_set_idx in range(len(ext_sets)):
+            e_val_acc, e_val_loss = val_fp.validate_model(
+                model,
+                criterion,
+                ext_sets[e_set_idx],
+                0,
+                f"e_val_{e_set_idx}",
+                conf_thr,
+            )
 
     LOGGER.info("Start training")
     ebar = tqdm(
@@ -304,6 +331,34 @@ def train_model(
             )
         else:
             early_stop_epochs += 1
+
+        if ext_val:
+            for e_set_idx in range(len(ext_sets)):
+                e_val_acc, e_val_loss = val_fp.validate_model(
+                    model,
+                    criterion,
+                    ext_sets[e_set_idx],
+                    (epoch + 1) * len(trn_ds),
+                    f"e_val_{e_set_idx}",
+                    conf_thr,
+                )
+                if e_val_acc > best_alt_val_accs[e_set_idx]:
+                    best_alt_val_accs[e_set_idx] = e_val_acc
+                    LOGGER.debug(
+                        f"Saving best model based on e_val_{e_set_idx} "
+                        f"validation sets after {epoch + 1} epochs "
+                        f"with val_acc {val_acc}"
+                    )
+                    save_model(
+                        model,
+                        ckpt_save_data,
+                        out_path,
+                        epoch,
+                        opt,
+                        model_name=f"model_e_val_{e_set_idx}_best.checkpoint",
+                        as_onnx=True,
+                        model_name_onnx=f"model_e_val_{e_set_idx}_best.onnx",
+                    )
 
         if int(epoch + 1) % save_freq == 0:
             save_model(

@@ -668,6 +668,19 @@ class RemoraDataset:
             )
         return label_datasets
 
+    def add_fake_base(self, new_mod_long_names, new_mod_bases):
+        if not set(self.mod_long_names).issubset(new_mod_long_names):
+            raise RemoraError(
+                "There are no mods in common between the model being traind "
+                "and the external validation set."
+            )
+        for mod in self.mod_long_names:
+            new_index = new_mod_long_names.index(mod) + 1
+            old_index = self.mod_long_names.index(mod) + 1
+            self.labels[np.where(self.labels == old_index)] = new_index
+        self.mod_long_names = new_mod_long_names
+        self.mod_bases = new_mod_bases
+
     def save_dataset(self, filename):
         self.clip_chunks()
         np.savez(

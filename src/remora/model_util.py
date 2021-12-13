@@ -21,43 +21,26 @@ MODEL_DATA_DIR_NAME = "trained_models"
 
 
 class ValidationLogger:
-    def __init__(self, out_path, multiclass=False):
+    def __init__(self, out_path):
         self.fp = open(out_path, "w", buffering=1)
-        self.multiclass = multiclass
-        if multiclass:
-            self.fp.write(
-                "\t".join(
-                    (
-                        "Val_Type",
-                        "Iteration",
-                        "Accuracy",
-                        "Loss",
-                        "Num_Calls",
-                        "Confusion",
-                        "Conf_frac",
-                        "Min_F1",
-                    )
+        self.fp.write(
+            "\t".join(
+                (
+                    "Val_Type",
+                    "Iteration",
+                    "Accuracy",
+                    "Loss",
+                    "F1",
+                    "Precision",
+                    "Recall",
+                    "Num_Calls",
+                    "Flt_Confusion",
+                    "Conf_frac",
+                    "Min_F1",
                 )
-                + "\n"
             )
-        else:
-            self.fp.write(
-                "\t".join(
-                    (
-                        "Val_Type",
-                        "Iteration",
-                        "Accuracy",
-                        "Loss",
-                        "F1",
-                        "Precision",
-                        "Recall",
-                        "Num_Calls",
-                        "Confusion",
-                        "Conf_frac",
-                    )
-                )
-                + "\n"
-            )
+            + "\n"
+        )
 
     def close(self):
         self.fp.close()
@@ -93,25 +76,26 @@ class ValidationLogger:
             conf_mat.flatten(), separator=","
         ).replace("\n", "")
 
-        if self.multiclass:
-            self.fp.write(
-                f"{val_type}\t{niter}\t{acc:.6f}\t{mean_loss:.6f}\t"
-                f"{len(all_labels)}\t{cm_flat_str}\t{conf_frac:.2f}\t"
-                f"{min_f1:.6f}\n"
-            )
+        if len(np.unique(all_labels)) > 2:
+            precision = [float("NaN")]
+            recall = [float("NaN")]
+            f1_scores = [float("NaN")]
+            f1_idx = 0
         else:
+            uniq_labs = np.unique(all_labels)
+            pos_idx = np.max(uniq_labs)
             with np.errstate(invalid="ignore"):
                 precision, recall, thresholds = precision_recall_curve(
-                    all_labels, all_outputs[:, 1]
+                    all_labels, all_outputs[:, pos_idx], pos_label=pos_idx
                 )
                 f1_scores = 2 * recall * precision / (recall + precision)
             f1_idx = np.argmax(f1_scores)
-            self.fp.write(
-                f"{val_type}\t{niter}\t{acc:.6f}\t{mean_loss:.6f}\t"
-                f"{f1_scores[f1_idx]}\t{precision[f1_idx]}\t"
-                f"{recall[f1_idx]}\t{len(all_labels)}\t"
-                f"{cm_flat_str}\t{conf_frac:.2f}\n"
-            )
+        self.fp.write(
+            f"{val_type}\t{niter}\t{acc:.6f}\t{mean_loss:.6f}\t"
+            f"{f1_scores[f1_idx]:.6f}\t{precision[f1_idx]:.6f}\t"
+            f"{recall[f1_idx]:.6f}\t{len(all_labels)}\t"
+            f"{cm_flat_str}\t{conf_frac:.2f}\t{min_f1:.6f}\n"
+        )
         return acc, mean_loss
 
     def validate_model(
