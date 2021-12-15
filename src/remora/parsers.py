@@ -446,22 +446,15 @@ def register_model_train(parser):
         help="Optimizer setting. Default: %(default)s",
     )
     train_grp.add_argument(
+        "--scheduler",
+        default=None,
+        help="Scheduler setting. Default: %(default)s",
+    )
+    train_grp.add_argument(
         "--lr",
         default=constants.DEFAULT_LR,
         type=float,
         help="Learning rate setting. Default: %(default)f",
-    )
-    train_grp.add_argument(
-        "--lr-decay-step",
-        default=constants.DEFAULT_DECAY_STEP,
-        type=int,
-        help="Learning decay step setting. Default: %(default)d",
-    )
-    train_grp.add_argument(
-        "--lr-decay-gamma",
-        default=constants.DEFAULT_DECAY_GAMMA,
-        type=float,
-        help="Learning decay gamma setting. Default: %(default)f",
     )
     train_grp.add_argument(
         "--weight-decay",
@@ -488,6 +481,13 @@ def register_model_train(parser):
         type=float,
         help="Confidence threshold for the confusion matrix. "
         "Default: %(default)f",
+    )
+    train_grp.add_argument(
+        "--lr-sched-kwargs",
+        nargs=3,
+        action="append",
+        default=None,
+        metavar=("NAME", "VALUE", "TYPE"),
     )
 
     comp_grp = subparser.add_argument_group("Compute Arguments")
@@ -526,14 +526,14 @@ def run_model_train(args):
         args.size,
         args.optimizer,
         args.lr,
+        args.scheduler,
         args.weight_decay,
-        args.lr_decay_step,
-        args.lr_decay_gamma,
         args.epochs,
         args.save_freq,
         args.early_stopping,
         args.conf_thr,
         args.ext_val,
+        args.lr_sched_kwargs,
     )
 
 

@@ -39,6 +39,17 @@ def load_optimizer(optimizer, model, lr, weight_decay, momentum=0.9):
     raise RemoraError(f"Invalid optimizer specified ({optimizer})")
 
 
+def select_scheduler(scheduler, opt, lr_sched_kwargs):
+    lr_sched_dict = {}
+    if lr_sched_kwargs is None and scheduler is None:
+        scheduler = constants.DEFAULT_SCHEDULER
+        lr_sched_dict = constants.DEFAULT_SCH_VALUES
+    else:
+        for lr_key, lr_val, lr_type in lr_sched_kwargs:
+            lr_sched_dict[lr_key] = constants.TYPE_CONVERTERS[lr_type](lr_val)
+    return getattr(torch.optim.lr_scheduler, scheduler)(opt, **lr_sched_dict)
+
+
 def save_model(
     model,
     ckpt_save_data,
@@ -82,14 +93,14 @@ def train_model(
     size,
     optimizer,
     lr,
+    scheduler_name,
     weight_decay,
-    lr_decay_step,
-    lr_decay_gamma,
     epochs,
     save_freq,
     early_stopping,
     conf_thr,
     ext_val,
+    lr_sched_kwargs,
 ):
 
     seed = (
@@ -177,9 +188,8 @@ def train_model(
         model = model.cuda()
         criterion = criterion.cuda()
     opt = load_optimizer(optimizer, model, lr, weight_decay)
-    scheduler = torch.optim.lr_scheduler.StepLR(
-        opt, step_size=lr_decay_step, gamma=lr_decay_gamma
-    )
+
+    scheduler = select_scheduler(scheduler_name, opt, lr_sched_kwargs)
 
     label_counts = dataset.get_label_counts()
     LOGGER.info(f"Label distribution: {label_counts}")
