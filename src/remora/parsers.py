@@ -327,12 +327,9 @@ def run_dataset_stratified_split(args):
         drop_last=False,
     )
 
-    trn_set, val_trn_set, val_set = dataset.split_data(
-        args.val_prop, stratified=True
-    )
+    trn_set, val_set = dataset.split_data(args.val_prop, stratified=True)
 
     trn_set.save_dataset(f"{args.output}.split_train.npz")
-    val_trn_set.save_dataset(f"{args.output}.split_valtrain.npz")
     val_set.save_dataset(f"{args.output}.split_val.npz")
 
 

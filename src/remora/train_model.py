@@ -188,7 +188,9 @@ def train_model(
             "One or fewer output labels found. Ensure --focus-offset and "
             "--mod are specified correctly"
         )
-    trn_ds, val_trn_ds, val_ds = dataset.split_data(val_prop)
+
+    trn_ds, val_ds = dataset.split_data(val_prop, stratified=True)
+    val_trn_ds = trn_ds.head(val_prop, shuffle_on_iter=False, drop_last=False)
 
     LOGGER.info("Running initial validation")
     # assess accuracy before first iteration

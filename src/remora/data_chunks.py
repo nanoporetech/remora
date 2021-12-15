@@ -498,6 +498,34 @@ class RemoraDataset:
             self.read_data = [self.read_data[si] for si in shuf_idx]
         self.shuffled = True
 
+    def head(self, val_prop=0.01, shuffle_on_iter=False, drop_last=False):
+        common_kwargs = {
+            "chunk_context": self.chunk_context,
+            "max_seq_len": self.max_seq_len,
+            "kmer_context_bases": self.kmer_context_bases,
+            "base_pred": self.base_pred,
+            "mod_bases": self.mod_bases,
+            "mod_long_names": self.mod_long_names,
+            "motif": self.motif,
+            "store_read_data": self.store_read_data,
+            "batch_size": self.batch_size,
+        }
+        val_trn_slice = int(val_prop * self.nchunks)
+        val_trn_ds = RemoraDataset(
+            self.sig_tensor[:val_trn_slice].copy(),
+            self.seq_array[:val_trn_slice].copy(),
+            self.seq_mappings[:val_trn_slice].copy(),
+            self.seq_lens[:val_trn_slice].copy(),
+            self.labels[:val_trn_slice].copy(),
+            [self.read_data[idx] for idx in np.arange(val_trn_slice)]
+            if self.read_data
+            else None,
+            shuffle_on_iter=shuffle_on_iter,
+            drop_last=drop_last,
+            **common_kwargs,
+        )
+        return val_trn_ds
+
     def __iter__(self):
         if self.shuffle_on_iter:
             self.shuffle_dataset()
@@ -564,29 +592,18 @@ class RemoraDataset:
             ).astype(int)
 
             val_indices = []
-            val_trn_indices = []
             trn_indices = []
 
             for class_label in range(len(class_counts)):
                 class_indices = np.where(self.labels == class_label)[0]
                 np.random.shuffle(class_indices)
                 val_indices.append(class_indices[: class_num_vals[class_label]])
-                val_trn_indices.append(
-                    class_indices[
-                        class_num_vals[class_label] : class_num_vals[
-                            class_label
-                        ]
-                        * 2
-                    ]
-                )
                 trn_indices.append(class_indices[class_num_vals[class_label] :])
 
             val_indices = np.concatenate(val_indices)
-            val_trn_indices = np.concatenate(val_trn_indices)
             trn_indices = np.concatenate(trn_indices)
         else:
             val_indices = np.arange(0, val_idx)
-            val_trn_indices = np.arange(val_idx, val_idx + val_idx)
             trn_indices = np.arange(val_idx, self.sig_tensor.shape[0])
 
         val_ds = RemoraDataset(
@@ -596,19 +613,6 @@ class RemoraDataset:
             self.seq_lens[val_indices],
             self.labels[val_indices],
             [self.read_data[idx] for idx in val_indices]
-            if self.store_read_data
-            else None,
-            shuffle_on_iter=False,
-            drop_last=False,
-            **common_kwargs,
-        )
-        val_trn_ds = RemoraDataset(
-            self.sig_tensor[val_trn_indices],
-            self.seq_array[val_trn_indices],
-            self.seq_mappings[val_trn_indices],
-            self.seq_lens[val_trn_indices],
-            self.labels[val_trn_indices],
-            [self.read_data[idx] for idx in val_trn_indices]
             if self.store_read_data
             else None,
             shuffle_on_iter=False,
@@ -628,7 +632,7 @@ class RemoraDataset:
             drop_last=False,
             **common_kwargs,
         )
-        return trn_ds, val_trn_ds, val_ds
+        return trn_ds, val_ds
 
     def split_by_label(self):
         labels = "ACGT" if self.base_pred else self.mod_long_names
