@@ -672,6 +672,39 @@ class RemoraDataset:
             )
         return label_datasets
 
+    def filter(self, indices):
+
+        if len(indices) > self.sig_tensor.shape[0]:
+            raise RemoraError(
+                "Filter indices cannot be longer than dataset size"
+            )
+
+        common_kwargs = {
+            "chunk_context": self.chunk_context,
+            "max_seq_len": self.max_seq_len,
+            "kmer_context_bases": self.kmer_context_bases,
+            "base_pred": self.base_pred,
+            "mod_bases": self.mod_bases,
+            "mod_long_names": self.mod_long_names,
+            "motif": self.motif,
+            "store_read_data": self.store_read_data,
+            "batch_size": self.batch_size,
+        }
+
+        return RemoraDataset(
+            self.sig_tensor[indices],
+            self.seq_array[indices],
+            self.seq_mappings[indices],
+            self.seq_lens[indices],
+            self.labels[indices],
+            [self.read_data[idx] for idx in indices]
+            if self.store_read_data
+            else None,
+            shuffle_on_iter=False,
+            drop_last=False,
+            **common_kwargs,
+        )
+
     def add_fake_base(self, new_mod_long_names, new_mod_bases):
         if not set(self.mod_long_names).issubset(new_mod_long_names):
             raise RemoraError(
