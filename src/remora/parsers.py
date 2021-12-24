@@ -75,8 +75,9 @@ def register_dataset_prepare(parser):
     subparser.add_argument(
         "--motif",
         nargs=2,
+        action="append",
         metavar=("MOTIF", "FOCUS_POSITION"),
-        default=["N", "0"],
+        default=None,
         help="Extract training chunks centered on a defined motif. Argument "
         "takes 2 values representing 1) sequence motif and 2) focus position "
         "within the motif. For example to restrict to CpG sites use "
@@ -145,6 +146,7 @@ def run_dataset_prepare(args):
 
     if args.log_filename is not None:
         log.init_logger(args.log_filename)
+    mot = [("N", 0)] if args.motif is None else args.motif
     LOGGER.info("Opening mapped signal files")
     input_msf = MappedSignalReader(args.mapped_signal_file)
     atexit.register(input_msf.close)
@@ -153,7 +155,7 @@ def run_dataset_prepare(args):
         alphabet_info.alphabet,
         alphabet_info.collapse_alphabet,
     )
-    motif = Motif(*args.motif)
+    motif = [Motif(*mo) for mo in mot]
     if not args.base_pred and args.mod_bases is None:
         raise RemoraError(
             "Must specify either modified base or base prediction model "
@@ -252,7 +254,7 @@ def run_dataset_inspect(args):
         f"     mod_long_names : {dataset.mod_long_names}\n"
         f" kmer_context_bases : {dataset.kmer_context_bases}\n"
         f"      chunk_context : {dataset.chunk_context}\n"
-        f"              motif : {dataset.motif}\n"
+        f" motifs : {dataset.motifs}\n"
     )
     LOGGER.info(f"Label distribution: {dataset.get_label_counts()}")
     LOGGER.info(f"Total num chunks: {dataset.nchunks}")
@@ -329,8 +331,8 @@ def run_dataset_stratified_split(args):
 
     trn_set, val_set = dataset.split_data(args.val_prop, stratified=True)
 
-    trn_set.save_dataset(f"{args.output}.split_train.npz")
-    val_set.save_dataset(f"{args.output}.split_val.npz")
+    trn_set.save_dataset(f"{args.output_basename}.split_train.npz")
+    val_set.save_dataset(f"{args.output_basename}.split_val.npz")
 
 
 ################
@@ -811,10 +813,9 @@ def run_infer_from_remora_dataset(args):
         f"          mod_bases : {dataset.mod_bases}\n"
         f" kmer_context_bases : {dataset.kmer_context_bases}\n"
         f"      chunk_context : {dataset.chunk_context}\n"
-        f"              motif : {dataset.motif}\n"
+        f"              motifs : {dataset.motifs}\n"
     )
-
-    val_fp = ValidationLogger(Path(args.out_file), dataset.is_multiclass)
+    val_fp = ValidationLogger(Path(args.out_file))
 
     criterion = torch.nn.CrossEntropyLoss()
 

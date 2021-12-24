@@ -16,7 +16,7 @@ def fill_dataset(
     label_conv,
     max_chunks_per_read,
 ):
-    motif = Motif(*dataset.motif)
+    motif = [Motif(*mot) for mot in dataset.motifs]
     num_failed_reads = num_short_chunks = 0
     for read in tqdm(input_msf, smoothing=0, total=num_reads, unit="reads"):
         try:
@@ -24,13 +24,12 @@ def fill_dataset(
         except RemoraError:
             num_failed_reads += 1
             continue
-        if motif.any_context:
-            motif_hits = np.arange(
-                motif.focus_pos,
-                read.int_seq.size - motif.num_bases_after_focus,
+        motif_hits = []
+        for mot in motif:
+            motif_hits.append(
+                np.fromiter(read.iter_motif_hits(mot), int) + mot.focus_pos
             )
-        else:
-            motif_hits = np.fromiter(read.iter_motif_hits(motif), int)
+        motif_hits = np.concatenate(motif_hits)
         focus_base_indices = np.random.choice(
             motif_hits,
             size=min(max_chunks_per_read, motif_hits.size),
@@ -85,7 +84,7 @@ def extract_chunk_dataset(
         base_pred=base_pred,
         mod_bases=mod_bases,
         mod_long_names=mod_long_names,
-        motif=motif.to_tuple(),
+        motifs=[mot.to_tuple() for mot in motif],
     )
     LOGGER.info("Processing reads")
     fill_dataset(
