@@ -76,18 +76,17 @@ def call_read_mods_core(
           3. List of positions within the read
     """
     read_outputs, all_read_data, read_labels = [], [], []
-
-    motif = Motif(*model_metadata["motif"])
+    motif = [Motif(*mot) for mot in model_metadata["motif"]]
     bb, ab = model_metadata["kmer_context_bases"]
+    motif_hits = []
     if focus_offset is not None:
-        motif_hits = focus_offset
-    elif motif.any_context:
-        motif_hits = np.arange(
-            motif.focus_pos,
-            read.int_seq.size - motif.num_bases_after_focus,
-        )
+        motif_hits.append([focus_offset])
     else:
-        motif_hits = np.fromiter(read.iter_motif_hits(motif), int)
+        for mot in motif:
+            motif_hits.append(
+                np.fromiter(read.iter_motif_hits(mot), int) + mot.focus_pos
+            )
+    motif_hits = np.concatenate(motif_hits)
     chunks = list(
         read.iter_chunks(
             motif_hits,
@@ -110,7 +109,7 @@ def call_read_mods_core(
         base_pred=model_metadata["base_pred"],
         mod_bases=model_metadata["mod_bases"],
         mod_long_names=model_metadata["mod_long_names"],
-        motif=motif.to_tuple(),
+        motifs=[mot.to_tuple() for mot in motif],
         store_read_data=True,
         batch_size=batch_size,
         shuffle_on_iter=False,
@@ -229,9 +228,9 @@ def infer(
         label_conv = get_can_converter(alphabet, collapse_alphabet)
     else:
         try:
-            motif = Motif(*model_metadata["motif"])
+            motifs = [Motif(*mot) for mot in model_metadata["motif"]]
             label_conv = validate_mod_bases(
-                model_metadata["mod_bases"], motif, alphabet, collapse_alphabet
+                model_metadata["mod_bases"], motifs, alphabet, collapse_alphabet
             )
         except RemoraError:
             label_conv = None

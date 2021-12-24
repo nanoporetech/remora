@@ -165,7 +165,7 @@ def get_mod_bases(alphabet, collapse_alphabet):
     ]
 
 
-def validate_mod_bases(mod_bases, motif, alphabet, collapse_alphabet):
+def validate_mod_bases(mod_bases, motifs, alphabet, collapse_alphabet):
     """Validate that inputs are mutually consistent. Return label conversion
     from alphabet integer encodings to modified base categories.
     """
@@ -177,9 +177,9 @@ def validate_mod_bases(mod_bases, motif, alphabet, collapse_alphabet):
         mod_can_equiv = collapse_alphabet[alphabet.find(mod_base)]
         # note this check also requires that all modified bases have the same
         # canonical base equivalent.
-        if motif.focus_base != mod_can_equiv:
+        if any([mot.focus_base != mod_can_equiv for mot in motifs]):
             raise RemoraError(
-                f"Canonical base within motif ({motif.focus_base}) does not "
+                f"Canonical base within motif does not "
                 "match canonical equivalent for modified base "
                 f"({mod_can_equiv})"
             )

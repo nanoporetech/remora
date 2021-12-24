@@ -367,7 +367,7 @@ class RemoraDataset:
     base_pred: bool = False
     mod_bases: str = ""
     mod_long_names: list = None
-    motif: tuple = ("N", 0)
+    motifs: tuple = ("N", 0)
 
     # batch attributes (defaults set for training)
     store_read_data: bool = False
@@ -506,7 +506,7 @@ class RemoraDataset:
             "base_pred": self.base_pred,
             "mod_bases": self.mod_bases,
             "mod_long_names": self.mod_long_names,
-            "motif": self.motif,
+            "motifs": self.motifs,
             "store_read_data": self.store_read_data,
             "batch_size": self.batch_size,
         }
@@ -578,7 +578,7 @@ class RemoraDataset:
             "base_pred": self.base_pred,
             "mod_bases": self.mod_bases,
             "mod_long_names": self.mod_long_names,
-            "motif": self.motif,
+            "motifs": self.motifs,
             "store_read_data": self.store_read_data,
             "batch_size": self.batch_size,
         }
@@ -644,7 +644,7 @@ class RemoraDataset:
             "base_pred": self.base_pred,
             "mod_bases": self.mod_bases,
             "mod_long_names": self.mod_long_names,
-            "motif": self.motif,
+            "motifs": self.motifs,
             "store_read_data": self.store_read_data,
             "batch_size": self.batch_size,
         }
@@ -733,13 +733,13 @@ class RemoraDataset:
             base_pred=self.base_pred,
             mod_bases=self.mod_bases,
             mod_long_names=self.mod_long_names,
-            motif=self.motif[0],
-            motif_offset=self.motif[1],
+            motifs=[mot[0] for mot in self.motifs],
+            motif_offset=[mot[1] for mot in self.motifs],
         )
 
     @property
     def can_base(self):
-        return self.motif[0][self.motif[1]]
+        return self.motifs[0][0][self.motifs[0][1]]
 
     @property
     def is_trimmed(self):
@@ -748,6 +748,10 @@ class RemoraDataset:
     @property
     def is_multiclass(self):
         return self.base_pred or len(self.mod_bases) > 1
+
+    @property
+    def num_motifs(self):
+        return len(self.motifs)
 
     @classmethod
     def load_from_file(cls, filename, *args, **kwargs):
@@ -759,7 +763,20 @@ class RemoraDataset:
         base_pred = data["base_pred"].item()
         mod_bases = data["mod_bases"].item()
         mod_long_names = tuple(data["mod_long_names"].tolist())
-        motif = (data["motif"].item(), int(data["motif_offset"].item()))
+        if isinstance(data["motif_offset"].tolist(), int):
+            motifs = [
+                (mot, mot_off)
+                for mot, mot_off in zip(
+                    [data["motif"].tolist()], [data["motif_offset"].tolist()]
+                )
+            ]
+        else:
+            motifs = [
+                (mot, mot_off)
+                for mot, mot_off in zip(
+                    data["motifs"].tolist(), data["motif_offset"].tolist()
+                )
+            ]
         return cls(
             data["sig_tensor"],
             data["seq_array"],
@@ -772,7 +789,7 @@ class RemoraDataset:
             base_pred=base_pred,
             mod_bases=mod_bases,
             mod_long_names=mod_long_names,
-            motif=motif,
+            motifs=motifs,
             store_read_data=read_data is not None,
             *args,
             **kwargs,
@@ -846,7 +863,7 @@ def merge_datasets(input_datasets, balance=False):
     chunk_context = datasets[0][0].chunk_context
     max_seq_len = datasets[0][0].max_seq_len
     kmer_context_bases = datasets[0][0].kmer_context_bases
-    motif = datasets[0][0].motif
+    motifs = datasets[0][0].motifs
     for ds_path, num_chunks in input_datasets[1:]:
         datasets.append(load_dataset(ds_path, num_chunks))
         if datasets[-1][0].base_pred != base_pred:
@@ -866,10 +883,10 @@ def merge_datasets(input_datasets, balance=False):
                 "All datasets must have the same kmer_context_bases "
                 f"({datasets[-1][0].kmer_context_bases} != {kmer_context_bases})"
             )
-        if datasets[-1][0].motif != motif:
+        if datasets[-1][0].motifs != motifs:
             raise RemoraError(
                 "All datasets must have the same motif "
-                f"({datasets[-1][0].motif} != {motif})"
+                f"({datasets[-1][0].motifs} != {motifs})"
             )
 
     all_mod_bases = ""
@@ -892,7 +909,7 @@ def merge_datasets(input_datasets, balance=False):
         base_pred=base_pred,
         mod_bases=all_mod_bases,
         mod_long_names=all_mod_long_names,
-        motif=motif,
+        motifs=motifs,
     )
     for input_dataset, num_chunks in datasets:
         if base_pred:
@@ -953,7 +970,7 @@ def merge_datasets(input_datasets, balance=False):
             base_pred=base_pred,
             mod_bases=all_mod_bases,
             mod_long_names=all_mod_long_names,
-            motif=motif,
+            motifs=motifs,
         )
 
         choices = []

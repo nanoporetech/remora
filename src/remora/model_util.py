@@ -234,12 +234,23 @@ def export_model(ckpt, model, save_filename):
             meta = onnx_model.metadata_props.add()
             meta.key = f"{key}_{idx}"
             meta.value = str(ckpt[key][idx])
+
     meta = onnx_model.metadata_props.add()
-    meta.key = "motif"
-    meta.value = ckpt["motif"][0]
+    meta.key = "num_motifs"
+    meta.value = str(ckpt["num_motifs"])
+    for idx, (motif, motif_offset) in enumerate(ckpt["motifs"]):
+        m_key = f"motif_{idx}"
+        mo_key = f"motif_offset_{idx}"
+        meta = onnx_model.metadata_props.add()
+        meta.key = m_key
+        meta.value = str(motif)
+        meta = onnx_model.metadata_props.add()
+        meta.key = mo_key
+        meta.value = str(motif_offset)
+
     meta = onnx_model.metadata_props.add()
-    meta.key = "motif_offset"
-    meta.value = str(ckpt["motif"][1])
+    meta.key = "num_motifs"
+    meta.value = str(len(ckpt["motifs"]))
     onnx_model.doc_string = "Nanopore Remora model"
     try:
         onnx_model.model_version = ckpt["model_version"]
@@ -299,7 +310,6 @@ def load_onnx_model(model_filename, device=None, quiet=False):
             model_metadata["mod_long_names"].append(
                 model_metadata[f"mod_long_names_{mod_idx}"]
             )
-    model_metadata["motif_offset"] = int(model_metadata["motif_offset"])
     model_metadata["kmer_context_bases"] = (
         int(model_metadata["kmer_context_bases_0"]),
         int(model_metadata["kmer_context_bases_1"]),
@@ -310,13 +320,32 @@ def load_onnx_model(model_filename, device=None, quiet=False):
         int(model_metadata["chunk_context_1"]),
     )
     model_metadata["chunk_len"] = sum(model_metadata["chunk_context"])
-    model_metadata["motif"] = (
-        model_metadata["motif"],
-        int(model_metadata["motif_offset"]),
-    )
-    model_metadata["can_base"] = model_metadata["motif"][0][
-        model_metadata["motif"][1]
-    ]
+
+    if "num_motifs" not in model_metadata:
+        model_metadata["motif"] = [
+            (model_metadata["motif"], int(model_metadata["motif_offset"]))
+        ]
+        model_metadata["motif_offset"] = int(model_metadata["motif_offset"])
+        model_metadata["can_base"] = model_metadata["motif"][0][0][
+            model_metadata["motif"][0][1]
+        ]
+    else:
+        num_motifs = int(model_metadata["num_motifs"])
+
+        motifs = []
+        motif_offsets = []
+        for mot in range(num_motifs):
+            motifs.append(model_metadata[f"motif_{mot}"])
+            motif_offsets.append(model_metadata[f"motif_offset_{mot}"])
+
+        model_metadata["motif"] = [
+            (mot, int(mot_off)) for mot, mot_off in zip(motifs, motif_offsets)
+        ]
+
+        model_metadata["can_base"] = [
+            mot[0][mot[1]] for mot in model_metadata["motif"]
+        ]
+
     mod_str = "; ".join(
         f"{mod_b}={mln}"
         for mod_b, mln in zip(

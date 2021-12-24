@@ -28,7 +28,7 @@ BEST_MODEL_FILENAME = "model_best.checkpoint"
 BEST_ONNX_MODEL_FILENAME = "model_best.onnx"
 
 # should be an int to store in onnx
-MODEL_VERSION = 2
+MODEL_VERSION = 3
 
 DEFAULT_BASECALL_MODEL_VERSION = "0.0.0"
 DEFAULT_MOD_BASE = ["5mc"]

@@ -135,7 +135,7 @@ def train_model(
         f"          mod_bases : {dataset.mod_bases}\n"
         f" kmer_context_bases : {dataset.kmer_context_bases}\n"
         f"      chunk_context : {dataset.chunk_context}\n"
-        f"              motif : {dataset.motif}\n"
+        f"              motifs : {dataset.motifs}\n"
     )
 
     out_log = out_path / "validation.log"
@@ -261,7 +261,8 @@ def train_model(
         "model_params": model_params,
         "chunk_context": dataset.chunk_context,
         "fixed_seq_len_chunks": model._variable_width_possible,
-        "motif": dataset.motif,
+        "motifs": dataset.motifs,
+        "num_motifs": dataset.num_motifs,
         "mod_bases": dataset.mod_bases,
         "mod_long_names": dataset.mod_long_names,
         "base_pred": dataset.base_pred,
