@@ -404,6 +404,11 @@ def register_model_train(parser):
         help="Path to a file with a list of paths for the external validation "
         "Remora datasets.",
     )
+    data_grp.add_argument(
+        "--balance",
+        action="store_true",
+        help="Balance classes exactly prior to training",
+    )
 
     out_grp = subparser.add_argument_group("Output Arguments")
     out_grp.add_argument(
@@ -536,6 +541,7 @@ def run_model_train(args):
         args.conf_thr,
         args.ext_val,
         args.lr_sched_kwargs,
+        args.balance,
     )
 
 
