@@ -672,6 +672,49 @@ class RemoraDataset:
             )
         return label_datasets
 
+    def balance_classes(self):
+
+        min_class_len = min(self.get_label_counts().values())
+        if self.base_pred:
+            outs = 4
+        else:
+            outs = self.num_labels
+
+        choices = []
+        for i in range(outs):
+            choices.append(
+                np.random.choice(
+                    np.where(self.labels == i)[0],
+                    min_class_len,
+                    replace=False,
+                )
+            )
+        choices = np.concatenate(choices)
+        b_rd = (
+            None
+            if self.read_data is None
+            else [self.read_data[idx] for idx in choices]
+        )
+
+        balanced_dataset = RemoraDataset(
+            sig_tensor=self.sig_tensor[choices],
+            seq_array=self.seq_array[choices],
+            seq_mappings=self.seq_mappings[choices],
+            seq_lens=self.seq_lens[choices],
+            labels=self.labels[choices],
+            read_data=b_rd,
+            nchunks=outs * min_class_len,
+            chunk_context=self.chunk_context,
+            max_seq_len=self.max_seq_len,
+            kmer_context_bases=self.kmer_context_bases,
+            base_pred=self.base_pred,
+            mod_bases=self.mod_bases,
+            mod_long_names=self.mod_long_names,
+            motif=self.motif,
+        )
+
+        return balanced_dataset
+
     def filter(self, indices):
 
         if len(indices) > self.sig_tensor.shape[0]:
@@ -752,6 +795,10 @@ class RemoraDataset:
     @property
     def num_motifs(self):
         return len(self.motifs)
+
+    @property
+    def num_labels(self):
+        return len(self.mod_bases) + 1
 
     @classmethod
     def load_from_file(cls, filename, *args, **kwargs):
@@ -957,46 +1004,9 @@ def merge_datasets(input_datasets, balance=False):
 
     output_dataset.clip_chunks()
     if balance:
-        min_class_len = min(output_dataset.get_label_counts().values())
-        if base_pred:
-            outs = 4
-        else:
-            outs = len(all_mod_bases) + 1
-        balanced_dataset = RemoraDataset.allocate_empty_chunks(
-            num_chunks=outs * min_class_len,
-            chunk_context=chunk_context,
-            max_seq_len=max_seq_len,
-            kmer_context_bases=kmer_context_bases,
-            base_pred=base_pred,
-            mod_bases=all_mod_bases,
-            mod_long_names=all_mod_long_names,
-            motifs=motifs,
-        )
-
-        choices = []
-        for i in range(outs):
-            choices.append(
-                np.random.choice(
-                    np.where(output_dataset.labels == i)[0],
-                    min_class_len,
-                    replace=False,
-                )
-            )
-
-        choices = np.concatenate(choices)
-        np.random.shuffle(choices)
-        b_rd = None if b_rd is None else [b_rd[idx] for idx in choices]
-        balanced_dataset.add_batch(
-            output_dataset.sig_tensor[choices],
-            output_dataset.seq_array[choices],
-            output_dataset.seq_mappings[choices],
-            output_dataset.seq_lens[choices],
-            output_dataset.labels[choices],
-            b_rd,
-        )
-
+        balanced_dataset = output_dataset.balance_classes()
         LOGGER.info(
-            f"Balanced out to {outs*min_class_len} chunks. New label distribution: "
+            f"Balanced out to {balanced_dataset.sig_tensor.shape[0]} chunks. New label distribution: "
             f"{balanced_dataset.get_label_counts()}"
         )
         return balanced_dataset

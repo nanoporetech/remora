@@ -101,6 +101,7 @@ def train_model(
     conf_thr,
     ext_val,
     lr_sched_kwargs,
+    balance,
 ):
 
     seed = (
@@ -126,6 +127,8 @@ def train_model(
         remora_dataset_path,
         batch_size=batch_size,
     )
+    if balance:
+        dataset = dataset.balance_classes()
     dataset.trim_kmer_context_bases(kmer_context_bases)
     dataset.trim_chunk_context(chunk_context)
     # load attributes from file
