@@ -149,7 +149,7 @@ For example a model can be trained with the following command.
   remora \
     model train \
     remora_train_chunks.npz \
-    --model remora/models/Conv_w_ref.py \
+    --model remora/models/ConvLSTM_w_ref.py \
     --device 0 \
     --output-path remora_train_results
 
