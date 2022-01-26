@@ -1,7 +1,7 @@
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 
 class RemoraError(Exception):
-    """Custom megalodon error for more graceful error handling"""
+    """Custom remora error for more graceful error handling"""
 
     pass
