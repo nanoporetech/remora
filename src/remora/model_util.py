@@ -1,6 +1,6 @@
 import copy
 import datetime
-import imp
+import importlib
 import os
 from os.path import isfile
 import pkg_resources
@@ -166,7 +166,11 @@ class ValidationLogger:
 
 def _load_python_model(model_file, **model_kwargs):
 
-    netmodule = imp.load_source("netmodule", model_file)
+    loader = importlib.machinery.SourceFileLoader("netmodule", model_file)
+    netmodule = importlib.util.module_from_spec(
+        importlib.util.spec_from_loader(loader.name, loader)
+    )
+    loader.exec_module(netmodule)
     network = netmodule.network(**model_kwargs)
     return network
 
