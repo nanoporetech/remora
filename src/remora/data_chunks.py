@@ -710,7 +710,7 @@ class RemoraDataset:
             base_pred=self.base_pred,
             mod_bases=self.mod_bases,
             mod_long_names=self.mod_long_names,
-            motif=self.motif,
+            motifs=self.motifs,
         )
 
         return balanced_dataset
@@ -729,7 +729,7 @@ class RemoraDataset:
             "base_pred": self.base_pred,
             "mod_bases": self.mod_bases,
             "mod_long_names": self.mod_long_names,
-            "motif": self.motif,
+            "motifs": self.motifs,
             "store_read_data": self.store_read_data,
             "batch_size": self.batch_size,
         }
@@ -931,9 +931,14 @@ def merge_datasets(input_datasets, balance=False):
                 f"({datasets[-1][0].kmer_context_bases} != {kmer_context_bases})"
             )
         if datasets[-1][0].motifs != motifs:
-            raise RemoraError(
-                "All datasets must have the same motif "
-                f"({datasets[-1][0].motifs} != {motifs})"
+            LOGGER.info(
+                f"WARNING: Datasets have different motifs. Merging motifs {motifs} with motifs {datasets[-1][0].motifs}"
+            )
+
+            motifs = list(
+                set(
+                    motif for dataset in datasets for motif in dataset[0].motifs
+                )
             )
 
     all_mod_bases = ""
