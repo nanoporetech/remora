@@ -18,6 +18,7 @@ from remora import log, RemoraError, encoded_kmers, util, constants
 
 LOGGER = log.get_logger()
 MODEL_DATA_DIR_NAME = "trained_models"
+ONNX_NUM_THREADS = 1
 
 
 class ValidationLogger:
@@ -289,8 +290,15 @@ def load_onnx_model(model_filename, device=None, quiet=False):
         provider_options = [{"device_id": str(device)}]
     # set severity to error so CPU fallback messages are masked
     ort.set_default_logger_severity(3)
+    LOGGER.debug(f"Using {ONNX_NUM_THREADS} thread for ONNX")
+    so = ort.SessionOptions()
+    so.inter_op_num_threads = ONNX_NUM_THREADS
+    so.intra_op_num_threads = ONNX_NUM_THREADS
     model_sess = ort.InferenceSession(
-        model_filename, providers=providers, provider_options=provider_options
+        model_filename,
+        providers=providers,
+        provider_options=provider_options,
+        sess_options=so,
     )
     LOGGER.debug(f"Remora model ONNX providers: {model_sess.get_providers()}")
     if device is not None and model_sess.get_providers()[0].startswith("CPU"):
@@ -322,12 +330,12 @@ def load_onnx_model(model_filename, device=None, quiet=False):
     model_metadata["chunk_len"] = sum(model_metadata["chunk_context"])
 
     if "num_motifs" not in model_metadata:
-        model_metadata["motif"] = [
+        model_metadata["motifs"] = [
             (model_metadata["motif"], int(model_metadata["motif_offset"]))
         ]
         model_metadata["motif_offset"] = int(model_metadata["motif_offset"])
-        model_metadata["can_base"] = model_metadata["motif"][0][0][
-            model_metadata["motif"][0][1]
+        model_metadata["can_base"] = model_metadata["motifs"][0][0][
+            model_metadata["motifs"][0][1]
         ]
     else:
         num_motifs = int(model_metadata["num_motifs"])
@@ -338,13 +346,19 @@ def load_onnx_model(model_filename, device=None, quiet=False):
             motifs.append(model_metadata[f"motif_{mot}"])
             motif_offsets.append(model_metadata[f"motif_offset_{mot}"])
 
-        model_metadata["motif"] = [
+        model_metadata["motifs"] = [
             (mot, int(mot_off)) for mot, mot_off in zip(motifs, motif_offsets)
         ]
 
         model_metadata["can_base"] = [
-            mot[0][mot[1]] for mot in model_metadata["motif"]
+            mot[0][mot[1]] for mot in model_metadata["motifs"]
         ]
+    # allowed settings for this attribute are a single motif or all-contexts
+    # note that inference core methods use motifs attribute
+    if len(model_metadata["motifs"]) == 1:
+        model_metadata["motif"] = model_metadata["motifs"][0]
+    else:
+        model_metadata["motif"] = (model_metadata["can_base"], 0)
 
     mod_str = "; ".join(
         f"{mod_b}={mln}"

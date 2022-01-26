@@ -76,13 +76,13 @@ def call_read_mods_core(
           3. List of positions within the read
     """
     read_outputs, all_read_data, read_labels = [], [], []
-    motif = [Motif(*mot) for mot in model_metadata["motif"]]
+    motifs = [Motif(*mot) for mot in model_metadata["motifs"]]
     bb, ab = model_metadata["kmer_context_bases"]
     motif_hits = []
     if focus_offset is not None:
         motif_hits.append([focus_offset])
     else:
-        for mot in motif:
+        for mot in motifs:
             motif_hits.append(
                 np.fromiter(read.iter_motif_hits(mot), int) + mot.focus_pos
             )
@@ -109,7 +109,7 @@ def call_read_mods_core(
         base_pred=model_metadata["base_pred"],
         mod_bases=model_metadata["mod_bases"],
         mod_long_names=model_metadata["mod_long_names"],
-        motifs=[mot.to_tuple() for mot in motif],
+        motifs=[mot.to_tuple() for mot in motifs],
         store_read_data=True,
         batch_size=batch_size,
         shuffle_on_iter=False,
@@ -228,7 +228,7 @@ def infer(
         label_conv = get_can_converter(alphabet, collapse_alphabet)
     else:
         try:
-            motifs = [Motif(*mot) for mot in model_metadata["motif"]]
+            motifs = [Motif(*mot) for mot in model_metadata["motifs"]]
             label_conv = validate_mod_bases(
                 model_metadata["mod_bases"], motifs, alphabet, collapse_alphabet
             )
