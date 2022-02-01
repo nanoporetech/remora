@@ -203,7 +203,16 @@ def train_model(
         )
 
     trn_ds, val_ds = dataset.split_data(val_prop, stratified=True)
+    trn_ds.shuffle_dataset()
     val_trn_ds = trn_ds.head(val_prop, shuffle_on_iter=False, drop_last=False)
+    LOGGER.info(f"Train label distribution: {trn_ds.get_label_counts()}")
+    LOGGER.info(
+        f"Held-out validation label distribution: {val_ds.get_label_counts()}"
+    )
+    LOGGER.info(
+        "Training set validation label distribution: "
+        f"{val_trn_ds.get_label_counts()}"
+    )
 
     LOGGER.info("Running initial validation")
     # assess accuracy before first iteration
