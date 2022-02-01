@@ -338,9 +338,6 @@ def load_onnx_model(model_filename, device=None, quiet=False):
             (model_metadata["motif"], int(model_metadata["motif_offset"]))
         ]
         model_metadata["motif_offset"] = int(model_metadata["motif_offset"])
-        model_metadata["can_base"] = model_metadata["motifs"][0][0][
-            model_metadata["motifs"][0][1]
-        ]
     else:
         num_motifs = int(model_metadata["num_motifs"])
 
@@ -354,9 +351,10 @@ def load_onnx_model(model_filename, device=None, quiet=False):
             (mot, int(mot_off)) for mot, mot_off in zip(motifs, motif_offsets)
         ]
 
-        model_metadata["can_base"] = [
-            mot[0][mot[1]] for mot in model_metadata["motifs"]
-        ]
+    model_metadata["can_base"] = model_metadata["motifs"][0][0][
+        model_metadata["motifs"][0][1]
+    ]
+
     # allowed settings for this attribute are a single motif or all-contexts
     # note that inference core methods use motifs attribute
     if len(model_metadata["motifs"]) == 1:
@@ -501,7 +499,6 @@ def load_model(
         raise RemoraError(
             f"No pre-trained Remora model for this configuration {path}."
         )
-
     return load_onnx_model(path, device, quiet=quiet)
 
 
