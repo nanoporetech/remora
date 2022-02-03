@@ -112,6 +112,11 @@ def register_dataset_prepare(parser):
         "provide either this or specify --base-pred.",
     )
     subparser.add_argument(
+        "--mod-base-control",
+        action="store_true",
+        help="Is this a modified bases control sample?",
+    )
+    subparser.add_argument(
         "--base-pred",
         action="store_true",
         help="Train to predict bases (SNPs) and not mods.",
@@ -156,15 +161,22 @@ def run_dataset_prepare(args):
         alphabet_info.collapse_alphabet,
     )
     motif = [Motif(*mo) for mo in mot]
-    if not args.base_pred and args.mod_bases is None:
-        raise RemoraError(
-            "Must specify either modified base or base prediction model "
-            "type option."
+    num_types_specified = sum(
+        (
+            int(args.base_pred),
+            int(args.mod_bases is not None),
+            int(args.mod_base_control),
         )
-    elif args.base_pred and args.mod_bases is not None:
+    )
+    if num_types_specified == 0:
         raise RemoraError(
-            "Must specify either modified base or base prediction model "
-            "type option not both."
+            "Must specify one of modified base(s), modified base control, or "
+            "base prediction model type option."
+        )
+    elif num_types_specified > 1:
+        raise RemoraError(
+            "Must specify only one of modified base(s), modified base "
+            "control, and base prediction model type option."
         )
     if args.base_pred:
         if alphabet != "ACGT":
@@ -177,7 +189,11 @@ def run_dataset_prepare(args):
         # TODO use mod_bases from alphabet_info.mod_bases and assert that all
         # derive from a single canonical base
         label_conv = validate_mod_bases(
-            alphabet_info.mod_bases, motif, alphabet, collapse_alphabet
+            alphabet_info.mod_bases,
+            motif,
+            alphabet,
+            collapse_alphabet,
+            args.mod_base_control,
         )
     extract_chunk_dataset(
         input_msf,
@@ -315,7 +331,8 @@ def register_dataset_stratified_split(parser):
     subparser.add_argument(
         "--val-prop",
         type=float,
-        help="The proportion of data to be split into validation set, where val-prop in [0,0.5)",
+        help="The proportion of data to be split into validation set, where "
+        "val-prop in [0,0.5)",
     )
     subparser.set_defaults(func=run_dataset_stratified_split)
 
@@ -331,6 +348,8 @@ def run_dataset_stratified_split(args):
 
     trn_set, val_set = dataset.split_data(args.val_prop, stratified=True)
 
+    LOGGER.info(f"Train set label distribution: {trn_set.get_label_counts()}")
+    LOGGER.info(f"Val set label distribution: {val_set.get_label_counts()}")
     trn_set.save_dataset(f"{args.output_basename}.split_train.npz")
     val_set.save_dataset(f"{args.output_basename}.split_val.npz")
 

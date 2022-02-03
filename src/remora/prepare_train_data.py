@@ -79,8 +79,8 @@ def extract_chunk_dataset(
     dataset = RemoraDataset.allocate_empty_chunks(
         num_chunks=max_chunks_per_read * num_reads,
         chunk_context=chunk_context,
-        min_samps_per_base=min_samps_per_base,
         kmer_context_bases=kmer_context_bases,
+        min_samps_per_base=min_samps_per_base,
         base_pred=base_pred,
         mod_bases=mod_bases,
         mod_long_names=mod_long_names,
