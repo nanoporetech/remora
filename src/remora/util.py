@@ -165,26 +165,33 @@ def get_mod_bases(alphabet, collapse_alphabet):
     ]
 
 
-def validate_mod_bases(mod_bases, motifs, alphabet, collapse_alphabet):
+def validate_mod_bases(
+    mod_bases, motifs, alphabet, collapse_alphabet, control=False
+):
     """Validate that inputs are mutually consistent. Return label conversion
     from alphabet integer encodings to modified base categories.
     """
     if len(set(mod_bases)) < len(mod_bases):
         raise RemoraError("Single letter modified base codes must be unique.")
+    can_base = motifs[0].focus_base
+    if any(mot.focus_base != can_base for mot in motifs):
+        raise RemoraError(
+            "All motifs must be alternatives to the same canonical base"
+        )
+    can_base_idx = alphabet.find(can_base)
+    label_conv = np.full(len(alphabet), -1, dtype=np.byte)
+    label_conv[can_base_idx] = 0
+    if control:
+        return label_conv
     for mod_base in mod_bases:
         if mod_base not in alphabet:
             raise RemoraError("Modified base provided not found in alphabet")
         mod_can_equiv = collapse_alphabet[alphabet.find(mod_base)]
-        # note this check also requires that all modified bases have the same
-        # canonical base equivalent.
-        if any([mot.focus_base != mod_can_equiv for mot in motifs]):
+        if mod_can_equiv != can_base:
             raise RemoraError(
-                f"Canonical base within motif does not "
-                "match canonical equivalent for modified base "
-                f"({mod_can_equiv})"
+                f"Canonical base within motif ({can_base}) does not match "
+                f"canonical equivalent for modified base ({mod_can_equiv})"
             )
-    label_conv = np.full(len(alphabet), -1, dtype=np.byte)
-    label_conv[alphabet.find(mod_can_equiv)] = 0
     for mod_i, mod_base in enumerate(mod_bases):
         label_conv[alphabet.find(mod_base)] = mod_i + 1
     return label_conv

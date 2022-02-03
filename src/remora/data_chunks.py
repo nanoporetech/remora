@@ -928,11 +928,13 @@ def merge_datasets(input_datasets, balance=False):
         if datasets[-1][0].kmer_context_bases != kmer_context_bases:
             raise RemoraError(
                 "All datasets must have the same kmer_context_bases "
-                f"({datasets[-1][0].kmer_context_bases} != {kmer_context_bases})"
+                f"({datasets[-1][0].kmer_context_bases} != "
+                f"{kmer_context_bases})"
             )
         if datasets[-1][0].motifs != motifs:
             LOGGER.info(
-                f"WARNING: Datasets have different motifs. Merging motifs {motifs} with motifs {datasets[-1][0].motifs}"
+                "WARNING: Datasets have different motifs. Merging motifs "
+                f"{motifs} with motifs {datasets[-1][0].motifs}"
             )
 
             motifs = list(
@@ -987,7 +989,7 @@ def merge_datasets(input_datasets, balance=False):
         ) in input_dataset:
             b_labels = label_conv[b_labels]
             if added_chunks + b_labels.size >= num_chunks:
-                batch_size = num_chunks - (added_chunks + b_labels.size)
+                batch_size = num_chunks - added_chunks
                 b_rd = None if b_rd is None else b_rd[:batch_size]
                 output_dataset.add_batch(
                     b_sig[:batch_size],
@@ -997,13 +999,14 @@ def merge_datasets(input_datasets, balance=False):
                     b_labels[:batch_size],
                     b_rd,
                 )
+                added_chunks += batch_size
                 break
             added_chunks += b_labels.size
             output_dataset.add_batch(
                 b_sig, b_seq, b_ss_map, b_seq_lens, b_labels, b_rd
             )
         LOGGER.info(
-            f"Copied {num_chunks} chunks. New label distribution: "
+            f"Copied {added_chunks} chunks. New label distribution: "
             f"{output_dataset.get_label_counts()}"
         )
 
@@ -1011,8 +1014,8 @@ def merge_datasets(input_datasets, balance=False):
     if balance:
         balanced_dataset = output_dataset.balance_classes()
         LOGGER.info(
-            f"Balanced out to {balanced_dataset.sig_tensor.shape[0]} chunks. New label distribution: "
-            f"{balanced_dataset.get_label_counts()}"
+            f"Balanced out to {balanced_dataset.sig_tensor.shape[0]} chunks. "
+            f"New label distribution: {balanced_dataset.get_label_counts()}"
         )
         return balanced_dataset
 
