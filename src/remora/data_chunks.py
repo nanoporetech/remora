@@ -2,12 +2,19 @@ from collections import Counter
 from dataclasses import dataclass
 
 import numpy as np
+from tqdm import tqdm
 
 from remora import constants, log, RemoraError, util
 
 LOGGER = log.get_logger()
 
 DEFAULT_BATCH_SIZE = 1024
+MISMATCH_ARRS = {
+    0: np.array([1, 2, 3]),
+    1: np.array([0, 2, 3]),
+    2: np.array([0, 1, 3]),
+    3: np.array([0, 1, 2]),
+}
 
 
 @dataclass
@@ -441,7 +448,7 @@ class RemoraDataset:
         self.seq_mappings = self.seq_mappings[: self.nchunks]
         self.seq_lens = self.seq_lens[: self.nchunks]
         self.labels = self.labels[: self.nchunks]
-        # reset nbatches after trimming
+        # reset nbatches after clipping dataset
         self.set_nbatches()
         if self.store_read_data and len(self.read_data) != self.nchunks:
             raise RemoraError("More chunks indicated than read_data provided.")
@@ -485,9 +492,9 @@ class RemoraDataset:
             )
         raise NotImplementedError("Cannot currently trim chunk context.")
 
-    def shuffle_dataset(self):
-        if not self.is_trimmed:
-            raise RemoraError("Cannot shuffle an untrimmed dataset.")
+    def shuffle(self):
+        if not self.is_clipped:
+            raise RemoraError("Cannot shuffle an unclipped dataset.")
         shuf_idx = np.random.permutation(self.nchunks)
         self.sig_tensor = self.sig_tensor[shuf_idx]
         self.seq_array = self.seq_array[shuf_idx]
@@ -499,19 +506,8 @@ class RemoraDataset:
         self.shuffled = True
 
     def head(self, val_prop=0.01, shuffle_on_iter=False, drop_last=False):
-        common_kwargs = {
-            "chunk_context": self.chunk_context,
-            "max_seq_len": self.max_seq_len,
-            "kmer_context_bases": self.kmer_context_bases,
-            "base_pred": self.base_pred,
-            "mod_bases": self.mod_bases,
-            "mod_long_names": self.mod_long_names,
-            "motifs": self.motifs,
-            "store_read_data": self.store_read_data,
-            "batch_size": self.batch_size,
-        }
         val_trn_slice = int(val_prop * self.nchunks)
-        val_trn_ds = RemoraDataset(
+        return RemoraDataset(
             self.sig_tensor[:val_trn_slice].copy(),
             self.seq_array[:val_trn_slice].copy(),
             self.seq_mappings[:val_trn_slice].copy(),
@@ -522,18 +518,45 @@ class RemoraDataset:
             else None,
             shuffle_on_iter=shuffle_on_iter,
             drop_last=drop_last,
-            **common_kwargs,
+            chunk_context=self.chunk_context,
+            max_seq_len=self.max_seq_len,
+            kmer_context_bases=self.kmer_context_bases,
+            base_pred=self.base_pred,
+            mod_bases=self.mod_bases,
+            mod_long_names=self.mod_long_names,
+            motifs=self.motifs,
+            store_read_data=self.store_read_data,
+            batch_size=self.batch_size,
         )
-        return val_trn_ds
+
+    def copy(self):
+        return RemoraDataset(
+            self.sig_tensor.copy(),
+            self.seq_array.copy(),
+            self.seq_mappings.copy(),
+            self.seq_lens.copy(),
+            self.labels.copy(),
+            self.read_data,
+            shuffle_on_iter=self.shuffle_on_iter,
+            drop_last=self.drop_last,
+            chunk_context=self.chunk_context,
+            max_seq_len=self.max_seq_len,
+            kmer_context_bases=self.kmer_context_bases,
+            base_pred=self.base_pred,
+            mod_bases=self.mod_bases,
+            mod_long_names=self.mod_long_names,
+            motifs=self.motifs,
+            store_read_data=self.store_read_data,
+            batch_size=self.batch_size,
+        )
 
     def __iter__(self):
         if self.shuffle_on_iter:
-            self.shuffle_dataset()
+            self.shuffle()
         self._batch_i = 0
         return self
 
     def __next__(self):
-
         if self._batch_i >= self.nbatches:
             raise StopIteration
         b_st = self._batch_i * self.batch_size
@@ -560,8 +583,8 @@ class RemoraDataset:
         return Counter(self.labels[: self.nchunks])
 
     def split_data(self, val_prop, stratified=True):
-        if not self.is_trimmed:
-            raise RemoraError("Cannot split an untrimmed dataset.")
+        if not self.is_clipped:
+            raise RemoraError("Cannot split an unclipped dataset.")
         elif self.sig_tensor.shape[0] < int(1 / val_prop) * 2:
             raise RemoraError(
                 "Too few chunks to extract validation proportion "
@@ -583,7 +606,7 @@ class RemoraDataset:
             "batch_size": self.batch_size,
         }
         if not self.shuffled:
-            self.shuffle_dataset()
+            self.shuffle()
         val_idx = int(self.sig_tensor.shape[0] * val_prop)
         if stratified:
             class_counts = self.get_label_counts()
@@ -637,17 +660,6 @@ class RemoraDataset:
     def split_by_label(self):
         labels = "ACGT" if self.base_pred else self.mod_long_names
         label_datasets = []
-        common_kwargs = {
-            "chunk_context": self.chunk_context,
-            "max_seq_len": self.max_seq_len,
-            "kmer_context_bases": self.kmer_context_bases,
-            "base_pred": self.base_pred,
-            "mod_bases": self.mod_bases,
-            "mod_long_names": self.mod_long_names,
-            "motifs": self.motifs,
-            "store_read_data": self.store_read_data,
-            "batch_size": self.batch_size,
-        }
         for int_label, label in enumerate(labels):
             if not self.base_pred:
                 int_label += 1
@@ -666,14 +678,21 @@ class RemoraDataset:
                         else None,
                         shuffle_on_iter=False,
                         drop_last=False,
-                        **common_kwargs,
+                        chunk_context=self.chunk_context,
+                        max_seq_len=self.max_seq_len,
+                        kmer_context_bases=self.kmer_context_bases,
+                        base_pred=self.base_pred,
+                        mod_bases=self.mod_bases,
+                        mod_long_names=self.mod_long_names,
+                        motifs=self.motifs,
+                        store_read_data=self.store_read_data,
+                        batch_size=self.batch_size,
                     ),
                 )
             )
         return label_datasets
 
     def balance_classes(self):
-
         min_class_len = min(self.get_label_counts().values())
         if self.base_pred:
             outs = 4
@@ -696,7 +715,7 @@ class RemoraDataset:
             else [self.read_data[idx] for idx in choices]
         )
 
-        balanced_dataset = RemoraDataset(
+        return RemoraDataset(
             sig_tensor=self.sig_tensor[choices],
             seq_array=self.seq_array[choices],
             seq_mappings=self.seq_mappings[choices],
@@ -713,27 +732,11 @@ class RemoraDataset:
             motifs=self.motifs,
         )
 
-        return balanced_dataset
-
     def filter(self, indices):
-
         if len(indices) > self.sig_tensor.shape[0]:
             raise RemoraError(
                 "Filter indices cannot be longer than dataset size"
             )
-
-        common_kwargs = {
-            "chunk_context": self.chunk_context,
-            "max_seq_len": self.max_seq_len,
-            "kmer_context_bases": self.kmer_context_bases,
-            "base_pred": self.base_pred,
-            "mod_bases": self.mod_bases,
-            "mod_long_names": self.mod_long_names,
-            "motifs": self.motifs,
-            "store_read_data": self.store_read_data,
-            "batch_size": self.batch_size,
-        }
-
         return RemoraDataset(
             self.sig_tensor[indices],
             self.seq_array[indices],
@@ -745,7 +748,15 @@ class RemoraDataset:
             else None,
             shuffle_on_iter=False,
             drop_last=False,
-            **common_kwargs,
+            chunk_context=self.chunk_context,
+            max_seq_len=self.max_seq_len,
+            kmer_context_bases=self.kmer_context_bases,
+            base_pred=self.base_pred,
+            mod_bases=self.mod_bases,
+            mod_long_names=self.mod_long_names,
+            motifs=self.motifs,
+            store_read_data=self.store_read_data,
+            batch_size=self.batch_size,
         )
 
     def add_fake_base(self, new_mod_long_names, new_mod_bases):
@@ -761,7 +772,7 @@ class RemoraDataset:
         self.mod_long_names = new_mod_long_names
         self.mod_bases = new_mod_bases
 
-    def save_dataset(self, filename):
+    def save(self, filename):
         self.clip_chunks()
         np.savez(
             filename,
@@ -780,12 +791,52 @@ class RemoraDataset:
             motif_offset=[mot[1] for mot in self.motifs],
         )
 
+    def perturb_seq_mismatch(self, mm_rate):
+        errs_added = 0
+        for c_idx, c_num_mm in tqdm(
+            enumerate(np.random.binomial(self.seq_lens, mm_rate)),
+            smoothing=0,
+            total=self.nchunks,
+            desc="Mismatches",
+            leave=False,
+        ):
+            if c_num_mm == 0:
+                continue
+            for seq_pos in np.random.choice(
+                self.seq_lens[c_idx], c_num_mm, replace=False
+            ):
+                # convert from position in chunk sequence to position in
+                # sequence array (including k-mer context bases).
+                seq_arr_pos = seq_pos + self.kmer_context_bases[0]
+                if self.seq_array[c_idx, seq_arr_pos] == -1:
+                    continue
+                self.seq_array[c_idx, seq_arr_pos] = np.random.choice(
+                    MISMATCH_ARRS[self.seq_array[c_idx, seq_arr_pos]]
+                )
+                errs_added += 1
+        LOGGER.info(f"Introduced {errs_added} mismatch errors")
+
+    def perturb_seq_to_sig_map(self, sig_shift):
+        for c_idx, c_seq_len in tqdm(
+            enumerate(self.seq_lens),
+            smoothing=0,
+            total=self.nchunks,
+            desc="Signal shifts",
+            leave=False,
+        ):
+            # shift seq to sig mapping in the middle of chunk
+            self.seq_mappings[c_idx, 1:c_seq_len] = np.clip(
+                self.seq_mappings[c_idx, 1:c_seq_len] + sig_shift,
+                self.seq_mappings[c_idx, 0],
+                self.seq_mappings[c_idx, c_seq_len],
+            )
+
     @property
     def can_base(self):
         return self.motifs[0][0][self.motifs[0][1]]
 
     @property
-    def is_trimmed(self):
+    def is_clipped(self):
         return self.nchunks == self.sig_tensor.shape[0]
 
     @property
@@ -899,7 +950,7 @@ def merge_datasets(input_datasets, balance=False):
             drop_last=False,
         )
         if num_chunks < dataset.nchunks:
-            dataset.shuffle_dataset()
+            dataset.shuffle()
         else:
             num_chunks = dataset.nchunks
         return dataset, num_chunks

@@ -5,12 +5,15 @@ import os
 from os.path import isfile
 import pkg_resources
 import sys
+from collections import namedtuple
 
+from tqdm import tqdm
 import numpy as np
 import pandas as pd
 import onnx
 import onnxruntime as ort
 import torch
+from torch import nn
 from sklearn.metrics import precision_recall_curve
 from sklearn.metrics import confusion_matrix, classification_report
 
@@ -20,6 +23,140 @@ LOGGER = log.get_logger()
 MODEL_DATA_DIR_NAME = "trained_models"
 ONNX_NUM_THREADS = 1
 
+VAL_METRICS = namedtuple(
+    "VAL_METRICS",
+    (
+        "loss",
+        "acc",
+        "min_f1",
+        "f1",
+        "prec",
+        "recall",
+        "num_calls",
+        "filt_frac",
+        "confusion",
+    ),
+)
+
+
+def compute_metrics(
+    all_outputs,
+    all_labels,
+    all_loss,
+    conf_thr,
+):
+    mean_loss = np.mean(all_loss)
+    num_calls = all_labels.size
+    pred_labels = np.argmax(all_outputs, axis=1)
+    acc = (pred_labels == all_labels).sum() / num_calls
+    cl_rep = classification_report(
+        all_labels,
+        pred_labels,
+        digits=3,
+        output_dict=True,
+        zero_division=0,
+    )
+    min_f1 = min(cl_rep[str(k)]["f1-score"] for k in np.unique(all_labels))
+
+    prec = recall = f1 = np.nan
+    uniq_labs = np.unique(all_labels)
+    if uniq_labs.size == 2:
+        pos_idx = uniq_labs[1]
+        with np.errstate(invalid="ignore"):
+            precision, recall, thresholds = precision_recall_curve(
+                all_labels, all_outputs[:, pos_idx], pos_label=pos_idx
+            )
+            f1_scores = 2 * recall * precision / (recall + precision)
+        f1_idx = np.argmax(f1_scores)
+        prec = precision[f1_idx]
+        recall = recall[f1_idx]
+        f1 = f1_scores[f1_idx]
+
+    # metrics involving confidence thresholding
+    all_probs = util.softmax_axis1(all_outputs)
+    conf_chunks = np.max(all_probs > conf_thr, axis=1)
+    conf_mat = confusion_matrix(
+        all_labels[conf_chunks], np.argmax(all_probs[conf_chunks], axis=1)
+    )
+    filt_frac = np.logical_not(conf_chunks).sum() / num_calls
+
+    return VAL_METRICS(
+        loss=mean_loss,
+        acc=acc,
+        min_f1=min_f1,
+        f1=f1,
+        prec=prec,
+        recall=recall,
+        num_calls=num_calls,
+        filt_frac=filt_frac,
+        confusion=conf_mat,
+    )
+
+
+def get_label_coverter(from_labels, to_labels, base_pred):
+    if base_pred:
+        return np.arange(4)
+    if not set(from_labels).issubset(to_labels):
+        raise RemoraError(
+            f"Cannot convert from superset of labels ({from_labels}) "
+            f"to a subset ({to_labels})."
+        )
+    return np.array([0] + [to_labels.find(mb) + 1 for mb in from_labels])
+
+
+def validate_model(
+    model,
+    model_mod_bases,
+    criterion,
+    dataset,
+    conf_thr=constants.DEFAULT_CONF_THR,
+    display_progress_bar=True,
+):
+    label_conv = get_label_coverter(
+        dataset.mod_bases, model_mod_bases, dataset.base_pred
+    )
+    is_torch_model = isinstance(model, nn.Module)
+    if is_torch_model:
+        model.eval()
+        torch.set_grad_enabled(False)
+
+    bb, ab = dataset.kmer_context_bases
+    all_labels = []
+    all_outputs = []
+    all_loss = []
+    ds_iter = (
+        tqdm(dataset, smoothing=0, desc="Batches", leave=False)
+        if display_progress_bar
+        else dataset
+    )
+    for (sigs, seqs, seq_maps, seq_lens), labels, _ in ds_iter:
+        model_labels = label_conv[labels]
+        all_labels.append(model_labels)
+        enc_kmers = encoded_kmers.compute_encoded_kmer_batch(
+            bb, ab, seqs, seq_maps, seq_lens
+        )
+        if is_torch_model:
+            sigs = torch.from_numpy(sigs)
+            enc_kmers = torch.from_numpy(enc_kmers)
+            if torch.cuda.is_available():
+                sigs = sigs.cuda()
+                enc_kmers = enc_kmers.cuda()
+            output = model(sigs, enc_kmers).detach().cpu().numpy()
+        else:
+            output = model.run([], {"sig": sigs, "seq": enc_kmers})[0]
+        all_outputs.append(output)
+        all_loss.append(
+            criterion(torch.from_numpy(output), torch.from_numpy(model_labels))
+            .detach()
+            .cpu()
+            .numpy()
+        )
+    all_outputs = np.concatenate(all_outputs, axis=0)
+    all_labels = np.concatenate(all_labels)
+    if is_torch_model:
+        torch.set_grad_enabled(True)
+    return compute_metrics(all_outputs, all_labels, all_loss, conf_thr)
+
 
 class ValidationLogger:
     def __init__(self, out_path):
@@ -28,16 +165,17 @@ class ValidationLogger:
             "\t".join(
                 (
                     "Val_Type",
+                    "Epoch",
                     "Iteration",
                     "Accuracy",
                     "Loss",
+                    "Min_F1",
                     "F1",
                     "Precision",
                     "Recall",
                     "Num_Calls",
-                    "Flt_Confusion",
-                    "Conf_frac",
-                    "Min_F1",
+                    "Filtered_Fraction",
+                    "Filtered_Confusion_Matrix",
                 )
             )
             + "\n"
@@ -46,123 +184,35 @@ class ValidationLogger:
     def close(self):
         self.fp.close()
 
-    def get_results(
-        self,
-        all_outputs,
-        all_labels,
-        all_loss,
-        conf_thr,
-        val_type,
-        niter,
-    ):
-        pred_labels = np.argmax(all_outputs, axis=1)
-        acc = (pred_labels == all_labels).sum() / all_outputs.shape[0]
-        mean_loss = np.mean(all_loss)
-        cl_rep = classification_report(
-            all_labels,
-            pred_labels,
-            digits=3,
-            output_dict=True,
-            zero_division=0,
-        )
-        min_f1 = min(cl_rep[str(k)]["f1-score"] for k in np.unique(all_labels))
-        all_out_soft = util.softmax_axis1(all_outputs)
-        conf_ids = np.max(all_out_soft > conf_thr, axis=1)
-        conf_calls = all_out_soft[conf_ids]
-        pred_conf_labels = np.argmax(conf_calls, axis=1)
-        conf_mat = confusion_matrix(all_labels[conf_ids], pred_conf_labels)
-        conf_frac = len(all_labels[conf_ids]) / len(all_labels)
-
-        cm_flat_str = np.array2string(
-            conf_mat.flatten(), separator=","
-        ).replace("\n", "")
-
-        if len(np.unique(all_labels)) > 2:
-            precision = [float("NaN")]
-            recall = [float("NaN")]
-            f1_scores = [float("NaN")]
-            f1_idx = 0
-        else:
-            uniq_labs = np.unique(all_labels)
-            pos_idx = np.max(uniq_labs)
-            with np.errstate(invalid="ignore"):
-                precision, recall, thresholds = precision_recall_curve(
-                    all_labels, all_outputs[:, pos_idx], pos_label=pos_idx
-                )
-                f1_scores = 2 * recall * precision / (recall + precision)
-            f1_idx = np.argmax(f1_scores)
-        self.fp.write(
-            f"{val_type}\t{niter}\t{acc:.6f}\t{mean_loss:.6f}\t"
-            f"{f1_scores[f1_idx]:.6f}\t{precision[f1_idx]:.6f}\t"
-            f"{recall[f1_idx]:.6f}\t{len(all_labels)}\t"
-            f"{cm_flat_str}\t{conf_frac:.2f}\t{min_f1:.6f}\n"
-        )
-        return acc, mean_loss
-
     def validate_model(
         self,
         model,
+        model_mod_bases,
         criterion,
         dataset,
-        niter,
-        val_type="val",
         conf_thr=constants.DEFAULT_CONF_THR,
-    ):
-        model.eval()
-        bb, ab = dataset.kmer_context_bases
-        with torch.no_grad():
-            all_labels = []
-            all_outputs = []
-            all_loss = []
-            for (sigs, seqs, seq_maps, seq_lens), labels, _ in dataset:
-                all_labels.append(labels)
-                sigs = torch.from_numpy(sigs)
-                enc_kmers = torch.from_numpy(
-                    encoded_kmers.compute_encoded_kmer_batch(
-                        bb, ab, seqs, seq_maps, seq_lens
-                    )
-                )
-                labels = torch.from_numpy(labels)
-                if torch.cuda.is_available():
-                    sigs = sigs.cuda()
-                    enc_kmers = enc_kmers.cuda()
-                output = model(sigs, enc_kmers).detach().cpu()
-                all_outputs.append(output)
-                loss = criterion(output, labels)
-                all_loss.append(loss.detach().cpu().numpy())
-            all_outputs = np.concatenate(all_outputs, axis=0)
-            all_labels = np.concatenate(all_labels)
-        return self.get_results(
-            all_outputs, all_labels, all_loss, conf_thr, val_type, niter
-        )
-
-    def validate_onnx_model(
-        self,
-        model,
-        criterion,
-        dataset,
-        niter,
         val_type="val",
-        conf_thr=constants.DEFAULT_CONF_THR,
+        nepoch=0,
+        niter=0,
+        display_progress_bar=False,
     ):
-        bb, ab = dataset.kmer_context_bases
-        all_labels = []
-        all_outputs = []
-        all_loss = []
-        for (sigs, seqs, seq_maps, seq_lens), labels, _ in dataset:
-            all_labels.append(labels)
-            enc_kmers = encoded_kmers.compute_encoded_kmer_batch(
-                bb, ab, seqs, seq_maps, seq_lens
-            )
-            output = model.run([], {"sig": sigs, "seq": enc_kmers})[0]
-            all_outputs.append(output)
-            loss = criterion(torch.from_numpy(output), torch.from_numpy(labels))
-            all_loss.append(loss.numpy())
-        all_outputs = np.concatenate(all_outputs, axis=0)
-        all_labels = np.concatenate(all_labels)
-        return self.get_results(
-            all_outputs, all_labels, all_loss, conf_thr, val_type, niter
+        ms = validate_model(
+            model,
+            model_mod_bases,
+            criterion,
+            dataset,
+            conf_thr,
+            display_progress_bar=display_progress_bar,
         )
+        cm_flat_str = np.array2string(
+            ms.confusion.flatten(), separator=","
+        ).replace("\n", "")
+        self.fp.write(
+            f"{val_type}\t{nepoch}\t{niter}\t{ms.acc:.6f}\t{ms.loss:.6f}\t"
+            f"{ms.min_f1:.6f}\t{ms.f1:.6f}\t{ms.prec:.6f}\t{ms.recall:.6f}\t"
+            f"{ms.num_calls}\t{ms.filt_frac:.4f}\t{cm_flat_str}\n"
+        )
+        return ms
 
 
 def _load_python_model(model_file, **model_kwargs):

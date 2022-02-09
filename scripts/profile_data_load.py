@@ -170,8 +170,8 @@ def main(args):
             can_conv,
             args.max_chunks_per_read,
         )
-dataset.shuffle_dataset()
-dataset.save_dataset(save_fn)
+dataset.shuffle()
+dataset.save(save_fn)
         """,
         globals(),
         locals(),

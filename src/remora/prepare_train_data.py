@@ -95,8 +95,8 @@ def extract_chunk_dataset(
         label_conv,
         max_chunks_per_read,
     )
-    dataset.shuffle_dataset()
-    dataset.save_dataset(output_filename)
+    dataset.shuffle()
+    dataset.save(output_filename)
 
     LOGGER.info(f"Extracted {dataset.nchunks} chunks from {num_reads} reads.")
     LOGGER.info(f"Label distribution: {dataset.get_label_counts()}")
