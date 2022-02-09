@@ -234,7 +234,7 @@ def run_dataset_split_by_label(args):
     )
     out_basename = os.path.splitext(args.remora_dataset_path)[0]
     for label, label_dataset in dataset.split_by_label():
-        label_dataset.save_dataset(f"{out_basename}.{label}.npz")
+        label_dataset.save(f"{out_basename}.{label}.npz")
         LOGGER.info(
             f"Wrote {label_dataset.nchunks} chunks to "
             f"{out_basename}.{label}.npz"
@@ -310,7 +310,7 @@ def run_dataset_merge(args):
         (ds_path, int(num_chunks)) for ds_path, num_chunks in args.input_dataset
     ]
     output_dataset = merge_datasets(input_datasets, args.balance)
-    output_dataset.save_dataset(args.output_dataset)
+    output_dataset.save(args.output_dataset)
 
 
 def register_dataset_stratified_split(parser):
@@ -350,8 +350,8 @@ def run_dataset_stratified_split(args):
 
     LOGGER.info(f"Train set label distribution: {trn_set.get_label_counts()}")
     LOGGER.info(f"Val set label distribution: {val_set.get_label_counts()}")
-    trn_set.save_dataset(f"{args.output_basename}.split_train.npz")
-    val_set.save_dataset(f"{args.output_basename}.split_val.npz")
+    trn_set.save(f"{args.output_basename}.split_train.npz")
+    val_set.save(f"{args.output_basename}.split_val.npz")
 
 
 ################
@@ -802,6 +802,13 @@ def register_infer_from_remora_dataset(parser):
         help="Output path for the validation result file.",
     )
     subparser.add_argument(
+        "--confidence-threshold",
+        type=float,
+        default=0.8,
+        help="Threshold to count a prediction as confident. "
+        "Default: %(default)f",
+    )
+    subparser.add_argument(
         "--batch-size",
         default=constants.DEFAULT_BATCH_SIZE,
         type=int,
@@ -825,6 +832,8 @@ def run_infer_from_remora_dataset(args):
     dataset = RemoraDataset.load_from_file(
         args.remora_dataset_path,
         batch_size=args.batch_size,
+        shuffle_on_iter=False,
+        drop_last=False,
     )
 
     LOGGER.info("Loading model")
@@ -845,11 +854,15 @@ def run_infer_from_remora_dataset(args):
     criterion = torch.nn.CrossEntropyLoss()
 
     LOGGER.info("Running external validation")
-    val_acc, val_loss = val_fp.validate_onnx_model(
-        model, criterion, dataset, 0, "val", 0.8
+    val_metrics = val_fp.validate_model(
+        model,
+        model_metadata["mod_bases"],
+        criterion,
+        dataset,
+        args.confidence_threshold,
     )
     LOGGER.info(
         "Validation results:\n"
-        f"Validation accuracy : {val_acc:.6f}\n"
-        f"    Validation loss : {val_loss:.6f}\n"
+        f"Validation accuracy : {val_metrics.acc:.6f}\n"
+        f"    Validation loss : {val_metrics.loss:.6f}\n"
     )

@@ -203,7 +203,7 @@ def train_model(
         )
 
     trn_ds, val_ds = dataset.split_data(val_prop, stratified=True)
-    trn_ds.shuffle_dataset()
+    trn_ds.shuffle()
     val_trn_ds = trn_ds.head(val_prop, shuffle_on_iter=False, drop_last=False)
     LOGGER.info(f"Train label distribution: {trn_ds.get_label_counts()}")
     LOGGER.info(
@@ -216,28 +216,28 @@ def train_model(
 
     LOGGER.info("Running initial validation")
     # assess accuracy before first iteration
-    val_acc, val_loss = val_fp.validate_model(
-        model, criterion, val_ds, 0, "val", conf_thr
+    val_metrics = val_fp.validate_model(
+        model, dataset.mod_bases, criterion, val_ds, conf_thr
     )
-    trn_acc, trn_loss = val_fp.validate_model(
+    trn_metrics = val_fp.validate_model(
         model,
+        dataset.mod_bases,
         criterion,
         val_trn_ds,
-        0,
-        "trn",
         conf_thr,
+        "trn",
     )
 
     if ext_val:
         best_alt_val_accs = [0] * len(ext_sets)
         for e_set_idx in range(len(ext_sets)):
-            e_val_acc, e_val_loss = val_fp.validate_model(
+            val_fp.validate_model(
                 model,
+                dataset.mod_bases,
                 criterion,
                 ext_sets[e_set_idx],
-                0,
-                f"e_val_{e_set_idx}",
                 conf_thr,
+                f"e_val_{e_set_idx}",
             )
 
     LOGGER.info("Start training")
@@ -258,10 +258,10 @@ def train_model(
         bar_format="{desc}: {percentage:3.0f}%|{bar}| " "{n_fmt}/{total_fmt}",
     )
     ebar.set_postfix(
-        acc_val=f"{val_acc:.4f}",
-        acc_train=f"{trn_acc:.4f}",
-        loss_val=f"{val_loss:.6f}",
-        loss_train=f"{trn_loss:.6f}",
+        acc_val=f"{val_metrics.acc:.4f}",
+        acc_train=f"{trn_metrics.acc:.4f}",
+        loss_val=f"{val_metrics.loss:.6f}",
+        loss_train=f"{trn_metrics.loss:.6f}",
     )
     atexit.register(pbar.close)
     atexit.register(ebar.close)
@@ -315,41 +315,45 @@ def train_model(
             pbar.update()
             pbar.refresh()
 
-        val_acc, val_loss = val_fp.validate_model(
+        niter = (epoch + 1) * len(trn_ds)
+        val_metrics = val_fp.validate_model(
             model,
+            dataset.mod_bases,
             criterion,
             val_ds,
-            (epoch + 1) * len(trn_ds),
-            "val",
             conf_thr,
+            nepoch=epoch + 1,
+            niter=niter,
         )
-        trn_acc, trn_loss = val_fp.validate_model(
+        trn_metrics = val_fp.validate_model(
             model,
+            dataset.mod_bases,
             criterion,
             val_trn_ds,
-            (epoch + 1) * len(trn_ds),
-            "trn",
             conf_thr,
+            "trn",
+            nepoch=epoch + 1,
+            niter=niter,
         )
 
         scheduler.step()
 
         if breached:
-            if val_acc <= REGRESSION_THRESHOLD:
+            if val_metrics.acc <= REGRESSION_THRESHOLD:
                 LOGGER.warning("Remora training unstable")
         else:
-            if val_acc >= BREACH_THRESHOLD:
+            if val_metrics.acc >= BREACH_THRESHOLD:
                 breached = True
                 LOGGER.debug(
                     f"{BREACH_THRESHOLD * 100}% accuracy threshold surpassed"
                 )
 
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
+        if val_metrics.acc > best_val_acc:
+            best_val_acc = val_metrics.acc
             early_stop_epochs = 0
             LOGGER.debug(
                 f"Saving best model after {epoch + 1} epochs with "
-                f"val_acc {val_acc}"
+                f"val_acc {val_metrics.acc}"
             )
             save_model(
                 model, ckpt_save_data, out_path, epoch, opt, as_onnx=True
@@ -359,20 +363,22 @@ def train_model(
 
         if ext_val:
             for e_set_idx in range(len(ext_sets)):
-                e_val_acc, e_val_loss = val_fp.validate_model(
+                e_val_metrics = val_fp.validate_model(
                     model,
+                    dataset.mod_bases,
                     criterion,
                     ext_sets[e_set_idx],
-                    (epoch + 1) * len(trn_ds),
-                    f"e_val_{e_set_idx}",
                     conf_thr,
+                    f"e_val_{e_set_idx}",
+                    nepoch=epoch + 1,
+                    niter=niter,
                 )
-                if e_val_acc > best_alt_val_accs[e_set_idx]:
-                    best_alt_val_accs[e_set_idx] = e_val_acc
+                if e_val_metrics.acc > best_alt_val_accs[e_set_idx]:
+                    best_alt_val_accs[e_set_idx] = e_val_metrics.acc
                     LOGGER.debug(
                         f"Saving best model based on e_val_{e_set_idx} "
                         f"validation sets after {epoch + 1} epochs "
-                        f"with val_acc {val_acc}"
+                        f"with val_acc {val_metrics.acc}"
                     )
                     save_model(
                         model,
@@ -396,10 +402,10 @@ def train_model(
             )
 
         ebar.set_postfix(
-            acc_val=f"{val_acc:.4f}",
-            acc_train=f"{trn_acc:.4f}",
-            loss_val=f"{val_loss:.6f}",
-            loss_train=f"{trn_loss:.6f}",
+            acc_val=f"{val_metrics.acc:.4f}",
+            acc_train=f"{trn_metrics.acc:.4f}",
+            loss_val=f"{val_metrics.loss:.6f}",
+            loss_train=f"{trn_metrics.loss:.6f}",
         )
         ebar.update()
         if early_stopping and early_stop_epochs >= early_stopping:

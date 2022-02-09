@@ -3,7 +3,8 @@ import os
 
 import matplotlib
 
-matplotlib.use("pdf")
+if True:
+    matplotlib.use("pdf")
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
@@ -30,7 +31,7 @@ class plotter:
             "F1": trn_ext["F1"],
             "Precision": trn_ext["Precision"],
             "Recall": trn_ext["Recall"],
-            "Confusion": trn_ext["Confusion"],
+            "Confusion": trn_ext["Filtered_Confusion_Matrix"],
         }
         val_results = {
             "Loss": val_ext["Loss"],
@@ -39,7 +40,7 @@ class plotter:
             "F1": val_ext["F1"],
             "Precision": val_ext["Precision"],
             "Recall": val_ext["Recall"],
-            "Confusion": val_ext["Confusion"],
+            "Confusion": val_ext["Filtered_Confusion_Matrix"],
         }
         folder = dir.rsplit("/", 1)[-1]
 
@@ -51,35 +52,35 @@ class plotter:
         fig, axs = plt.subplots(1, 3, figsize=(25, 15), constrained_layout=True)
 
         for i, arg in enumerate(args.paths):
-            res, folder = self.extract_results(arg)
+            (trn_res, val_res), folder = self.extract_results(arg)
             folders.append(folder + "_training")
             folders.append(folder)
 
             axs[0].plot(
-                res[0]["Update"],
-                res[0]["Accuracy"],
+                trn_res["Update"],
+                trn_res["Accuracy"],
                 linestyle="dashed",
                 color="C" + str(i),
             )
             axs[0].plot(
-                res[1]["Update"], res[1]["Accuracy"], color="C" + str(i)
+                val_res["Update"], val_res["Accuracy"], color="C" + str(i)
             )
 
             axs[1].plot(
-                res[0]["Update"],
-                res[0]["Loss"],
+                trn_res["Update"],
+                trn_res["Loss"],
                 linestyle="dashed",
                 color="C" + str(i),
             )
-            axs[1].plot(res[1]["Update"], res[1]["Loss"], color="C" + str(i))
+            axs[1].plot(val_res["Update"], val_res["Loss"], color="C" + str(i))
 
             axs[2].plot(
-                res[0]["Update"],
-                res[0]["F1"],
+                trn_res["Update"],
+                trn_res["F1"],
                 linestyle="dashed",
                 color="C" + str(i),
             )
-            axs[2].plot(res[1]["Update"], res[1]["F1"], color="C" + str(i))
+            axs[2].plot(val_res["Update"], val_res["F1"], color="C" + str(i))
 
         fig.legend(folders, loc="lower right")
         axs[0].set(xlabel="Updates", ylabel="Accuracy")
@@ -93,12 +94,12 @@ class plotter:
         folders = []
         fig, ax = plt.subplots(figsize=(7.5, 7.5))
         for i, arg in enumerate(args.paths):
-            res, folder = self.extract_results(arg)
+            (trn_res, val_res), folder = self.extract_results(arg)
             folders.append(folder + "_training")
             folders.append(folder)
-            lres = res[0]["Confusion"].shape[0]
-            last_idx = res[0]["Confusion"].index[lres - 1]
-            mat_str = res[0]["Confusion"][last_idx]
+            lres = trn_res["Confusion"].shape[0]
+            last_idx = trn_res["Confusion"].index[lres - 1]
+            mat_str = trn_res["Confusion"][last_idx]
             mat_str = mat_str.replace("[", "")
             mat_str = mat_str.replace("]", "")
             conf_matrix = np.fromstring(mat_str, dtype=int, sep=",")
