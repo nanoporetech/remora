@@ -75,8 +75,6 @@ def mod_chunks(tmpdir_factory, mod_tai_map_sig):
             str(mod_tai_map_sig),
             "--output-remora-training-file",
             str(output),
-            "--mod-bases",
-            "m",
             "--motif",
             "CG",
             "0",

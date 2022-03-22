@@ -75,24 +75,21 @@ def call_read_mods_core(
           2. Labels for each base (-1 if labels not provided)
           3. List of positions within the read
     """
+    read.refine_signal_mapping(model_metadata["sig_map_refiner"])
     read_outputs, all_read_data, read_labels = [], [], []
     motifs = [Motif(*mot) for mot in model_metadata["motifs"]]
     bb, ab = model_metadata["kmer_context_bases"]
-    motif_hits = []
     if focus_offset is not None:
-        motif_hits.append([focus_offset])
+        read.focus_bases = np.array([focus_offset])
     else:
-        for mot in motifs:
-            motif_hits.append(
-                np.fromiter(read.iter_motif_hits(mot), int) + mot.focus_pos
-            )
-    motif_hits = np.concatenate(motif_hits)
+        read.add_motif_focus_bases(motifs)
     chunks = list(
         read.iter_chunks(
-            motif_hits,
             model_metadata["chunk_context"],
             model_metadata["kmer_context_bases"],
             model_metadata["base_pred"],
+            model_metadata["base_start_justify"],
+            model_metadata["offset"],
         )
     )
     if len(chunks) == 0:
@@ -101,7 +98,7 @@ def call_read_mods_core(
             np.empty(0, dtype=np.long),
             [],
         )
-    read_dataset = RemoraDataset.allocate_empty_chunks(
+    dataset = RemoraDataset.allocate_empty_chunks(
         num_chunks=len(chunks),
         chunk_context=model_metadata["chunk_context"],
         max_seq_len=max(c.seq_len for c in chunks),
@@ -116,9 +113,9 @@ def call_read_mods_core(
         drop_last=False,
     )
     for chunk in chunks:
-        read_dataset.add_chunk(chunk)
-    read_dataset.set_nbatches()
-    for (sigs, seqs, seq_maps, seq_lens), labels, read_data in read_dataset:
+        dataset.add_chunk(chunk)
+    dataset.set_nbatches()
+    for (sigs, seqs, seq_maps, seq_lens), labels, read_data in dataset:
         enc_kmers = encoded_kmers.compute_encoded_kmer_batch(
             bb, ab, seqs, seq_maps, seq_lens
         )

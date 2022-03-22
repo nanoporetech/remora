@@ -1,13 +1,18 @@
 import argparse
+import multiprocessing as mp
 
-from taiyaki.mapped_signal_files import MappedSignalReader
 import torch
 from tqdm import tqdm
 
-from remora import log, constants, encoded_kmers
+from remora.util import Motif, queue_iter
 from remora.data_chunks import RemoraDataset
-from remora.prepare_train_data import fill_dataset
-from remora.util import Motif, get_can_converter
+from remora.refine_signal_map import SigMapRefiner
+from remora import log, constants, encoded_kmers, RemoraError
+from remora.prepare_train_data import (
+    check_alphabet,
+    fill_reads_q,
+    extract_chunks_worker,
+)
 
 LOGGER = log.get_logger()
 
@@ -28,15 +33,29 @@ def iter_batches(dataset, num_profile_batches):
             LOGGER.debug(f"{epoch_i} {batch_i} {enc_kmers.shape}")
 
 
+def fill_dataset(dataset, chunks_q, save_fn):
+    for read_chunks in queue_iter(chunks_q):
+        for chunk in read_chunks:
+            try:
+                dataset.add_chunk(chunk)
+            except RemoraError:
+                pass
+    dataset.clip_chunks()
+    dataset.shuffle()
+    dataset.save(save_fn)
+
+
 def get_parser():
     parser = argparse.ArgumentParser(
         description="Profile training data extraction",
     )
-    data_grp = parser.add_argument_group("Data Arguments")
-    data_grp.add_argument(
-        "taiyaki_mapped_signal",
-        help="Taiyaki mapped signal file",
+
+    parser.add_argument(
+        "input_reads",
+        help="Taiyaki mapped signal or RemoraReads pickle file.",
     )
+
+    data_grp = parser.add_argument_group("Data Arguments")
     data_grp.add_argument(
         "--num-chunks",
         type=int,
@@ -97,23 +116,98 @@ def get_parser():
         "Default: %(default)s",
     )
     data_grp.add_argument(
-        "--max-seq-length",
+        "--min-samples-per-base",
         type=int,
-        default=constants.DEFAULT_MAX_SEQ_LEN,
-        help="Maxiumum bases from a chunk Should be adjusted accordingly with "
-        "--chunk-context. Default: %(default)s",
+        default=constants.DEFAULT_MIN_SAMPLES_PER_BASE,
+        help="Minimum number of samples per base. This sets the size of the "
+        "ragged arrays of chunk sequences. Default: %(default)s",
+    )
+    data_grp.add_argument(
+        "--base-start-justify",
+        action="store_true",
+        help="Justify extracted chunk against the start of the base of "
+        "interest. Default justifies chunk to middle of signal of the base "
+        "of interest.",
+    )
+    data_grp.add_argument(
+        "--offset",
+        default=0,
+        type=int,
+        help="Offset selected chunk position by a number of bases. "
+        "Default: %(default)d",
+    )
+    data_grp.add_argument(
+        "--max-reads",
+        type=int,
+        help="Maxiumum number of reads to process.",
+    )
+
+    refine_grp = parser.add_argument_group("Signal Mapping Refine Arguments")
+    refine_grp.add_argument(
+        "--refine-kmer-level-table",
+        help="Tab-delimited file containing no header and two fields: "
+        "1. string k-mer sequence and 2. float expected normalized level. "
+        "All k-mers must be the same length and all combinations of the bases "
+        "'ACGT' must be present in the file.",
+    )
+    refine_grp.add_argument(
+        "--refine-rough-rescale",
+        action="store_true",
+        help="Apply a rough rescaling using quantiles of signal+move table "
+        "and levels.",
+    )
+    refine_grp.add_argument(
+        "--refine-scale-iters",
+        default=constants.DEFAULT_REFINE_SCALE_ITERS,
+        type=int,
+        help="Number of iterations of signal mapping refinement and signal "
+        "re-scaling to perform. Set to 0 (default) in order to perform signal "
+        "mapping refinement, but skip re-scaling. Set to -1 to skip signal "
+        "mapping (potentially using levels for rough rescaling).",
+    )
+    refine_grp.add_argument(
+        "--refine-half-bandwidth",
+        default=constants.DEFAULT_REFINE_HBW,
+        type=int,
+        help="Half bandwidth around signal mapping over which to search for "
+        "new path.",
+    )
+    refine_grp.add_argument(
+        "--refine-algo",
+        default=constants.DEFAULT_REFINE_ALGO,
+        choices=constants.REFINE_ALGOS,
+        help="Refinement algorithm to apply (if kmer level table is provided).",
+    )
+    refine_grp.add_argument(
+        "--refine-short-dwell-parameters",
+        default=constants.DEFAULT_REFINE_SHORT_DWELL_PARAMS,
+        type=float,
+        nargs=3,
+        metavar=("TARGET", "LIMIT", "WEIGHT"),
+        help="Short dwell penalty refiner parameters. Dwells shorter than "
+        "LIMIT will be penalized a value of `WEIGHT * (dwell - TARGET)^2`. "
+        "Default: %(default)s",
     )
 
     mdl_grp = parser.add_argument_group("Model Arguments")
     mdl_grp.add_argument(
-        "--mod-bases",
-        help="Single letter codes for modified bases to predict. Must "
-        "provide either this or specify --base-pred.",
+        "--mod-base",
+        nargs=2,
+        action="append",
+        metavar=("SINGLE_LETTER_CODE", "MOD_BASE"),
+        default=None,
+        help="If provided input is RemoraReads pickle, modified bases must "
+        "be provided. Exmaple: `--mod-base m 5mC --mod-base h 5hmC`",
+    )
+    mdl_grp.add_argument(
+        "--mod-base-control",
+        action="store_true",
+        help="Is this a modified bases control sample?",
     )
     mdl_grp.add_argument(
         "--base-pred",
         action="store_true",
-        help="Train to predict bases and not mods.",
+        help="Train to predict bases (SNPs) and not mods.",
     )
 
     out_grp = parser.add_argument_group("Output Arguments")
@@ -135,47 +229,68 @@ def main(args):
 
     import cProfile
 
-    input_msf = MappedSignalReader(args.taiyaki_mapped_signal)
-    alphabet_info = input_msf.get_alphabet_information()
-    alphabet, collapse_alphabet = (
-        alphabet_info.alphabet,
-        alphabet_info.collapse_alphabet,
+    LOGGER.info("Filling reads queue")
+    mod_bases, mod_long_names, num_reads = check_alphabet(
+        args.input_reads, args.base_pred, args.mod_base_control, args.mod_base
     )
-    can_conv = get_can_converter(
-        alphabet_info.alphabet, alphabet_info.collapse_alphabet
+    sig_map_refiner = SigMapRefiner(
+        kmer_model_filename=args.refine_kmer_level_table,
+        do_rough_rescale=args.refine_rough_rescale,
+        scale_iters=args.refine_scale_iters,
+        algo=args.refine_algo,
+        half_bandwidth=args.refine_half_bandwidth,
+        sd_params=args.refine_short_dwell_parameters,
+        do_fix_guage=True,
     )
-    label_conv = can_conv
-    motif = Motif(*args.motif)
-    num_reads = len(input_msf.get_read_ids())
+    reads_q = mp.Queue()
+    fill_reads_q(reads_q, args.input_reads, max_reads=args.max_reads)
+
+    LOGGER.info("Profiling chunk extraction")
+    chunks_q = mp.Queue()
+    cProfile.runctx(
+        """extract_chunks_worker(
+        reads_q,
+        chunks_q,
+        None,
+        sig_map_refiner,
+        args.max_chunks_per_read,
+        args.chunk_context,
+        args.kmer_context_bases,
+        args.base_pred,
+        args.base_start_justify,
+        args.offset,
+        )
+        """,
+        globals(),
+        locals(),
+        filename=f"{args.output_basename}_remora_extract_chunks.prof",
+    )
+
+    LOGGER.info("Profiling dataset prep")
+    if args.max_reads is not None:
+        num_reads = max(num_reads, args.max_reads)
     # initialize empty dataset with pre-allocated memory
     dataset = RemoraDataset.allocate_empty_chunks(
         num_chunks=args.max_chunks_per_read * num_reads,
         chunk_context=args.chunk_context,
-        max_seq_len=args.max_seq_length,
         kmer_context_bases=args.kmer_context_bases,
+        min_samps_per_base=args.min_samples_per_base,
         base_pred=args.base_pred,
-        mod_bases=args.mod_bases,
-        motif=motif.to_tuple(),
+        mod_bases=mod_bases,
+        mod_long_names=mod_long_names,
+        motifs=[
+            Motif(*args.motif).to_tuple(),
+        ],
+        sig_map_refiner=sig_map_refiner,
+        base_start_justify=args.base_start_justify,
+        offset=args.offset,
     )
-    LOGGER.info("Profiling Remora dataset conversion")
     save_fn = f"{args.output_basename}_remora_mapped_signal.npz"
-    # appease flake8
-    fill_dataset
     cProfile.runctx(
-        """fill_dataset(
-            input_msf,
-            dataset,
-            num_reads,
-            can_conv,
-            can_conv,
-            args.max_chunks_per_read,
-        )
-dataset.shuffle()
-dataset.save(save_fn)
-        """,
+        "fill_dataset(dataset, chunks_q, save_fn)",
         globals(),
         locals(),
-        filename=f"{args.output_basename}_remora_convert.prof",
+        filename=f"{args.output_basename}_remora_save_dataset.prof",
     )
 
     LOGGER.info("Profiling data iteration")

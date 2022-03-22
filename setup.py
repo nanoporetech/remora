@@ -13,6 +13,12 @@ ext_modules = [
         extra_compile_args=extra_compile_args,
         language="c",
     ),
+    Extension(
+        "remora.refine_signal_map_core",
+        sources=["src/remora/refine_signal_map_core.pyx"],
+        extra_compile_args=extra_compile_args,
+        language="c",
+    ),
 ]
 
 

@@ -1,14 +1,14 @@
-import atexit
 import os
+import atexit
 from shutil import copyfile
 
-from thop import profile
-import numpy as np
 import torch
+import numpy as np
 from tqdm import tqdm
+from thop import profile
 
-from remora import constants, util, log, RemoraError, encoded_kmers, model_util
 from remora.data_chunks import RemoraDataset
+from remora import constants, util, log, RemoraError, encoded_kmers, model_util
 
 LOGGER = log.get_logger()
 BREACH_THRESHOLD = 0.8
@@ -103,13 +103,11 @@ def train_model(
     lr_sched_kwargs,
     balance,
 ):
-
     seed = (
         np.random.randint(0, np.iinfo(np.uint32).max, dtype=np.uint32)
         if seed is None
         else seed
     )
-
     LOGGER.info(f"Seed selected is {seed}")
 
     np.random.seed(seed)
@@ -127,8 +125,10 @@ def train_model(
         remora_dataset_path,
         batch_size=batch_size,
     )
+    LOGGER.info(f"Dataset loaded with labels: {dataset.get_label_counts()}")
     if balance:
         dataset = dataset.balance_classes()
+        LOGGER.info(f"Dataset balanced: {dataset.get_label_counts()}")
     dataset.trim_kmer_context_bases(kmer_context_bases)
     dataset.trim_chunk_context(chunk_context)
     # load attributes from file
@@ -138,7 +138,7 @@ def train_model(
         f"          mod_bases : {dataset.mod_bases}\n"
         f" kmer_context_bases : {dataset.kmer_context_bases}\n"
         f"      chunk_context : {dataset.chunk_context}\n"
-        f"              motifs : {dataset.motifs}\n"
+        f"             motifs : {dataset.motifs}\n"
     )
 
     out_log = out_path / "validation.log"
@@ -163,7 +163,10 @@ def train_model(
         ext_sets = []
         for path in ext_val:
             ext_val_set = RemoraDataset.load_from_file(
-                path.strip(), batch_size=batch_size
+                path.strip(),
+                batch_size=batch_size,
+                shuffle_on_iter=False,
+                drop_last=False,
             )
             if ext_val_set.mod_long_names != dataset.mod_long_names:
                 ext_val_set.add_fake_base(
@@ -265,6 +268,7 @@ def train_model(
     )
     atexit.register(pbar.close)
     atexit.register(ebar.close)
+
     ckpt_save_data = {
         "epoch": 0,
         "state_dict": model.state_dict(),
@@ -279,7 +283,10 @@ def train_model(
         "mod_long_names": dataset.mod_long_names,
         "base_pred": dataset.base_pred,
         "kmer_context_bases": dataset.kmer_context_bases,
+        "base_start_justify": dataset.base_start_justify,
+        "offset": dataset.offset,
         "model_version": constants.MODEL_VERSION,
+        **dataset.sig_map_refiner.get_save_kwargs(),
     }
     bb, ab = dataset.kmer_context_bases
     best_val_acc = 0

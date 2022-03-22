@@ -50,9 +50,8 @@ def register_dataset(parser):
     subparser.set_defaults(func=lambda x: subparser.print_help())
     #  Register dataset sub commands
     register_dataset_prepare(ssubparser)
-    register_dataset_split_by_label(ssubparser)
+    register_dataset_split(ssubparser)
     register_dataset_merge(ssubparser)
-    register_dataset_stratified_split(ssubparser)
     register_dataset_inspect(ssubparser)
 
 
@@ -64,15 +63,36 @@ def register_dataset_prepare(parser):
         formatter_class=SubcommandHelpFormatter,
     )
     subparser.add_argument(
-        "mapped_signal_file",
-        help="Taiyaki mapped signal file.",
+        "input_reads",
+        help="Taiyaki mapped signal or RemoraReads pickle file.",
     )
-    subparser.add_argument(
+
+    out_grp = subparser.add_argument_group("Output Arguments")
+    out_grp.add_argument(
         "--output-remora-training-file",
         default="remora_training_dataset.npz",
         help="Output Remora training dataset file. Default: %(default)s",
     )
-    subparser.add_argument(
+    out_grp.add_argument(
+        "--output-remora-reads-file",
+        help="Output Remora reads to disk. Default: Don't save reads.",
+    )
+    out_grp.add_argument(
+        "--log-filename",
+        help="Log filename. Default: Don't output log file.",
+    )
+
+    data_grp = subparser.add_argument_group("Data Arguments")
+    data_grp.add_argument(
+        "--mod-base",
+        nargs=2,
+        action="append",
+        metavar=("SINGLE_LETTER_CODE", "MOD_BASE"),
+        default=None,
+        help="If provided input is RemoraReads pickle, modified bases must "
+        "be provided. Exmaple: `--mod-base m 5mC --mod-base h 5hmC`",
+    )
+    data_grp.add_argument(
         "--motif",
         nargs=2,
         action="append",
@@ -83,7 +103,7 @@ def register_dataset_prepare(parser):
         "within the motif. For example to restrict to CpG sites use "
         '"--motif CG 0". Default: Any context ("N 0")',
     )
-    subparser.add_argument(
+    data_grp.add_argument(
         "--chunk-context",
         default=constants.DEFAULT_CHUNK_CONTEXT,
         type=int,
@@ -91,14 +111,14 @@ def register_dataset_prepare(parser):
         help="Number of context signal points to select around the central "
         "position. Default: %(default)s",
     )
-    subparser.add_argument(
+    data_grp.add_argument(
         "--min-samples-per-base",
         type=int,
         default=constants.DEFAULT_MIN_SAMPLES_PER_BASE,
         help="Minimum number of samples per base. This sets the size of the "
         "ragged arrays of chunk sequences. Default: %(default)s",
     )
-    subparser.add_argument(
+    data_grp.add_argument(
         "--kmer-context-bases",
         nargs=2,
         default=constants.DEFAULT_KMER_CONTEXT_BASES,
@@ -106,139 +126,199 @@ def register_dataset_prepare(parser):
         help="Definition of k-mer (derived from the reference) passed into "
         "the model along with each signal position. Default: %(default)s",
     )
-    subparser.add_argument(
-        "--mod-bases",
-        help="Single letter codes for modified bases to predict. Must "
-        "provide either this or specify --base-pred.",
-    )
-    subparser.add_argument(
-        "--mod-base-control",
-        action="store_true",
-        help="Is this a modified bases control sample?",
-    )
-    subparser.add_argument(
-        "--base-pred",
-        action="store_true",
-        help="Train to predict bases (SNPs) and not mods.",
-    )
-    subparser.add_argument(
+    data_grp.add_argument(
         "--max-chunks-per-read",
         type=int,
         default=10,
         help="Maxiumum number of chunks to extract from a single read. "
         "Default: %(default)s",
     )
-    subparser.add_argument(
-        "--log-filename",
-        help="Log filename. Default: Don't output log file.",
+    data_grp.add_argument(
+        "--base-start-justify",
+        action="store_true",
+        help="Justify extracted chunk against the start of the base of "
+        "interest. Default justifies chunk to middle of signal of the base "
+        "of interest.",
+    )
+    data_grp.add_argument(
+        "--offset",
+        default=0,
+        type=int,
+        help="Offset selected chunk position by a number of bases. "
+        "Default: %(default)d",
+    )
+
+    refine_grp = subparser.add_argument_group("Signal Mapping Refine Arguments")
+    refine_grp.add_argument(
+        "--refine-kmer-level-table",
+        help="Tab-delimited file containing no header and two fields: "
+        "1. string k-mer sequence and 2. float expected normalized level. "
+        "All k-mers must be the same length and all combinations of the bases "
+        "'ACGT' must be present in the file.",
+    )
+    refine_grp.add_argument(
+        "--refine-rough-rescale",
+        action="store_true",
+        help="Apply a rough rescaling using quantiles of signal+move table "
+        "and levels.",
+    )
+    refine_grp.add_argument(
+        "--refine-scale-iters",
+        default=constants.DEFAULT_REFINE_SCALE_ITERS,
+        type=int,
+        help="Number of iterations of signal mapping refinement and signal "
+        "re-scaling to perform. Set to 0 (default) in order to perform signal "
+        "mapping refinement, but skip re-scaling. Set to -1 to skip signal "
+        "mapping (potentially using levels for rough rescaling).",
+    )
+    refine_grp.add_argument(
+        "--refine-half-bandwidth",
+        default=constants.DEFAULT_REFINE_HBW,
+        type=int,
+        help="Half bandwidth around signal mapping over which to search for "
+        "new path.",
+    )
+    refine_grp.add_argument(
+        "--refine-algo",
+        default=constants.DEFAULT_REFINE_ALGO,
+        choices=constants.REFINE_ALGOS,
+        help="Refinement algorithm to apply (if kmer level table is provided).",
+    )
+    refine_grp.add_argument(
+        "--refine-short-dwell-parameters",
+        default=constants.DEFAULT_REFINE_SHORT_DWELL_PARAMS,
+        type=float,
+        nargs=3,
+        metavar=("TARGET", "LIMIT", "WEIGHT"),
+        help="Short dwell penalty refiner parameters. Dwells shorter than "
+        "LIMIT will be penalized a value of `WEIGHT * (dwell - TARGET)^2`. "
+        "Default: %(default)s",
+    )
+
+    label_grp = subparser.add_argument_group("Label Arguments")
+    label_grp.add_argument(
+        "--mod-base-control",
+        action="store_true",
+        help="Is this a modified bases control sample?",
+    )
+    label_grp.add_argument(
+        "--base-pred",
+        action="store_true",
+        help="Train to predict bases (SNPs) and not mods.",
+    )
+
+    comp_grp = subparser.add_argument_group("Compute Arguments")
+    comp_grp.add_argument(
+        "--processes",
+        type=int,
+        default=1,
+        help="Number of worker processes. Default: %(default)d",
     )
 
     subparser.set_defaults(func=run_dataset_prepare)
 
 
 def run_dataset_prepare(args):
-    import atexit
-
-    try:
-        from taiyaki.mapped_signal_files import MappedSignalReader
-    except ImportError:
-        raise RemoraError(
-            "Taiyaki install required for `remora dataset prepare` command"
-        )
-
-    from remora.util import Motif, validate_mod_bases, get_can_converter
+    from remora.util import Motif
+    from remora.refine_signal_map import SigMapRefiner
     from remora.prepare_train_data import extract_chunk_dataset
 
     if args.log_filename is not None:
         log.init_logger(args.log_filename)
-    mot = [("N", 0)] if args.motif is None else args.motif
-    LOGGER.info("Opening mapped signal files")
-    input_msf = MappedSignalReader(args.mapped_signal_file)
-    atexit.register(input_msf.close)
-    alphabet_info = input_msf.get_alphabet_information()
-    alphabet, collapse_alphabet = (
-        alphabet_info.alphabet,
-        alphabet_info.collapse_alphabet,
+    motifs = [("N", 0)] if args.motif is None else args.motif
+    motifs = [Motif(*mo) for mo in motifs]
+    sig_map_refiner = SigMapRefiner(
+        kmer_model_filename=args.refine_kmer_level_table,
+        do_rough_rescale=args.refine_rough_rescale,
+        scale_iters=args.refine_scale_iters,
+        algo=args.refine_algo,
+        half_bandwidth=args.refine_half_bandwidth,
+        sd_params=args.refine_short_dwell_parameters,
+        do_fix_guage=True,
     )
-    motif = [Motif(*mo) for mo in mot]
-    num_types_specified = sum(
-        (
-            int(args.base_pred),
-            int(args.mod_bases is not None),
-            int(args.mod_base_control),
-        )
-    )
-    if num_types_specified == 0:
-        raise RemoraError(
-            "Must specify one of modified base(s), modified base control, or "
-            "base prediction model type option."
-        )
-    elif num_types_specified > 1:
-        raise RemoraError(
-            "Must specify only one of modified base(s), modified base "
-            "control, and base prediction model type option."
-        )
-    if args.base_pred:
-        if alphabet != "ACGT":
-            raise ValueError(
-                "Base prediction is not compatible with modified base "
-                "training data. It requires a canonical alphabet."
-            )
-        label_conv = get_can_converter(alphabet, collapse_alphabet)
-    else:
-        # TODO use mod_bases from alphabet_info.mod_bases and assert that all
-        # derive from a single canonical base
-        label_conv = validate_mod_bases(
-            alphabet_info.mod_bases,
-            motif,
-            alphabet,
-            collapse_alphabet,
-            args.mod_base_control,
-        )
     extract_chunk_dataset(
-        input_msf,
+        args.input_reads,
         args.output_remora_training_file,
-        motif,
+        args.output_remora_reads_file,
+        args.mod_base,
+        motifs,
+        args.mod_base_control,
         args.chunk_context,
         args.min_samples_per_base,
         args.max_chunks_per_read,
-        label_conv,
+        sig_map_refiner,
         args.base_pred,
-        alphabet_info.mod_bases,
-        alphabet_info.mod_long_names,
         args.kmer_context_bases,
+        args.base_start_justify,
+        args.offset,
+        args.processes,
     )
 
 
-def register_dataset_split_by_label(parser):
+def register_dataset_split(parser):
     subparser = parser.add_parser(
-        "split_by_label",
-        description="Split Remora dataset by label",
-        help="Split Remora dataset by label",
+        "split",
+        description="Split Remora dataset",
+        help="Split Remora dataset",
         formatter_class=SubcommandHelpFormatter,
     )
     subparser.add_argument(
-        "remora_dataset_path",
-        help="Remora training dataset",
+        "input_remora_dataset",
+        help="Remora training dataset to be split",
     )
-    subparser.set_defaults(func=run_dataset_split_by_label)
+    subparser.add_argument(
+        "--output-basename",
+        default="split_remora_dataset",
+        help="Basename for output datasets. Default: %(default)s",
+    )
+    subparser.add_argument(
+        "--val-prop",
+        type=float,
+        default=0.01,
+        help="The proportion of data to be split into validation set, where "
+        "val-prop in [0,0.5). Default: %(default)f",
+    )
+    subparser.add_argument(
+        "--unstratified",
+        action="store_true",
+        help="For --val-prop split, perform unstratified splitting. Default "
+        "will perform split stratified over labels.",
+    )
+    subparser.add_argument(
+        "--by-label",
+        action="store_true",
+        help="Split dataset into one dataset for each unique label.",
+    )
+    subparser.set_defaults(func=run_dataset_split)
 
 
-def run_dataset_split_by_label(args):
+def run_dataset_split(args):
     from remora.data_chunks import RemoraDataset
 
     dataset = RemoraDataset.load_from_file(
-        args.remora_dataset_path,
+        args.input_remora_dataset,
         shuffle_on_iter=False,
         drop_last=False,
     )
-    out_basename = os.path.splitext(args.remora_dataset_path)[0]
-    for label, label_dataset in dataset.split_by_label():
-        label_dataset.save(f"{out_basename}.{label}.npz")
-        LOGGER.info(
-            f"Wrote {label_dataset.nchunks} chunks to "
-            f"{out_basename}.{label}.npz"
+    LOGGER.info(f"Loaded set label distribution: {dataset.get_label_counts()}")
+
+    if args.by_label:
+        for label, label_dataset in dataset.split_by_label():
+            label_dataset.save(f"{args.output_basename}.{label}.npz")
+            LOGGER.info(
+                f"Wrote {label_dataset.nchunks} chunks to "
+                f"{args.output_basename}.{label}.npz"
+            )
+    else:
+        trn_set, val_set = dataset.split_data(
+            args.val_prop, stratified=not args.unstratified
         )
+        LOGGER.info(
+            f"Train set label distribution: {trn_set.get_label_counts()}"
+        )
+        LOGGER.info(f"Val set label distribution: {val_set.get_label_counts()}")
+        trn_set.save(f"{args.output_basename}.split_train.npz")
+        val_set.save(f"{args.output_basename}.split_val.npz")
 
 
 def register_dataset_inspect(parser):
@@ -313,47 +393,6 @@ def run_dataset_merge(args):
     output_dataset.save(args.output_dataset)
 
 
-def register_dataset_stratified_split(parser):
-    subparser = parser.add_parser(
-        "stratified_split",
-        description="split Remora datasets in a stratified manner",
-        help="split Remora datasets in a stratified manner",
-        formatter_class=SubcommandHelpFormatter,
-    )
-    subparser.add_argument(
-        "--input-dataset",
-        help="Path to Remora dataset that is to be split",
-    )
-    subparser.add_argument(
-        "--output-basename",
-        help="Name of output split files",
-    )
-    subparser.add_argument(
-        "--val-prop",
-        type=float,
-        help="The proportion of data to be split into validation set, where "
-        "val-prop in [0,0.5)",
-    )
-    subparser.set_defaults(func=run_dataset_stratified_split)
-
-
-def run_dataset_stratified_split(args):
-    from remora.data_chunks import RemoraDataset
-
-    dataset = RemoraDataset.load_from_file(
-        args.input_dataset,
-        shuffle_on_iter=False,
-        drop_last=False,
-    )
-
-    trn_set, val_set = dataset.split_data(args.val_prop, stratified=True)
-
-    LOGGER.info(f"Train set label distribution: {trn_set.get_label_counts()}")
-    LOGGER.info(f"Val set label distribution: {val_set.get_label_counts()}")
-    trn_set.save(f"{args.output_basename}.split_train.npz")
-    val_set.save(f"{args.output_basename}.split_val.npz")
-
-
 ################
 # remora model #
 ################
@@ -420,8 +459,7 @@ def register_model_train(parser):
     data_grp.add_argument(
         "--ext-val",
         nargs="+",
-        help="Path to a file with a list of paths for the external validation "
-        "Remora datasets.",
+        help="Path(s) to the external validation Remora datasets.",
     )
     data_grp.add_argument(
         "--balance",
