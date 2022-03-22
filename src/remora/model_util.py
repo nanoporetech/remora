@@ -1,22 +1,23 @@
+import os
+import sys
 import copy
 import datetime
 import importlib
-import os
-from os.path import isfile
 import pkg_resources
-import sys
+from os.path import isfile
 from collections import namedtuple
 
-from tqdm import tqdm
+import onnx
+import torch
 import numpy as np
 import pandas as pd
-import onnx
-import onnxruntime as ort
-import torch
 from torch import nn
+from tqdm import tqdm
+import onnxruntime as ort
 from sklearn.metrics import precision_recall_curve
 from sklearn.metrics import confusion_matrix, classification_report
 
+from remora.refine_signal_map import SigMapRefiner
 from remora import log, RemoraError, encoded_kmers, util, constants
 
 LOGGER = log.get_logger()
@@ -216,7 +217,6 @@ class ValidationLogger:
 
 
 def _load_python_model(model_file, **model_kwargs):
-
     loader = importlib.machinery.SourceFileLoader("netmodule", model_file)
     netmodule = importlib.util.module_from_spec(
         importlib.util.spec_from_loader(loader.name, loader)
@@ -273,12 +273,22 @@ def export_model(ckpt, model, save_filename):
     meta = onnx_model.metadata_props.add()
     meta.key = "creation_date"
     meta.value = datetime.datetime.now().strftime("%m/%d/%Y, %H:%M:%S")
-    meta = onnx_model.metadata_props.add()
-    meta.key = "base_pred"
-    meta.value = str(ckpt["base_pred"])
-    meta = onnx_model.metadata_props.add()
-    meta.key = "mod_bases"
-    meta.value = str(ckpt["mod_bases"])
+    # add simple metadata
+    for ckpt_key in (
+        "base_pred",
+        "mod_bases",
+        "refine_kmer_center_idx",
+        "refine_do_rough_rescale",
+        "refine_scale_iters",
+        "refine_algo",
+        "refine_half_bandwidth",
+        "base_start_justify",
+        "offset",
+    ):
+        meta = onnx_model.metadata_props.add()
+        meta.key = ckpt_key
+        meta.value = str(ckpt[ckpt_key])
+
     if ckpt["mod_bases"] is not None:
         for mod_idx in range(len(ckpt["mod_bases"])):
             meta = onnx_model.metadata_props.add()
@@ -306,6 +316,19 @@ def export_model(ckpt, model, save_filename):
     meta = onnx_model.metadata_props.add()
     meta.key = "num_motifs"
     meta.value = str(len(ckpt["motifs"]))
+
+    # store refine arrays as bytes
+    meta = onnx_model.metadata_props.add()
+    meta.key = "refine_kmer_levels"
+    meta.value = (
+        ckpt["refine_kmer_levels"].astype(np.float32).tobytes().decode("cp437")
+    )
+    meta = onnx_model.metadata_props.add()
+    meta.key = "refine_sd_arr"
+    meta.value = (
+        ckpt["refine_sd_arr"].astype(np.float32).tobytes().decode("cp437")
+    )
+
     onnx_model.doc_string = "Nanopore Remora model"
     try:
         onnx_model.model_version = ckpt["model_version"]
@@ -422,6 +445,38 @@ def load_onnx_model(model_filename, device=None, quiet=False):
         "loaded modified base model to call (alt to "
         f"{model_metadata['can_base']}): {mod_str}"
     )
+
+    if "refine_kmer_levels" in model_metadata:
+        # load sig_map_refiner
+        levels_array = np.frombuffer(
+            model_metadata["refine_kmer_levels"].encode("cp437"),
+            dtype=np.float32,
+        )
+        refine_sd_arr = np.frombuffer(
+            model_metadata["refine_sd_arr"].encode("cp437"), dtype=np.float32
+        )
+        model_metadata["sig_map_refiner"] = SigMapRefiner(
+            _levels_array=levels_array,
+            center_idx=int(model_metadata["refine_kmer_center_idx"]),
+            do_rough_rescale=bool(
+                int(model_metadata["refine_do_rough_rescale"])
+            ),
+            scale_iters=int(model_metadata["refine_scale_iters"]),
+            algo=model_metadata["refine_algo"],
+            half_bandwidth=int(model_metadata["refine_half_bandwidth"]),
+            sd_arr=refine_sd_arr,
+        )
+
+        model_metadata["base_start_justify"] = (
+            model_metadata["base_start_justify"] == "True"
+        )
+        model_metadata["offset"] = int(model_metadata["offset"])
+    else:
+        # handle original models without sig_map_refiner
+        model_metadata["sig_map_refiner"] = SigMapRefiner()
+        model_metadata["base_start_justify"] = False
+        model_metadata["offset"] = 0
+
     if not quiet:
         ckpt_attrs = "\n".join(
             f"  {k: >20} : {v}" for k, v in model_metadata.items()

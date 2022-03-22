@@ -1,7 +1,8 @@
-import array
 import os
-from os.path import realpath, expanduser
 import re
+import queue
+import array
+from os.path import realpath, expanduser
 
 import numpy as np
 
@@ -297,3 +298,18 @@ def format_mm_ml_tags(seq, poss, probs, mod_bases, can_base):
         ml_tag.extend(scaled_probs.astype(np.uint8))
 
     return mm_tag, ml_tag
+
+
+def queue_iter(in_q, num_proc=1):
+    comp_proc = 0
+    while True:
+        try:
+            r_val = in_q.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        if r_val is StopIteration:
+            comp_proc += 1
+            if comp_proc >= num_proc:
+                break
+        else:
+            yield r_val

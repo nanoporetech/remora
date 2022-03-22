@@ -5,10 +5,12 @@ import numpy as np
 from tqdm import tqdm
 
 from remora import constants, log, RemoraError, util
+from remora.refine_signal_map import SigMapRefiner
 
 LOGGER = log.get_logger()
 
 DEFAULT_BATCH_SIZE = 1024
+DATASET_VERSION = 2
 MISMATCH_ARRS = {
     0: np.array([1, 2, 3]),
     1: np.array([0, 2, 3]),
@@ -23,7 +25,10 @@ class RemoraRead:
     inference.
 
     Args:
-        sig (np.ndarray): Normalized signal
+        dacs (np.ndarray): Unnormalized DAC signal
+        shift (float): Shift from dac to normalized signal. via formula:
+            norm = (dac - shift) / scale
+        scale (float): Scale from dac to normalized signal
         seq_to_sig_map (np.ndarray): Position within signal array assigned to
             each base in seq
         int_seq (np.ndarray): Encoded sequence for training/validation.
@@ -31,17 +36,22 @@ class RemoraRead:
         str_seq (str): String sequence for training/validation. Ignored if
             int_seq is provided.
         read_id (str): Read identifier
+        labels (np.ndarray): Output label for each base in read
+        focus_bases (np.ndarray): Sites from read to produce calls
 
     Note: Must provide either int_seq or str_seq. If str_seq is provided
     int_seq will be derived on init.
     """
 
-    sig: np.ndarray
+    dacs: np.ndarray
+    shift: float
+    scale: float
     seq_to_sig_map: np.ndarray
     int_seq: np.ndarray = None
     str_seq: str = None
     read_id: str = None
     labels: np.ndarray = None
+    focus_bases: np.ndarray = None
 
     def __post_init__(self):
         if self.int_seq is None:
@@ -54,15 +64,26 @@ class RemoraRead:
         else:
             # set str_seq from int_seq to ensure the sequences match
             self.str_seq = util.int_to_seq(self.int_seq)
+        self._sig = None
+        self._dwells = None
+        self._sig_cumsum = None
+        self._base_levels = None
 
     @classmethod
-    def from_taiyaki_read(cls, read, can_conv, label_conv, check_read=True):
-        sig = read.get_current(read.get_mapped_dacs_region())
+    def from_taiyaki_read(
+        cls, read, can_conv, label_conv=None, check_read=True
+    ):
+        dacs = read.get_dacs(read.get_mapped_dacs_region())
+        rd_factor = read.range / read.digitisation
+        shift_from_dacs = (read.shift_frompA / rd_factor) - read.offset
+        scale_from_dacs = read.scale_frompA / rd_factor
         int_seq = can_conv[read.Reference]
         seq_to_sig_map = read.Ref_to_signal - read.Ref_to_signal[0]
         labels = None if label_conv is None else label_conv[read.Reference]
         read = cls(
-            sig,
+            dacs,
+            shift_from_dacs,
+            scale_from_dacs,
             seq_to_sig_map,
             int_seq=int_seq,
             read_id=util.to_str(read.read_id),
@@ -77,11 +98,42 @@ class RemoraRead:
         """Spoofed read for testing"""
         return cls(
             np.zeros(nbases * signal_per_base),
+            0.0,
+            1.0,
             np.arange(nbases * signal_per_base + 1, step=signal_per_base),
             np.arange(nbases) % 4,
-            "read0",
+            "test_read",
             np.zeros(nbases, dtype=np.long),
         )
+
+    @property
+    def sig(self):
+        if self._sig is None:
+            self._sig = (self.dacs - self.shift) / self.scale
+        return self._sig
+
+    @property
+    def sig_cumsum(self):
+        if self._sig_cumsum is None:
+            self._sig_cumsum = np.empty(self.sig.size + 1)
+            self._sig_cumsum[0] = 0
+            self._sig_cumsum[1:] = np.cumsum(self.sig)
+        return self._sig_cumsum
+
+    @property
+    def dwells(self):
+        if self._dwells is None:
+            self._dwells = np.diff(self.seq_to_sig_map)
+        return self._dwells
+
+    @property
+    def base_levels(self):
+        if self._base_levels is None:
+            with np.errstate(invalid="ignore"):
+                self._base_levels = (
+                    np.diff(self.sig_cumsum[self.seq_to_sig_map]) / self.dwells
+                )
+        return self._base_levels
 
     def check(self):
         if self.seq_to_sig_map.size != self.int_seq.size + 1:
@@ -89,16 +141,19 @@ class RemoraRead:
                 "Invalid read: seq and mapping mismatch "
                 f"{self.seq_to_sig_map.size} != {self.int_seq.size + 1}"
             )
-            raise RemoraError("Invalid read: seq and mapping mismatch")
+            raise RemoraError(
+                f"Invalid read: seq ({self.int_seq.size}) and mapping "
+                f"({self.seq_to_sig_map.size}) sizes incompatible"
+            )
         if self.seq_to_sig_map[0] != 0:
             LOGGER.debug(
-                "Invalid read: invalid mapping start "
+                f"Invalid read {self.read_id} : invalid mapping start "
                 f"{self.seq_to_sig_map[0]} != 0"
             )
             raise RemoraError("Invalid read: mapping start")
         if self.seq_to_sig_map[-1] != self.sig.size:
             LOGGER.debug(
-                "Invalid read: invalid mapping end "
+                f"Invalid read {self.read_id} : invalid mapping end "
                 f"{self.seq_to_sig_map[-1]} != {self.sig.size}"
             )
             raise RemoraError("Invalid read: mapping end")
@@ -109,6 +164,69 @@ class RemoraRead:
             LOGGER.debug(f"Invalid read: Invalid base {self.int_seq.min()}")
             raise RemoraError("Invalid read: Invalid base")
         # TODO add more logic to these tests
+
+    def copy(self):
+        return RemoraRead(
+            dacs=self.dacs.copy(),
+            shift=self.shift,
+            scale=self.scale,
+            seq_to_sig_map=self.seq_to_sig_map,
+            int_seq=None if self.int_seq is None else self.int_seq.copy(),
+            str_seq=self.str_seq,
+            read_id=self.read_id,
+            labels=None if self.labels is None else self.labels.copy(),
+            focus_bases=None
+            if self.focus_bases is None
+            else self.focus_bases.copy(),
+        )
+
+    def refine_signal_mapping(self, sig_map_refiner):
+        if not sig_map_refiner.is_loaded:
+            return
+        if sig_map_refiner.do_rough_rescale:
+            prev_shift, prev_scale = self.shift, self.scale
+            self.shift, self.scale = sig_map_refiner.rough_rescale(
+                self.shift,
+                self.scale,
+                self.seq_to_sig_map,
+                self.int_seq,
+                self.dacs,
+            )
+            LOGGER.debug(f"rough_rescale_shift: {prev_shift} {self.shift}")
+            LOGGER.debug(f"rough_rescale_scale: {prev_scale} {self.scale}")
+            self._sig = None
+            self._sig_cumsum = None
+            self._base_levels = None
+        if sig_map_refiner.scale_iters >= 0:
+            prev_shift, prev_scale = self.shift, self.scale
+            prev_seq_to_sig_map = self.seq_to_sig_map.copy()
+            try:
+                (
+                    self.seq_to_sig_map,
+                    self.shift,
+                    self.scale,
+                ) = sig_map_refiner.refine_sig_map(
+                    self.shift,
+                    self.scale,
+                    self.seq_to_sig_map,
+                    self.int_seq,
+                    self.dacs,
+                )
+            except IndexError as e:
+                LOGGER.debug(f"refine_error {self.read_id} {e}")
+            # reset computed values after refinement
+            self._sig = None
+            self._dwells = None
+            self._sig_cumsum = None
+            self._base_levels = None
+            LOGGER.debug(f"refine_mapping_shift: {prev_shift} {self.shift}")
+            LOGGER.debug(f"refine_mapping_scale: {prev_scale} {self.scale}")
+            sig_map_diffs = self.seq_to_sig_map - prev_seq_to_sig_map
+            LOGGER.debug(
+                f"refine_mapping_median_adjust: {np.median(sig_map_diffs)} "
+                f"{self.read_id}"
+            )
+        self.check()
 
     def iter_motif_hits(self, motif):
         yield from np.where(
@@ -127,6 +245,28 @@ class RemoraRead:
                 ]
             )
         )[0]
+
+    def add_motif_focus_bases(self, motifs):
+        self.focus_bases = np.fromiter(
+            set(
+                mot_pos + mot.focus_pos
+                for mot in motifs
+                for mot_pos in self.iter_motif_hits(mot)
+            ),
+            int,
+        )
+
+    def downsample_focus_bases(self, max_sites):
+        if self.focus_bases is not None and self.focus_bases.size > max_sites:
+            LOGGER.debug(
+                f"selected {max_sites} focus bases from "
+                f"{self.focus_bases.size} in read {self.read_id}"
+            )
+            self.focus_bases = np.random.choice(
+                self.focus_bases,
+                size=max_sites,
+                replace=False,
+            )
 
     def extract_chunk(
         self,
@@ -223,18 +363,26 @@ class RemoraRead:
 
     def iter_chunks(
         self,
-        focus_base_indices,
         chunk_context,
         kmer_context_bases,
         base_pred=False,
+        base_start_justify=False,
+        offset=0,
     ):
-        for focus_base_idx in focus_base_indices:
-            # compute position at center of central base
-            focus_sig_idx = (
-                self.seq_to_sig_map[focus_base_idx]
-                + self.seq_to_sig_map[focus_base_idx + 1]
-            ) // 2
-            label = -1 if self.labels is None else self.labels[focus_base_idx]
+        for focus_base in self.focus_bases:
+            label = -1 if self.labels is None else self.labels[focus_base]
+            # add offset and ensure not out of bounds
+            focus_base = max(
+                min(focus_base + offset, self.seq_to_sig_map.size - 2), 0
+            )
+            if base_start_justify:
+                focus_sig_idx = self.seq_to_sig_map[focus_base]
+            else:
+                # compute position at center of central base
+                focus_sig_idx = (
+                    self.seq_to_sig_map[focus_base]
+                    + self.seq_to_sig_map[focus_base + 1]
+                ) // 2
             try:
                 yield self.extract_chunk(
                     focus_sig_idx,
@@ -242,7 +390,7 @@ class RemoraRead:
                     kmer_context_bases,
                     label=label,
                     base_pred=base_pred,
-                    read_seq_pos=focus_base_idx,
+                    read_seq_pos=focus_base,
                 )
             except Exception as e:
                 LOGGER.debug(f"FAILED_CHUNK_EXTRACT {e}")
@@ -301,6 +449,22 @@ class Chunk:
                 f"FAILED_CHUNK: map_len {self.read_id} {self.read_seq_pos}"
             )
             raise RemoraError("Invalid sig to seq map length")
+        if not np.all(np.diff(self.seq_to_sig_map) >= 0):
+            LOGGER.debug(
+                f"FAILED_CHUNK: not monotonic {self.read_id} "
+                f"{self.seq_to_sig_map}"
+            )
+        if self.seq_to_sig_map[0] < 0:
+            LOGGER.debug(
+                f"FAILED_CHUNK: start<0 {self.read_id} {self.seq_to_sig_map[0]}"
+            )
+            raise RemoraError("Seq to sig map starts before 0")
+        if self.seq_to_sig_map[-1] > self.signal.size:
+            LOGGER.debug(
+                f"FAILED_CHUNK: end>sig_len {self.read_id} "
+                f"{self.seq_to_sig_map[-1]}"
+            )
+            raise RemoraError("Seq to sig map ends after signal")
         # TODO add more logic to these checks
 
     @property
@@ -310,6 +474,13 @@ class Chunk:
     @property
     def seq_len(self):
         return self.seq_w_context.size - sum(self.kmer_context_bases)
+
+    @property
+    def seq(self):
+        return self.seq_w_context[
+            self.kmer_context_bases[0] : self.kmer_context_bases[0]
+            + self.seq_len
+        ]
 
     @property
     def base_sig_lens(self):
@@ -353,6 +524,11 @@ class RemoraDataset:
         batch_size (int): Size of batches to be produced
         shuffle_on_iter (bool): Shuffle data before each iteration over batches
         drop_last (bool): Drop the last batch of each iteration
+        sig_map_refiner (remora.refine_signal_map.SigMapRefiner): Signal
+            mapping refiner
+        base_start_justify (bool): Extract chunk centered on start of base
+        offset (int): Extract chunk centered on base offset from base of
+            interest
 
     Yields:
         Batches of data for training or inference
@@ -382,6 +558,13 @@ class RemoraDataset:
     shuffle_on_iter: bool = True
     drop_last: bool = True
 
+    # signal mapping refinement params
+    sig_map_refiner: SigMapRefiner = None
+
+    # chunk extraction attributes
+    base_start_justify: bool = False
+    offset: int = 0
+
     def set_nbatches(self):
         self.nbatches, remainder = divmod(self.nchunks, self.batch_size)
         if not self.drop_last and remainder > 0:
@@ -401,6 +584,7 @@ class RemoraDataset:
                 f"mod_long_names ({self.mod_long_names}) must be same length "
                 f"as mod_bases ({self.mod_bases})"
             )
+        self.motifs = sorted(set(self.motifs))
         self.set_nbatches()
         self.shuffled = False
 
@@ -527,6 +711,7 @@ class RemoraDataset:
             motifs=self.motifs,
             store_read_data=self.store_read_data,
             batch_size=self.batch_size,
+            sig_map_refiner=self.sig_map_refiner,
         )
 
     def copy(self):
@@ -591,9 +776,7 @@ class RemoraDataset:
                 f"({self.sig_tensor.shape[0]} < {int(1 / val_prop) * 2})"
             )
         elif val_prop > 0.5:
-            raise RemoraError(
-                "Validation set size must be less than half of full training set"
-            )
+            raise RemoraError("Validation proportion must be between 0 and 0.5")
         common_kwargs = {
             "chunk_context": self.chunk_context,
             "max_seq_len": self.max_seq_len,
@@ -604,28 +787,26 @@ class RemoraDataset:
             "motifs": self.motifs,
             "store_read_data": self.store_read_data,
             "batch_size": self.batch_size,
+            "sig_map_refiner": self.sig_map_refiner,
         }
         if not self.shuffled:
             self.shuffle()
-        val_idx = int(self.sig_tensor.shape[0] * val_prop)
         if stratified:
-            class_counts = self.get_label_counts()
-            class_num_vals = (
-                val_prop * np.fromiter(class_counts.values(), dtype=int)
-            ).astype(int)
-
             val_indices = []
             trn_indices = []
-
-            for class_label in range(len(class_counts)):
+            for class_label in range(self.num_labels):
                 class_indices = np.where(self.labels == class_label)[0]
+                if class_indices.size == 0:
+                    continue
                 np.random.shuffle(class_indices)
-                val_indices.append(class_indices[: class_num_vals[class_label]])
-                trn_indices.append(class_indices[class_num_vals[class_label] :])
+                cls_val_idx = int(val_prop * class_indices.size)
+                val_indices.append(class_indices[:cls_val_idx])
+                trn_indices.append(class_indices[cls_val_idx:])
 
             val_indices = np.concatenate(val_indices)
             trn_indices = np.concatenate(trn_indices)
         else:
+            val_idx = int(self.sig_tensor.shape[0] * val_prop)
             val_indices = np.arange(0, val_idx)
             trn_indices = np.arange(val_idx, self.sig_tensor.shape[0])
 
@@ -658,11 +839,12 @@ class RemoraDataset:
         return trn_ds, val_ds
 
     def split_by_label(self):
-        labels = "ACGT" if self.base_pred else self.mod_long_names
+        if self.base_pred:
+            labels = "ACGT"
+        else:
+            labels = ["control"] + self.mod_long_names
         label_datasets = []
         for int_label, label in enumerate(labels):
-            if not self.base_pred:
-                int_label += 1
             label_indices = np.equal(self.labels, int_label)
             label_datasets.append(
                 (
@@ -687,6 +869,7 @@ class RemoraDataset:
                         motifs=self.motifs,
                         store_read_data=self.store_read_data,
                         batch_size=self.batch_size,
+                        sig_map_refiner=self.sig_map_refiner,
                     ),
                 )
             )
@@ -730,6 +913,7 @@ class RemoraDataset:
             mod_bases=self.mod_bases,
             mod_long_names=self.mod_long_names,
             motifs=self.motifs,
+            sig_map_refiner=self.sig_map_refiner,
         )
 
     def filter(self, indices):
@@ -757,6 +941,7 @@ class RemoraDataset:
             motifs=self.motifs,
             store_read_data=self.store_read_data,
             batch_size=self.batch_size,
+            sig_map_refiner=self.sig_map_refiner,
         )
 
     def add_fake_base(self, new_mod_long_names, new_mod_bases):
@@ -789,6 +974,67 @@ class RemoraDataset:
             mod_long_names=self.mod_long_names,
             motifs=[mot[0] for mot in self.motifs],
             motif_offset=[mot[1] for mot in self.motifs],
+            base_start_justify=int(self.base_start_justify),
+            offset=self.offset,
+            version=DATASET_VERSION,
+            **self.sig_map_refiner.get_save_kwargs(),
+        )
+
+    @classmethod
+    def load_from_file(cls, filename, *args, **kwargs):
+        # use allow_pickle=True to allow None type in read_data
+        data = np.load(filename, allow_pickle=True)
+        try:
+            version = int(data["version"].item())
+        except KeyError:
+            version = None
+        if version is None or version != DATASET_VERSION:
+            raise RemoraError(
+                f"Remora dataset version ({version}) does "
+                f"not match current distribution ({DATASET_VERSION})"
+            )
+        read_data = data["read_data"].tolist()
+        chunk_context = tuple(data["chunk_context"].tolist())
+        kmer_context_bases = tuple(data["kmer_context_bases"].tolist())
+        base_pred = data["base_pred"].item()
+        mod_bases = data["mod_bases"].item()
+        mod_long_names = tuple(data["mod_long_names"].tolist())
+        if isinstance(data["motif_offset"].tolist(), int):
+            motifs = [
+                (mot, mot_off)
+                for mot, mot_off in zip(
+                    [data["motif"].tolist()], [data["motif_offset"].tolist()]
+                )
+            ]
+        else:
+            motifs = [
+                (mot, mot_off)
+                for mot, mot_off in zip(
+                    data["motifs"].tolist(), data["motif_offset"].tolist()
+                )
+            ]
+        sig_map_refiner = SigMapRefiner.load_from_np_savez(data)
+        base_start_justify = bool(int(data["base_start_justify"].item()))
+        offset = int(data["offset"].item())
+        return cls(
+            data["sig_tensor"],
+            data["seq_array"],
+            data["seq_mappings"],
+            data["seq_lens"],
+            data["labels"],
+            read_data,
+            chunk_context=chunk_context,
+            kmer_context_bases=kmer_context_bases,
+            base_pred=base_pred,
+            mod_bases=mod_bases,
+            mod_long_names=mod_long_names,
+            motifs=motifs,
+            store_read_data=read_data is not None,
+            sig_map_refiner=sig_map_refiner,
+            base_start_justify=base_start_justify,
+            offset=offset,
+            *args,
+            **kwargs,
         )
 
     def perturb_seq_mismatch(self, mm_rate):
@@ -849,49 +1095,9 @@ class RemoraDataset:
 
     @property
     def num_labels(self):
+        if self.base_pred:
+            return 4
         return len(self.mod_bases) + 1
-
-    @classmethod
-    def load_from_file(cls, filename, *args, **kwargs):
-        # use allow_pickle=True to allow None type in read_data
-        data = np.load(filename, allow_pickle=True)
-        read_data = data["read_data"].tolist()
-        chunk_context = tuple(data["chunk_context"].tolist())
-        kmer_context_bases = tuple(data["kmer_context_bases"].tolist())
-        base_pred = data["base_pred"].item()
-        mod_bases = data["mod_bases"].item()
-        mod_long_names = tuple(data["mod_long_names"].tolist())
-        if isinstance(data["motif_offset"].tolist(), int):
-            motifs = [
-                (mot, mot_off)
-                for mot, mot_off in zip(
-                    [data["motif"].tolist()], [data["motif_offset"].tolist()]
-                )
-            ]
-        else:
-            motifs = [
-                (mot, mot_off)
-                for mot, mot_off in zip(
-                    data["motifs"].tolist(), data["motif_offset"].tolist()
-                )
-            ]
-        return cls(
-            data["sig_tensor"],
-            data["seq_array"],
-            data["seq_mappings"],
-            data["seq_lens"],
-            data["labels"],
-            read_data,
-            chunk_context=chunk_context,
-            kmer_context_bases=kmer_context_bases,
-            base_pred=base_pred,
-            mod_bases=mod_bases,
-            mod_long_names=mod_long_names,
-            motifs=motifs,
-            store_read_data=read_data is not None,
-            *args,
-            **kwargs,
-        )
 
     @classmethod
     def allocate_empty_chunks(
@@ -942,7 +1148,7 @@ class RemoraDataset:
         )
 
 
-def merge_datasets(input_datasets, balance=False):
+def merge_datasets(input_datasets, balance=False, quiet=False):
     def load_dataset(ds_path, num_chunks):
         dataset = RemoraDataset.load_from_file(
             ds_path,
@@ -955,6 +1161,8 @@ def merge_datasets(input_datasets, balance=False):
             num_chunks = dataset.nchunks
         return dataset, num_chunks
 
+    log_fp = LOGGER.debug if quiet else LOGGER.info
+
     # load first file to determine base_pred or mod_bases
     datasets = [load_dataset(*input_datasets[0])]
     base_pred = datasets[0][0].base_pred
@@ -962,6 +1170,9 @@ def merge_datasets(input_datasets, balance=False):
     max_seq_len = datasets[0][0].max_seq_len
     kmer_context_bases = datasets[0][0].kmer_context_bases
     motifs = datasets[0][0].motifs
+    sig_map_refiner = datasets[0][0].sig_map_refiner
+    base_start_justify = datasets[0][0].base_start_justify
+    offset = datasets[0][0].offset
     for ds_path, num_chunks in input_datasets[1:]:
         datasets.append(load_dataset(ds_path, num_chunks))
         if datasets[-1][0].base_pred != base_pred:
@@ -983,7 +1194,7 @@ def merge_datasets(input_datasets, balance=False):
                 f"{kmer_context_bases})"
             )
         if datasets[-1][0].motifs != motifs:
-            LOGGER.info(
+            log_fp(
                 "WARNING: Datasets have different motifs. Merging motifs "
                 f"{motifs} with motifs {datasets[-1][0].motifs}"
             )
@@ -993,6 +1204,7 @@ def merge_datasets(input_datasets, balance=False):
                     motif for dataset in datasets for motif in dataset[0].motifs
                 )
             )
+        # TODO add checks for refine attributes
 
     all_mod_bases = ""
     if base_pred:
@@ -1015,6 +1227,9 @@ def merge_datasets(input_datasets, balance=False):
         mod_bases=all_mod_bases,
         mod_long_names=all_mod_long_names,
         motifs=motifs,
+        sig_map_refiner=sig_map_refiner,
+        base_start_justify=base_start_justify,
+        offset=offset,
     )
     for input_dataset, num_chunks in datasets:
         if base_pred:
@@ -1056,7 +1271,7 @@ def merge_datasets(input_datasets, balance=False):
             output_dataset.add_batch(
                 b_sig, b_seq, b_ss_map, b_seq_lens, b_labels, b_rd
             )
-        LOGGER.info(
+        log_fp(
             f"Copied {added_chunks} chunks. New label distribution: "
             f"{output_dataset.get_label_counts()}"
         )
@@ -1064,7 +1279,7 @@ def merge_datasets(input_datasets, balance=False):
     output_dataset.clip_chunks()
     if balance:
         balanced_dataset = output_dataset.balance_classes()
-        LOGGER.info(
+        log_fp(
             f"Balanced out to {balanced_dataset.sig_tensor.shape[0]} chunks. "
             f"New label distribution: {balanced_dataset.get_label_counts()}"
         )
