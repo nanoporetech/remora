@@ -91,7 +91,7 @@ MODEL_DICT = {
         },
         "sup": {
             DEFAULT_BASECALL_MODEL_VERSION: {
-                "5mc": {"CG": [0]},
+                "5mc": {"CG": [0, 1]},
                 "5hmc_5mc": {"CG": [0]},
             },
         },
