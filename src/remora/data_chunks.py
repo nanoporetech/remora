@@ -1099,6 +1099,25 @@ class RemoraDataset:
             return 4
         return len(self.mod_bases) + 1
 
+    @property
+    def summary(self):
+        return (
+            f"               num chunks : {self.nchunks}\n"
+            f"       label distribution : {self.get_label_counts()}\n"
+            f"                base_pred : {self.base_pred}\n"
+            f"                mod_bases : {self.mod_bases}\n"
+            f"           mod_long_names : {self.mod_long_names}\n"
+            f"       kmer_context_bases : {self.kmer_context_bases}\n"
+            f"            chunk_context : {self.chunk_context}\n"
+            f"                   motifs : {self.motifs}\n"
+            f" chunk_extract_base_start : {self.base_start_justify}\n"
+            f"     chunk_extract_offset : {self.offset}\n"
+            f"          sig_map_refiner : {self.sig_map_refiner}\n"
+        )
+
+    def __repr__(self):
+        return self.summary
+
     @classmethod
     def allocate_empty_chunks(
         cls,

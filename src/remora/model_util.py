@@ -34,8 +34,9 @@ VAL_METRICS = namedtuple(
         "prec",
         "recall",
         "num_calls",
+        "conf_mat",
         "filt_frac",
-        "confusion",
+        "filt_conf_mat",
     ),
 )
 
@@ -49,6 +50,7 @@ def compute_metrics(
     mean_loss = np.mean(all_loss)
     num_calls = all_labels.size
     pred_labels = np.argmax(all_outputs, axis=1)
+    conf_mat = confusion_matrix(all_labels, pred_labels)
     acc = (pred_labels == all_labels).sum() / num_calls
     cl_rep = classification_report(
         all_labels,
@@ -76,7 +78,7 @@ def compute_metrics(
     # metrics involving confidence thresholding
     all_probs = util.softmax_axis1(all_outputs)
     conf_chunks = np.max(all_probs > conf_thr, axis=1)
-    conf_mat = confusion_matrix(
+    filt_conf_mat = confusion_matrix(
         all_labels[conf_chunks], np.argmax(all_probs[conf_chunks], axis=1)
     )
     filt_frac = np.logical_not(conf_chunks).sum() / num_calls
@@ -89,8 +91,9 @@ def compute_metrics(
         prec=prec,
         recall=recall,
         num_calls=num_calls,
+        conf_mat=conf_mat,
         filt_frac=filt_frac,
-        confusion=conf_mat,
+        filt_conf_mat=conf_mat,
     )
 
 
@@ -175,6 +178,7 @@ class ValidationLogger:
                     "Precision",
                     "Recall",
                     "Num_Calls",
+                    "Confusion_Matrix",
                     "Filtered_Fraction",
                     "Filtered_Confusion_Matrix",
                 )
@@ -205,13 +209,16 @@ class ValidationLogger:
             conf_thr,
             display_progress_bar=display_progress_bar,
         )
-        cm_flat_str = np.array2string(
-            ms.confusion.flatten(), separator=","
+        cm_str = np.array2string(ms.conf_mat.flatten(), separator=",").replace(
+            "\n", ""
+        )
+        fcm_str = np.array2string(
+            ms.filt_conf_mat.flatten(), separator=","
         ).replace("\n", "")
         self.fp.write(
             f"{val_type}\t{nepoch}\t{niter}\t{ms.acc:.6f}\t{ms.loss:.6f}\t"
             f"{ms.min_f1:.6f}\t{ms.f1:.6f}\t{ms.prec:.6f}\t{ms.recall:.6f}\t"
-            f"{ms.num_calls}\t{ms.filt_frac:.4f}\t{cm_flat_str}\n"
+            f"{ms.num_calls}\t{cm_str}\t{ms.filt_frac:.4f}\t{fcm_str}\n"
         )
         return ms
 
@@ -367,7 +374,7 @@ def load_onnx_model(model_filename, device=None, quiet=False):
         provider_options = [{"device_id": str(device)}]
     # set severity to error so CPU fallback messages are masked
     ort.set_default_logger_severity(3)
-    LOGGER.debug(f"Using {ONNX_NUM_THREADS} thread for ONNX")
+    LOGGER.debug(f"Using {ONNX_NUM_THREADS} thread(s) for ONNX")
     so = ort.SessionOptions()
     so.inter_op_num_threads = ONNX_NUM_THREADS
     so.intra_op_num_threads = ONNX_NUM_THREADS
@@ -478,8 +485,26 @@ def load_onnx_model(model_filename, device=None, quiet=False):
         model_metadata["offset"] = 0
 
     if not quiet:
+        # skip attributes included in parsed values
         ckpt_attrs = "\n".join(
-            f"  {k: >20} : {v}" for k, v in model_metadata.items()
+            f"  {k: >20} : {v}"
+            for k, v in model_metadata.items()
+            if not any(
+                k.startswith(val)
+                for val in (
+                    "mod_long_names_",
+                    "kmer_context_bases_",
+                    "chunk_context_",
+                    "motif_",
+                    "refine_kmer_levels",
+                    "refine_sd_arr",
+                    "refine_kmer_center_idx",
+                    "refine_do_rough_rescale",
+                    "refine_scale_iters",
+                    "refine_algo",
+                    "refine_half_bandwidth",
+                )
+            )
         )
         LOGGER.debug(f"Loaded Remora model attrs\n{ckpt_attrs}\n")
     return model_sess, model_metadata

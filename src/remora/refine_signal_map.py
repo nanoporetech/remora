@@ -121,6 +121,30 @@ class SigMapRefiner:
     center_idx: int = -1
     is_loaded: bool = False
 
+    def __repr__(self):
+        if not self.is_loaded:
+            return "No Remora signal refine/map settings loaded"
+        r_str = (
+            f"Loaded {self.kmer_len}-mer table with {self.center_idx + 1} "
+            "central position."
+        )
+        if self.do_rough_rescale:
+            r_str += " Rough re-scaling will be executed."
+        if self.scale_iters > 0:
+            r_str += (
+                f" {self.scale_iters} rounds of signal mapping refinement "
+                "followed by precise re-scaling will be executed."
+            )
+        if self.scale_iters >= 0:
+            r_str += (
+                " Signal mapping refinement will be executed using the "
+                f"{self.algo} refinement method (band half width: "
+                f"{self.half_bandwidth})."
+            )
+            if self.algo == REFINE_ALGO_DWELL_PEN_NAME:
+                r_str += f" Short dwell penalty array set to {self.sd_params}."
+        return r_str
+
     def load_kmer_table(self):
         self.str_kmer_levels = {}
         with open(self.kmer_model_filename) as kmer_fp:

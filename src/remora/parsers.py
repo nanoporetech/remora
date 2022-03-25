@@ -300,7 +300,7 @@ def run_dataset_split(args):
         shuffle_on_iter=False,
         drop_last=False,
     )
-    LOGGER.info(f"Loaded set label distribution: {dataset.get_label_counts()}")
+    LOGGER.info(f"Loaded dataset summary:\n{dataset.summary}")
 
     if args.by_label:
         for label, label_dataset in dataset.split_by_label():
@@ -343,17 +343,7 @@ def run_dataset_inspect(args):
         shuffle_on_iter=False,
         drop_last=False,
     )
-    LOGGER.info(
-        "Loaded data info from file:\n"
-        f"          base_pred : {dataset.base_pred}\n"
-        f"          mod_bases : {dataset.mod_bases}\n"
-        f"     mod_long_names : {dataset.mod_long_names}\n"
-        f" kmer_context_bases : {dataset.kmer_context_bases}\n"
-        f"      chunk_context : {dataset.chunk_context}\n"
-        f" motifs : {dataset.motifs}\n"
-    )
-    LOGGER.info(f"Label distribution: {dataset.get_label_counts()}")
-    LOGGER.info(f"Total num chunks: {dataset.nchunks}")
+    print(f"Dataset summary:\n{dataset.summary}")
 
 
 def register_dataset_merge(parser):
@@ -879,16 +869,9 @@ def run_infer_from_remora_dataset(args):
 
     dataset.trim_kmer_context_bases(model_metadata["kmer_context_bases"])
     dataset.trim_chunk_context(model_metadata["chunk_context"])
-    LOGGER.info(
-        "Loaded data info from file:\n"
-        f"          base_pred : {dataset.base_pred}\n"
-        f"          mod_bases : {dataset.mod_bases}\n"
-        f" kmer_context_bases : {dataset.kmer_context_bases}\n"
-        f"      chunk_context : {dataset.chunk_context}\n"
-        f"              motifs : {dataset.motifs}\n"
-    )
-    val_fp = ValidationLogger(Path(args.out_file))
+    LOGGER.info(f"Loaded dataset summary:\n{dataset.summary}")
 
+    val_fp = ValidationLogger(Path(args.out_file))
     criterion = torch.nn.CrossEntropyLoss()
 
     LOGGER.info("Running external validation")

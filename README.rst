@@ -85,7 +85,12 @@ Data Preparation
 ----------------
 
 Remora data preparation begins from Taiyaki mapped signal files generally produced from Megalodon containing modified base annotations.
-This requires installation of Taiyaki via ``pip install git+https://github.com/nanoporetech/taiyaki``.
+This requires installation of Taiyaki via
+
+.. code-block:: bash
+
+  git clone https://github.com/nanoporetech/taiyaki
+  pip install taiyaki/
 
 An example dataset might be pre-processed with the following commands.
 

@@ -132,14 +132,7 @@ def train_model(
     dataset.trim_kmer_context_bases(kmer_context_bases)
     dataset.trim_chunk_context(chunk_context)
     # load attributes from file
-    LOGGER.info(
-        "Loaded data info from file:\n"
-        f"          base_pred : {dataset.base_pred}\n"
-        f"          mod_bases : {dataset.mod_bases}\n"
-        f" kmer_context_bases : {dataset.kmer_context_bases}\n"
-        f"      chunk_context : {dataset.chunk_context}\n"
-        f"             motifs : {dataset.motifs}\n"
-    )
+    LOGGER.info(f"Dataset summary:\n{dataset.summary}")
 
     out_log = out_path / "validation.log"
     val_fp = model_util.ValidationLogger(out_log)
