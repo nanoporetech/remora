@@ -1,6 +1,7 @@
 import os
 import sys
 import copy
+import json
 import datetime
 import importlib
 import pkg_resources
@@ -93,7 +94,7 @@ def compute_metrics(
         num_calls=num_calls,
         conf_mat=conf_mat,
         filt_frac=filt_frac,
-        filt_conf_mat=conf_mat,
+        filt_conf_mat=filt_conf_mat,
     )
 
 
@@ -209,12 +210,8 @@ class ValidationLogger:
             conf_thr,
             display_progress_bar=display_progress_bar,
         )
-        cm_str = np.array2string(ms.conf_mat.flatten(), separator=",").replace(
-            "\n", ""
-        )
-        fcm_str = np.array2string(
-            ms.filt_conf_mat.flatten(), separator=","
-        ).replace("\n", "")
+        cm_str = json.dumps(ms.conf_mat.tolist(), separators=(",", ":"))
+        fcm_str = json.dumps(ms.filt_conf_mat.tolist(), separators=(",", ":"))
         self.fp.write(
             f"{val_type}\t{nepoch}\t{niter}\t{ms.acc:.6f}\t{ms.loss:.6f}\t"
             f"{ms.min_f1:.6f}\t{ms.f1:.6f}\t{ms.prec:.6f}\t{ms.recall:.6f}\t"

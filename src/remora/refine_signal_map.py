@@ -306,8 +306,8 @@ class SigMapRefiner:
             shift (float): Shift from dac to normalized signal. via formula:
                 norm = (dac - shift) / scale
             scale (float): Scale from dac to normalized signal
-            seq_to_sig_map (np.ndarray): Position within signal array assigned to
-                each base in seq
+            seq_to_sig_map (np.ndarray): Position within signal array assigned
+                to each base in seq
             dwell_filter_pctls (tuple): Lower and upper percentile values to
                 filter short and stalled bases from estimation
             min_abs_level (float): Minimum (absolute values) level to include
