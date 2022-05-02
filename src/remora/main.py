@@ -9,6 +9,7 @@ from remora.parsers import (
     register_dataset,
     register_model,
     register_infer,
+    register_validate,
     SubcommandHelpFormatter,
 )
 
@@ -50,6 +51,7 @@ def run():
     register_dataset(subparsers)
     register_model(subparsers)
     register_infer(subparsers)
+    register_validate(subparsers)
 
     args = parser.parse_args()
     cmd_func = args.func

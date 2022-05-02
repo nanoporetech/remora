@@ -887,3 +887,51 @@ def run_infer_from_remora_dataset(args):
         f"Validation accuracy : {val_metrics.acc:.6f}\n"
         f"    Validation loss : {val_metrics.loss:.6f}\n"
     )
+
+
+###################
+# remora validate #
+###################
+
+
+def register_validate(parser):
+    subparser = parser.add_parser(
+        "validate",
+        description="Validate modified base predictions",
+        help="Validate modified base predictions",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    ssubparser = subparser.add_subparsers(title="validation commands")
+    # Since `validate` has several sub-commands, print help as default
+    subparser.set_defaults(func=lambda x: subparser.print_help())
+    # Register model sub commands
+    register_validate_from_modbams(ssubparser)
+
+
+def register_validate_from_modbams(parser):
+    subparser = parser.add_parser(
+        "from_modbams",
+        description="Run validation BAM files with modified base tags",
+        help="""Validate on modBAMs. Prints a single line
+        with 1) error rate, 2) false positive rate, 3) false negative rate,
+        4) fraction of calls filtered, 6) total number of calls,
+        7) thresholds (in modbam 0-255 scale), and 8) [--name]""",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    subparser.add_argument("--can-bams", nargs="+", required=True)
+    subparser.add_argument("--mod-bams", nargs="+", required=True)
+    subparser.add_argument("--name", default="sample")
+    subparser.add_argument("--fixed-thresh", nargs=2, type=float)
+    subparser.add_argument("--regions", nargs="+")
+    subparser.add_argument("--pct-filt", type=float)
+    subparser.add_argument("--mod-base", default="m")
+    subparser.add_argument("--allow-unbalanced", action="store_true")
+    subparser.add_argument("--allow-unmapped-bases", action="store_true")
+
+    subparser.set_defaults(func=run_validate_from_modbams)
+
+
+def run_validate_from_modbams(args):
+    from remora.validate import validate_from_modbams
+
+    validate_from_modbams(args)
