@@ -100,6 +100,8 @@ def validate_from_modbams(args):
     if args.fixed_thresh is not None:
         lt = int(args.fixed_thresh[0] * 255)
         ht = int(args.fixed_thresh[1] * 255)
+        if lt >= ht:
+            ht = lt + 1
         print(
             f"{calc_metrics(can_probs, mod_probs, lt, ht)[-1]}\t"
             f"{lt}_{ht}\t{args.name}"
@@ -124,6 +126,8 @@ def validate_from_modbams(args):
     lt, ht = sorted(
         [(mod_cs[lt] - can_cs[ht], lt, ht) for lt, ht in pct_threshs]
     )[0][1:]
+    if lt >= ht:
+        ht = lt + 1
     print(
         f"{calc_metrics(can_probs, mod_probs, lt, ht)[-1]}\t{lt}_{ht}\t"
         f"{args.name}"
