@@ -922,7 +922,7 @@ def register_validate_from_modbams(parser):
     subparser.add_argument("--mod-bams", nargs="+", required=True)
     subparser.add_argument("--name", default="sample")
     subparser.add_argument("--fixed-thresh", nargs=2, type=float)
-    subparser.add_argument("--regions", nargs="+")
+    subparser.add_argument("--regions-bed")
     subparser.add_argument("--pct-filt", type=float)
     subparser.add_argument("--mod-base", default="m")
     subparser.add_argument("--allow-unbalanced", action="store_true")
