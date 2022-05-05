@@ -65,14 +65,14 @@ def calc_metrics(can_probs, mod_probs, low_thresh, high_thresh):
 
 
 def validate_from_modbams(args):
-    if args.regions is None:
+    if args.regions_bed is None:
         regs = None
     else:
         regs = defaultdict(set)
-        for reg in args.regions:
-            ctg, coords = reg.split(":")
-            st, en = map(int, coords.split("-"))
-            regs[ctg].update(range(st, en))
+        with open(args.regions_bed) as regs_fp:
+            for line in regs_fp:
+                ctg, st, en = line.split()[:3]
+                regs[ctg].update(range(int(st), int(en)))
     can_probs = np.concatenate(
         [
             parse_mods(can_fn, regs, args.mod_base, args.allow_unmapped_bases)
