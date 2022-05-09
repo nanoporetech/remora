@@ -98,7 +98,7 @@ def train_model(
     epochs,
     save_freq,
     early_stopping,
-    conf_thr,
+    filt_frac,
     ext_val,
     lr_sched_kwargs,
     balance,
@@ -213,14 +213,14 @@ def train_model(
     LOGGER.info("Running initial validation")
     # assess accuracy before first iteration
     val_metrics = val_fp.validate_model(
-        model, dataset.mod_bases, criterion, val_ds, conf_thr
+        model, dataset.mod_bases, criterion, val_ds, filt_frac
     )
     trn_metrics = val_fp.validate_model(
         model,
         dataset.mod_bases,
         criterion,
         val_trn_ds,
-        conf_thr,
+        filt_frac,
         "trn",
     )
 
@@ -232,7 +232,7 @@ def train_model(
                 dataset.mod_bases,
                 criterion,
                 ext_sets[e_set_idx],
-                conf_thr,
+                filt_frac,
                 f"e_val_{e_set_idx}",
             )
 
@@ -321,7 +321,7 @@ def train_model(
             dataset.mod_bases,
             criterion,
             val_ds,
-            conf_thr,
+            filt_frac,
             nepoch=epoch + 1,
             niter=niter,
         )
@@ -330,7 +330,7 @@ def train_model(
             dataset.mod_bases,
             criterion,
             val_trn_ds,
-            conf_thr,
+            filt_frac,
             "trn",
             nepoch=epoch + 1,
             niter=niter,
@@ -368,17 +368,18 @@ def train_model(
                     dataset.mod_bases,
                     criterion,
                     ext_sets[e_set_idx],
-                    conf_thr,
+                    filt_frac,
                     f"e_val_{e_set_idx}",
                     nepoch=epoch + 1,
                     niter=niter,
                 )
                 if e_val_metrics.acc > best_alt_val_accs[e_set_idx]:
                     best_alt_val_accs[e_set_idx] = e_val_metrics.acc
+                    early_stop_epochs = 0
                     LOGGER.debug(
                         f"Saving best model based on e_val_{e_set_idx} "
                         f"validation sets after {epoch + 1} epochs "
-                        f"with val_acc {val_metrics.acc}"
+                        f"with val_acc {e_val_metrics.acc}"
                     )
                     save_model(
                         model,
