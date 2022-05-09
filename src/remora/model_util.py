@@ -15,8 +15,7 @@ import pandas as pd
 from torch import nn
 from tqdm import tqdm
 import onnxruntime as ort
-from sklearn.metrics import precision_recall_curve
-from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.metrics import confusion_matrix
 
 from remora.refine_signal_map import SigMapRefiner
 from remora import log, RemoraError, encoded_kmers, util, constants
@@ -30,13 +29,10 @@ VAL_METRICS = namedtuple(
     (
         "loss",
         "acc",
-        "min_f1",
-        "f1",
-        "prec",
-        "recall",
         "num_calls",
         "conf_mat",
         "filt_frac",
+        "filt_acc",
         "filt_conf_mat",
     ),
 )
@@ -46,54 +42,33 @@ def compute_metrics(
     all_outputs,
     all_labels,
     all_loss,
-    conf_thr,
+    filt_frac,
 ):
     mean_loss = np.mean(all_loss)
     num_calls = all_labels.size
     pred_labels = np.argmax(all_outputs, axis=1)
     conf_mat = confusion_matrix(all_labels, pred_labels)
-    acc = (pred_labels == all_labels).sum() / num_calls
-    cl_rep = classification_report(
-        all_labels,
-        pred_labels,
-        digits=3,
-        output_dict=True,
-        zero_division=0,
-    )
-    min_f1 = min(cl_rep[str(k)]["f1-score"] for k in np.unique(all_labels))
-
-    prec = recall = f1 = np.nan
-    uniq_labs = np.unique(all_labels)
-    if uniq_labs.size == 2:
-        pos_idx = uniq_labs[1]
-        with np.errstate(invalid="ignore"):
-            precision, recall, thresholds = precision_recall_curve(
-                all_labels, all_outputs[:, pos_idx], pos_label=pos_idx
-            )
-            f1_scores = 2 * recall * precision / (recall + precision)
-        f1_idx = np.argmax(f1_scores)
-        prec = precision[f1_idx]
-        recall = recall[f1_idx]
-        f1 = f1_scores[f1_idx]
+    correctly_labeled = pred_labels == all_labels
+    acc = correctly_labeled.sum() / num_calls
 
     # metrics involving confidence thresholding
     all_probs = util.softmax_axis1(all_outputs)
-    conf_chunks = np.max(all_probs > conf_thr, axis=1)
-    filt_conf_mat = confusion_matrix(
-        all_labels[conf_chunks], np.argmax(all_probs[conf_chunks], axis=1)
-    )
-    filt_frac = np.logical_not(conf_chunks).sum() / num_calls
+    # extract probability of predicted class for each observation
+    pred_probs = np.amax(all_probs, axis=1)
+    conf_thr = np.quantile(pred_probs, filt_frac)
+    conf_chunks = pred_probs > conf_thr
+    filt_labels = all_labels[conf_chunks]
+    filt_acc = correctly_labeled[conf_chunks].sum() / filt_labels.size
+    filt_conf_mat = confusion_matrix(filt_labels, pred_labels[conf_chunks])
+    filt_frac = 1 - (filt_labels.size / num_calls)
 
     return VAL_METRICS(
         loss=mean_loss,
         acc=acc,
-        min_f1=min_f1,
-        f1=f1,
-        prec=prec,
-        recall=recall,
         num_calls=num_calls,
         conf_mat=conf_mat,
         filt_frac=filt_frac,
+        filt_acc=filt_acc,
         filt_conf_mat=filt_conf_mat,
     )
 
@@ -114,7 +89,7 @@ def validate_model(
     model_mod_bases,
     criterion,
     dataset,
-    conf_thr=constants.DEFAULT_CONF_THR,
+    filt_frac=constants.DEFAULT_FILT_FRAC,
     display_progress_bar=True,
 ):
     label_conv = get_label_coverter(
@@ -160,7 +135,7 @@ def validate_model(
     all_labels = np.concatenate(all_labels)
     if is_torch_model:
         torch.set_grad_enabled(True)
-    return compute_metrics(all_outputs, all_labels, all_loss, conf_thr)
+    return compute_metrics(all_outputs, all_labels, all_loss, filt_frac)
 
 
 class ValidationLogger:
@@ -174,13 +149,10 @@ class ValidationLogger:
                     "Iteration",
                     "Accuracy",
                     "Loss",
-                    "Min_F1",
-                    "F1",
-                    "Precision",
-                    "Recall",
                     "Num_Calls",
                     "Confusion_Matrix",
                     "Filtered_Fraction",
+                    "Filtered_Accuracy",
                     "Filtered_Confusion_Matrix",
                 )
             )
@@ -196,7 +168,7 @@ class ValidationLogger:
         model_mod_bases,
         criterion,
         dataset,
-        conf_thr=constants.DEFAULT_CONF_THR,
+        filt_frac=constants.DEFAULT_FILT_FRAC,
         val_type="val",
         nepoch=0,
         niter=0,
@@ -207,15 +179,15 @@ class ValidationLogger:
             model_mod_bases,
             criterion,
             dataset,
-            conf_thr,
+            filt_frac,
             display_progress_bar=display_progress_bar,
         )
         cm_str = json.dumps(ms.conf_mat.tolist(), separators=(",", ":"))
         fcm_str = json.dumps(ms.filt_conf_mat.tolist(), separators=(",", ":"))
         self.fp.write(
             f"{val_type}\t{nepoch}\t{niter}\t{ms.acc:.6f}\t{ms.loss:.6f}\t"
-            f"{ms.min_f1:.6f}\t{ms.f1:.6f}\t{ms.prec:.6f}\t{ms.recall:.6f}\t"
-            f"{ms.num_calls}\t{cm_str}\t{ms.filt_frac:.4f}\t{fcm_str}\n"
+            f"{ms.num_calls}\t{cm_str}\t{ms.filt_frac:.4f}\t{ms.filt_acc:.6f}\t"
+            f"{fcm_str}\n"
         )
         return ms
 

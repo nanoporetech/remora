@@ -530,10 +530,11 @@ def register_model_train(parser):
         help="Seed value. Default: Random seed",
     )
     train_grp.add_argument(
-        "--conf-thr",
-        default=constants.DEFAULT_CONF_THR,
+        "--filter-fraction",
+        default=constants.DEFAULT_FILT_FRAC,
         type=float,
-        help="Confidence threshold for the confusion matrix. "
+        help="Fraction of predictions to filter in validation reporting. "
+        "Un-filtered validation metrics will always be reported as well. "
         "Default: %(default)f",
     )
     train_grp.add_argument(
@@ -585,7 +586,7 @@ def run_model_train(args):
         args.epochs,
         args.save_freq,
         args.early_stopping,
-        args.conf_thr,
+        args.filter_fraction,
         args.ext_val,
         args.lr_sched_kwargs,
         args.balance,
