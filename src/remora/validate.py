@@ -1,3 +1,4 @@
+import atexit
 from collections import defaultdict
 
 import pysam
@@ -5,7 +6,7 @@ import numpy as np
 from tqdm import tqdm
 
 
-def parse_mods(fn, regs, mod_b, allow_unmapped_bases):
+def parse_mods(fn, regs, mod_b, is_mod, full_fp):
     probs = []
     with pysam.AlignmentFile(fn, check_sq=False) as bam:
         for read in tqdm(bam, smoothing=0):
@@ -23,27 +24,20 @@ def parse_mods(fn, regs, mod_b, allow_unmapped_bases):
             ]
             if len(mod_pos_probs) == 0:
                 continue
-            if regs is not None:
-                q_to_r = dict(read.get_aligned_pairs(matches_only=True))
-                for q_pos, m_prob in mod_pos_probs:
-                    try:
-                        r_pos = q_to_r[q_pos]
-                    except KeyError:
-                        continue
-                    if r_pos not in regs[read.reference_name]:
-                        continue
-                    probs.append(m_prob)
-            elif allow_unmapped_bases:
-                probs.extend(list(zip(*mod_pos_probs))[1])
-            else:
-                q_to_r = dict(read.get_aligned_pairs(matches_only=True))
-                for q_pos, m_prob in mod_pos_probs:
-                    try:
-                        # ensure bases are mapped
-                        r_pos = q_to_r[q_pos]
-                    except KeyError:
-                        continue
-                    probs.append(m_prob)
+            q_to_r = dict(read.get_aligned_pairs(matches_only=True))
+            for q_pos, m_prob in mod_pos_probs:
+                try:
+                    r_pos = q_to_r[q_pos]
+                except KeyError:
+                    continue
+                if regs is not None and r_pos not in regs[read.reference_name]:
+                    continue
+                if full_fp is not None:
+                    full_fp.write(
+                        f"{read.query_name}\t{q_pos}\t{m_prob}\t"
+                        f"{read.reference_name}\t{r_pos}\t{is_mod}\n"
+                    )
+                probs.append(m_prob)
     return np.array(probs)
 
 
@@ -73,15 +67,22 @@ def validate_from_modbams(args):
             for line in regs_fp:
                 ctg, st, en = line.split()[:3]
                 regs[ctg].update(range(int(st), int(en)))
+    full_fp = None
+    if args.full_output_filename is not None:
+        full_fp = open(args.full_output_filename, "w")
+        atexit.register(full_fp.close)
+        full_fp.write(
+            "query_name\tquery_pos\tmod_prob\tref_name\tref_pos\tis_mod\n"
+        )
     can_probs = np.concatenate(
         [
-            parse_mods(can_fn, regs, args.mod_base, args.allow_unmapped_bases)
+            parse_mods(can_fn, regs, args.mod_base, False, full_fp)
             for can_fn in args.can_bams
         ]
     )
     mod_probs = np.concatenate(
         [
-            parse_mods(mod_fn, regs, args.mod_base, args.allow_unmapped_bases)
+            parse_mods(mod_fn, regs, args.mod_base, True, full_fp)
             for mod_fn in args.mod_bams
         ]
     )
