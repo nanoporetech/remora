@@ -274,9 +274,13 @@ def register_dataset_split(parser):
     subparser.add_argument(
         "--val-prop",
         type=float,
-        default=0.01,
         help="The proportion of data to be split into validation set, where "
-        "val-prop in [0,0.5). Default: %(default)f",
+        "val-prop in [0,0.5).",
+    )
+    subparser.add_argument(
+        "--val-num",
+        type=int,
+        help="Number of validation chunks to select.",
     )
     subparser.add_argument(
         "--unstratified",
@@ -311,7 +315,9 @@ def run_dataset_split(args):
             )
     else:
         trn_set, val_set = dataset.split_data(
-            args.val_prop, stratified=not args.unstratified
+            val_prop=args.val_prop,
+            val_num=args.val_num,
+            stratified=not args.unstratified,
         )
         LOGGER.info(
             f"Train set label distribution: {trn_set.get_label_counts()}"

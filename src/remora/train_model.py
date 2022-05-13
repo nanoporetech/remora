@@ -198,7 +198,7 @@ def train_model(
             "--mod are specified correctly"
         )
 
-    trn_ds, val_ds = dataset.split_data(val_prop, stratified=True)
+    trn_ds, val_ds = dataset.split_data(val_prop=val_prop, stratified=True)
     trn_ds.shuffle()
     val_trn_ds = trn_ds.head(val_prop, shuffle_on_iter=False, drop_last=False)
     LOGGER.info(f"Train label distribution: {trn_ds.get_label_counts()}")
