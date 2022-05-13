@@ -767,16 +767,28 @@ class RemoraDataset:
     def get_label_counts(self):
         return Counter(self.labels[: self.nchunks])
 
-    def split_data(self, val_prop, stratified=True):
+    def split_data(self, *, val_prop=None, val_num=None, stratified=True):
+        if val_prop is None and val_num is None:
+            raise RemoraError(
+                "Must supply either val_prop or val_num to split dataset"
+            )
+        if val_prop is not None and val_num is not None:
+            LOGGER.warning(
+                "val_prop and val_num supplied to split. Using val_num"
+            )
+            val_prop = None
         if not self.is_clipped:
             raise RemoraError("Cannot split an unclipped dataset.")
-        elif self.sig_tensor.shape[0] < int(1 / val_prop) * 2:
-            raise RemoraError(
-                "Too few chunks to extract validation proportion "
-                f"({self.sig_tensor.shape[0]} < {int(1 / val_prop) * 2})"
-            )
-        elif val_prop > 0.5:
-            raise RemoraError("Validation proportion must be between 0 and 0.5")
+        if val_prop is not None:
+            if val_prop > 0.5:
+                raise RemoraError("val_prop > 0.5")
+            if val_prop < 0:
+                raise RemoraError("val_prop < 0")
+            val_num = int(self.nchunks * val_prop)
+        if val_num > self.nchunks:
+            raise RemoraError("Too many validation chunks for split")
+        if val_num > self.nchunks // 2:
+            LOGGER.warning("Val split contains more than half of chunks")
         common_kwargs = {
             "chunk_context": self.chunk_context,
             "max_seq_len": self.max_seq_len,
@@ -799,16 +811,15 @@ class RemoraDataset:
                 if class_indices.size == 0:
                     continue
                 np.random.shuffle(class_indices)
-                cls_val_idx = int(val_prop * class_indices.size)
+                cls_val_idx = int(class_indices.size * val_num / self.nchunks)
                 val_indices.append(class_indices[:cls_val_idx])
                 trn_indices.append(class_indices[cls_val_idx:])
 
             val_indices = np.concatenate(val_indices)
             trn_indices = np.concatenate(trn_indices)
         else:
-            val_idx = int(self.sig_tensor.shape[0] * val_prop)
-            val_indices = np.arange(0, val_idx)
-            trn_indices = np.arange(val_idx, self.sig_tensor.shape[0])
+            val_indices = np.arange(0, val_num)
+            trn_indices = np.arange(val_num, self.sig_tensor.shape[0])
 
         val_ds = RemoraDataset(
             self.sig_tensor[val_indices],
