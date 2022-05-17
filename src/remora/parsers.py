@@ -129,7 +129,7 @@ def register_dataset_prepare(parser):
     data_grp.add_argument(
         "--max-chunks-per-read",
         type=int,
-        default=10,
+        default=15,
         help="Maxiumum number of chunks to extract from a single read. "
         "Default: %(default)s",
     )

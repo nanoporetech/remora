@@ -67,6 +67,8 @@ def rough_rescale_lstsq(dacs, levels, shift, scale, quants):
         np.quantile(levels, quants),
         rcond=None,
     )[0]
+    if scale_est == 0:
+        return shift, scale
     new_shift = shift - (scale * shift_est / scale_est)
     new_scale = scale / scale_est
     return new_shift, new_scale
