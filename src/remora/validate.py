@@ -5,40 +5,91 @@ import pysam
 import numpy as np
 from tqdm import tqdm
 
+from remora import RemoraError
 
-def parse_mods(fn, regs, mod_b, is_mod, full_fp):
+
+def parse_mods(bam_fns, regs, mod_b, is_mod, full_fp):
     probs = []
-    with pysam.AlignmentFile(fn, check_sq=False) as bam:
-        for read in tqdm(bam, smoothing=0):
-            if read.modified_bases is None:
-                continue
-            if regs is not None and read.reference_name not in regs:
-                continue
-            # note read.modified_bases stores positions in forward strand
-            # query sequence coordinates
-            mod_pos_probs = [
-                pos_prob
-                for (_, _, mod_i), mod_values in read.modified_bases.items()
-                for pos_prob in mod_values
-                if mod_i == mod_b
-            ]
-            if len(mod_pos_probs) == 0:
-                continue
-            q_to_r = dict(read.get_aligned_pairs(matches_only=True))
-            for q_pos, m_prob in mod_pos_probs:
-                try:
-                    r_pos = q_to_r[q_pos]
-                except KeyError:
+    for bam_fn in bam_fns:
+        with pysam.AlignmentFile(bam_fn, check_sq=False) as bam:
+            for read in tqdm(bam, smoothing=0):
+                if read.modified_bases is None:
                     continue
-                if regs is not None and r_pos not in regs[read.reference_name]:
+                if regs is not None and read.reference_name not in regs:
                     continue
-                if full_fp is not None:
-                    full_fp.write(
-                        f"{read.query_name}\t{q_pos}\t{m_prob}\t"
-                        f"{read.reference_name}\t{r_pos}\t{is_mod}\n"
-                    )
-                probs.append(m_prob)
+                # note read.modified_bases stores positions in forward strand
+                # query sequence coordinates
+                mod_pos_probs = [
+                    pos_prob
+                    for (_, _, mod_i), mod_values in read.modified_bases.items()
+                    for pos_prob in mod_values
+                    if mod_i == mod_b
+                ]
+                if len(mod_pos_probs) == 0:
+                    continue
+                q_to_r = dict(read.get_aligned_pairs(matches_only=True))
+                for q_pos, m_prob in mod_pos_probs:
+                    try:
+                        r_pos = q_to_r[q_pos]
+                    except KeyError:
+                        continue
+                    if (
+                        regs is not None
+                        and r_pos not in regs[read.reference_name]
+                    ):
+                        continue
+                    if full_fp is not None:
+                        full_fp.write(
+                            f"{read.query_name}\t{q_pos}\t{m_prob}\t"
+                            f"{read.reference_name}\t{r_pos}\t{is_mod}\n"
+                        )
+                    probs.append(m_prob)
     return np.array(probs)
+
+
+def parse_gt_mods(bam_fns, mod_b, can_pos, mod_pos, full_fp):
+    can_probs, mod_probs = [], []
+    for bam_fn in bam_fns:
+        with pysam.AlignmentFile(bam_fn, check_sq=False) as bam:
+            for read in tqdm(bam, smoothing=0):
+                if read.modified_bases is None:
+                    continue
+                ctg_can_pos = can_pos.get(read.reference_name)
+                ctg_mod_pos = mod_pos.get(read.reference_name)
+                if ctg_can_pos is None and ctg_mod_pos is None:
+                    continue
+                # note read.modified_bases stores positions in forward strand
+                # query sequence coordinates
+                mod_pos_probs = [
+                    pos_prob
+                    for (_, _, mod_i), mod_values in read.modified_bases.items()
+                    for pos_prob in mod_values
+                    if mod_i == mod_b
+                ]
+                if len(mod_pos_probs) == 0:
+                    continue
+                q_to_r = dict(read.get_aligned_pairs(matches_only=True))
+                for q_pos, m_prob in mod_pos_probs:
+                    try:
+                        r_pos = q_to_r[q_pos]
+                    except KeyError:
+                        continue
+                    if ctg_can_pos is not None and r_pos in ctg_can_pos:
+                        is_mod = False
+                    elif ctg_mod_pos is not None and r_pos in ctg_mod_pos:
+                        is_mod = True
+                    else:
+                        continue
+                    if full_fp is not None:
+                        full_fp.write(
+                            f"{read.query_name}\t{q_pos}\t{m_prob}\t"
+                            f"{read.reference_name}\t{r_pos}\t{is_mod}\n"
+                        )
+                    if is_mod:
+                        mod_probs.append(m_prob)
+                    else:
+                        can_probs.append(m_prob)
+    return np.array(can_probs), np.array(mod_probs)
 
 
 def calc_metrics(can_probs, mod_probs, low_thresh, high_thresh):
@@ -58,6 +109,19 @@ def calc_metrics(can_probs, mod_probs, low_thresh, high_thresh):
     return err_rate, fpr, fnr, frac_filt, metrics_str
 
 
+def parse_ground_truth_file(gt_data_fn):
+    can_pos = defaultdict(set)
+    mod_pos = defaultdict(set)
+    with open(gt_data_fn) as fp:
+        for line in fp:
+            ctg, _, pos, is_mod = line.strip().split(",")
+            if is_mod == "False":
+                can_pos[ctg].add(int(pos))
+            else:
+                mod_pos[ctg].add(int(pos))
+    return can_pos, mod_pos
+
+
 def validate_from_modbams(args):
     if args.regions_bed is None:
         regs = None
@@ -69,23 +133,25 @@ def validate_from_modbams(args):
                 regs[ctg].update(range(int(st), int(en)))
     full_fp = None
     if args.full_output_filename is not None:
-        full_fp = open(args.full_output_filename, "w")
+        full_fp = open(args.full_output_filename, "w", buffering=512)
         atexit.register(full_fp.close)
         full_fp.write(
             "query_name\tquery_pos\tmod_prob\tref_name\tref_pos\tis_mod\n"
         )
-    can_probs = np.concatenate(
-        [
-            parse_mods(can_fn, regs, args.mod_base, False, full_fp)
-            for can_fn in args.can_bams
-        ]
-    )
-    mod_probs = np.concatenate(
-        [
-            parse_mods(mod_fn, regs, args.mod_base, True, full_fp)
-            for mod_fn in args.mod_bams
-        ]
-    )
+    if args.mod_bams is None:
+        if args.ground_truth_positions is None:
+            raise RemoraError(
+                "Must provide either mod_bams or ground_truth_positions"
+            )
+        can_pos, mod_pos = parse_ground_truth_file(args.ground_truth_positions)
+        can_probs, mod_probs = parse_gt_mods(
+            args.bams, args.mod_base, can_pos, mod_pos, full_fp
+        )
+    else:
+        can_probs = parse_mods(args.bams, regs, args.mod_base, False, full_fp)
+        mod_probs = parse_mods(
+            args.mod_bams, regs, args.mod_base, True, full_fp
+        )
 
     if not args.allow_unbalanced:
         if can_probs.size > mod_probs.size:
@@ -109,8 +175,8 @@ def validate_from_modbams(args):
         )
         return
 
-    can_cs = np.cumsum(np.bincount(can_probs)) / can_probs.size
-    mod_cs = np.cumsum(np.bincount(mod_probs)) / mod_probs.size
+    can_cs = np.cumsum(np.bincount(can_probs, minlength=256)) / can_probs.size
+    mod_cs = np.cumsum(np.bincount(mod_probs, minlength=256)) / mod_probs.size
     pct_threshs = []
     for lt in range(256):
         lcs = probs_cs[lt]
