@@ -134,11 +134,11 @@ The following command performs this task in Remora.
     dataset prepare \
     mapped_signal_train_data.hdf5 \
     --output-remora-training-file remora_train_chunks.npz \
+    --log-filename remora_train_chunks.log \
     --motif CG 0 \
-    --mod-bases m \
     --chunk-context 50 50 \
-    --kmer-context-bases 6 6 \
-    --max-chunks-per-read 20 \
+    --kmer-context-bases 4 4 \
+    --max-chunks-per-read 15 \
     --log-filename log.txt
 
 The resulting ``remora_train_chunks.npz`` file can then be used to train a Remora model.
@@ -156,6 +156,12 @@ For example a model can be trained with the following command.
     remora_train_chunks.npz \
     --model remora/models/ConvLSTM_w_ref.py \
     --device 0 \
+    --size 124 \
+    --epochs 100 \
+    --early-stopping 10 \
+    --scheduler StepLR \
+    --lr-sched-kwargs step_size 10 int \
+    --lr-sched-kwargs gamma 0.5 float \
     --output-path remora_train_results
 
 This command will produce a final model in ONNX format for use in Bonito, Megalodon or ``remora infer`` commands.

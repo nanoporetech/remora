@@ -283,14 +283,10 @@ def format_mm_ml_tags(seq, poss, probs, mod_bases, can_base):
             ]
             - 1
         )
-        mm_tag += "{}+{}{};".format(
-            can_base,
-            mod_base,
-            "".join(
-                ",{}".format(d)
-                for d in np.diff(np.insert(can_base_mod_poss, 0, -1)) - 1
-            ),
+        mod_gaps = ",".join(
+            map(str, np.diff(np.insert(can_base_mod_poss, 0, -1)) - 1)
         )
+        mm_tag += f"{can_base}+{mod_base}?,{mod_gaps};"
         # extract mod scores and scale to 0-255 range
         scaled_probs = np.floor(np.array(probs) * 256)
         # last interval includes prob=1
