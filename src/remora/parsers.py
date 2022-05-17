@@ -925,8 +925,9 @@ def register_validate_from_modbams(parser):
         7) thresholds (in modbam 0-255 scale), and 8) [--name]""",
         formatter_class=SubcommandHelpFormatter,
     )
-    subparser.add_argument("--can-bams", nargs="+", required=True)
-    subparser.add_argument("--mod-bams", nargs="+", required=True)
+    subparser.add_argument("--bams", nargs="+", required=True)
+    subparser.add_argument("--mod-bams", nargs="+")
+    subparser.add_argument("--ground-truth-positions")
     subparser.add_argument("--full-output-filename")
     subparser.add_argument("--name", default="sample")
     subparser.add_argument("--fixed-thresh", nargs=2, type=float)
