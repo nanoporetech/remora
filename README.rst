@@ -54,6 +54,11 @@ Pre-trained Models
 Pre-trained models are included in the Remora repository.
 To see the selection of models included in the current installation run ``remora model list_pretrained``.
 
+Models my be run from `Bonito <https://github.com/nanoporetech/bonito>`_ or `Megalodon <https://github.com/nanoporetech/megalodon>`_.
+See documentation in these repositories for applying Remora models.
+
+More advanced research models may be supplied via `Rerio <https://github.com/nanoporetech/rerio>`_.
+
 Python API
 ----------
 
@@ -143,6 +148,10 @@ The following command performs this task in Remora.
 
 The resulting ``remora_train_chunks.npz`` file can then be used to train a Remora model.
 
+Additionally, ``remora dataset prepare`` can now accpet a pickle containing ``RemoraRead`` objects.
+This allows users more flexibility to prepare reads for custom data preparation.
+Note that ``RemoraRead`` pickle files can grow quite large.
+
 Model Training
 --------------
 
@@ -156,7 +165,7 @@ For example a model can be trained with the following command.
     remora_train_chunks.npz \
     --model remora/models/ConvLSTM_w_ref.py \
     --device 0 \
-    --size 124 \
+    --size 96 \
     --epochs 100 \
     --early-stopping 10 \
     --scheduler StepLR \
