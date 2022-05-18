@@ -102,6 +102,7 @@ def train_model(
     ext_val,
     lr_sched_kwargs,
     balance,
+    balanced_batch,
 ):
     seed = (
         np.random.randint(0, np.iinfo(np.uint32).max, dtype=np.uint32)
@@ -124,6 +125,7 @@ def train_model(
     dataset = RemoraDataset.load_from_file(
         remora_dataset_path,
         batch_size=batch_size,
+        balanced_batch=balanced_batch,
     )
     LOGGER.info(f"Dataset loaded with labels: {dataset.get_label_counts()}")
     if balance:
@@ -197,7 +199,6 @@ def train_model(
             "One or fewer output labels found. Ensure --focus-offset and "
             "--mod are specified correctly"
         )
-
     trn_ds, val_ds = dataset.split_data(val_prop=val_prop, stratified=True)
     trn_ds.shuffle()
     val_trn_ds = trn_ds.head(val_prop, shuffle_on_iter=False, drop_last=False)
