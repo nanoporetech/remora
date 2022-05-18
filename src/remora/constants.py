@@ -79,20 +79,55 @@ MODEL_DICT = {
     "dna_r10.4_e8.1": {
         "fast": {
             DEFAULT_BASECALL_MODEL_VERSION: {
-                "5mc": {"CG": [0]},
+                "5mc": {"CG": [0, 1]},
                 "5hmc_5mc": {"CG": [0]},
-            }
+            },
+            "v3.3": {
+                "5mc": {"CG": [0, 1]},
+            },
         },
         "hac": {
             DEFAULT_BASECALL_MODEL_VERSION: {
-                "5mc": {"CG": [0]},
+                "5mc": {"CG": [0, 1]},
                 "5hmc_5mc": {"CG": [0]},
-            }
+            },
+            "v3.3": {
+                "5mc": {"CG": [0, 1]},
+            },
         },
         "sup": {
             DEFAULT_BASECALL_MODEL_VERSION: {
                 "5mc": {"CG": [0, 1]},
                 "5hmc_5mc": {"CG": [0]},
+            },
+            "v3.4": {
+                "5mc": {"CG": [0, 1]},
+            },
+        },
+    },
+    "dna_r10.4.1_e8.2": {
+        "fast": {
+            DEFAULT_BASECALL_MODEL_VERSION: {
+                "5mc": {"CG": [0, 1]},
+            },
+            "v3.5.1": {
+                "5mc": {"CG": [0, 1]},
+            },
+        },
+        "hac": {
+            DEFAULT_BASECALL_MODEL_VERSION: {
+                "5mc": {"CG": [0, 1]},
+            },
+            "v3.5.1": {
+                "5mc": {"CG": [0, 1]},
+            },
+        },
+        "sup": {
+            DEFAULT_BASECALL_MODEL_VERSION: {
+                "5mc": {"CG": [0, 1]},
+            },
+            "v3.5.1": {
+                "5mc": {"CG": [0, 1]},
             },
         },
     },
