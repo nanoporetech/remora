@@ -524,6 +524,7 @@ class RemoraDataset:
         batch_size (int): Size of batches to be produced
         shuffle_on_iter (bool): Shuffle data before each iteration over batches
         drop_last (bool): Drop the last batch of each iteration
+        balanced_batch (bool): Balances each training batch
         sig_map_refiner (remora.refine_signal_map.SigMapRefiner): Signal
             mapping refiner
         base_start_justify (bool): Extract chunk centered on start of base
@@ -557,6 +558,7 @@ class RemoraDataset:
     batch_size: int = constants.DEFAULT_BATCH_SIZE
     shuffle_on_iter: bool = True
     drop_last: bool = True
+    balanced_batch: bool = False
 
     # signal mapping refinement params
     sig_map_refiner: SigMapRefiner = None
@@ -744,22 +746,47 @@ class RemoraDataset:
     def __next__(self):
         if self._batch_i >= self.nbatches:
             raise StopIteration
-        b_st = self._batch_i * self.batch_size
-        b_en = b_st + self.batch_size
-        self._batch_i += 1
-        batch_read_data = None
-        if self.store_read_data:
-            batch_read_data = self.read_data[b_st:b_en]
-        return (
-            (
-                self.sig_tensor[b_st:b_en],
-                self.seq_array[b_st:b_en],
-                self.seq_mappings[b_st:b_en],
-                self.seq_lens[b_st:b_en],
-            ),
-            self.labels[b_st:b_en],
-            batch_read_data,
-        )
+        if self.balanced_batch:
+            batch_ids = []
+            batch_read_data = None
+            self._batch_i += 1
+            for class_label in range(self.num_labels):
+                class_indices = np.where(self.labels == class_label)[0]
+                size = int(self.batch_size / self.num_labels)
+                bi = np.random.choice(
+                    len(class_indices), size=size, replace=False
+                )
+                batch_ids.extend(class_indices[bi])
+            if self.store_read_data:
+                batch_read_data = [self.read_data[bi] for bi in batch_ids]
+            return (
+                (
+                    self.sig_tensor[batch_ids],
+                    self.seq_array[batch_ids],
+                    self.seq_mappings[batch_ids],
+                    self.seq_lens[batch_ids],
+                ),
+                self.labels[batch_ids],
+                batch_read_data,
+            )
+
+        else:
+            b_st = self._batch_i * self.batch_size
+            b_en = b_st + self.batch_size
+            self._batch_i += 1
+            batch_read_data = None
+            if self.store_read_data:
+                batch_read_data = self.read_data[b_st:b_en]
+            return (
+                (
+                    self.sig_tensor[b_st:b_en],
+                    self.seq_array[b_st:b_en],
+                    self.seq_mappings[b_st:b_en],
+                    self.seq_lens[b_st:b_en],
+                ),
+                self.labels[b_st:b_en],
+                batch_read_data,
+            )
 
     def __len__(self):
         return self.nbatches
@@ -767,7 +794,13 @@ class RemoraDataset:
     def get_label_counts(self):
         return Counter(self.labels[: self.nchunks])
 
-    def split_data(self, *, val_prop=None, val_num=None, stratified=True):
+    def split_data(
+        self,
+        *,
+        val_prop=None,
+        val_num=None,
+        stratified=True,
+    ):
         if val_prop is None and val_num is None:
             raise RemoraError(
                 "Must supply either val_prop or val_num to split dataset"
@@ -803,7 +836,23 @@ class RemoraDataset:
         }
         if not self.shuffled:
             self.shuffle()
-        if stratified:
+
+        if self.balanced_batch:
+            val_indices = []
+            trn_indices = []
+            class_counts = np.unique(self.labels, return_counts=True)
+            min_class_id = np.argmin(class_counts[1])
+            for class_label in range(self.num_labels):
+                class_indices = np.where(self.labels == class_label)[0]
+                if class_indices.size == 0:
+                    continue
+                np.random.shuffle(class_indices)
+                cls_val_idx = int(
+                    class_counts[1][min_class_id] * val_num / self.nchunks
+                )
+                val_indices.extend(class_indices[:cls_val_idx])
+                trn_indices.extend(class_indices[cls_val_idx:])
+        elif stratified:
             val_indices = []
             trn_indices = []
             for class_label in range(self.num_labels):
@@ -845,6 +894,7 @@ class RemoraDataset:
             else None,
             shuffle_on_iter=True,
             drop_last=False,
+            balanced_batch=self.balanced_batch,
             **common_kwargs,
         )
         return trn_ds, val_ds

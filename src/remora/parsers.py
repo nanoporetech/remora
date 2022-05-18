@@ -550,6 +550,11 @@ def register_model_train(parser):
         default=None,
         metavar=("NAME", "VALUE", "TYPE"),
     )
+    train_grp.add_argument(
+        "--balanced-batch",
+        action="store_true",
+        help="Balance classes exactly for each batch in training",
+    )
 
     comp_grp = subparser.add_argument_group("Compute Arguments")
     comp_grp.add_argument(
@@ -596,6 +601,7 @@ def run_model_train(args):
         args.ext_val,
         args.lr_sched_kwargs,
         args.balance,
+        args.balanced_batch,
     )
 
 
