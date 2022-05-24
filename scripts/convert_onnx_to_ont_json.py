@@ -10,18 +10,15 @@ from onnx.onnx_ml_pb2 import NodeProto, TensorProto
 
 UNSAVES_NODES = set(("Transpose", "Squeeze", "Shape"))
 SKIP_COUNTS = {"Shape": 7, "Conv": 2, "LSTM": 3}
+OPTYPE_RENAMES = {
+    "Conv": "convolution",
+    "Gemm": "softmax",
+    "LSTM": "LSTM",
+}
 
 
 def _get_node_type(op_type: str) -> str:
-    try:
-        optype_renames = {
-            "Conv": "convolution",
-            "Gemm": "softmax",
-            "LSTM": "LSTM",
-        }
-        return optype_renames[op_type]
-    except KeyError:
-        return op_type.lower()
+    return OPTYPE_RENAMES.get(op_type, op_type.lower())
 
 
 def _get_attribute_from_node(node: NodeProto, attribute: str):
@@ -55,6 +52,16 @@ def _make_feedforward_node(size: int):
 
 
 def _translate_metadata(metadata_props):
+    md_dict = dict((kv_pair.key, kv_pair.value) for kv_pair in metadata_props)
+    if int(md_dict.get("num_motifs", 0)) > 1:
+        raise ValueError(
+            "Conversion to Guppy format not currently compatible with "
+            f"multiple motifs. Found {metadata_props['num_motifs']}"
+        )
+    convert_names = {
+        "motif_0": "motif",
+        "motif_offset_0": "motif_offset",
+    }
     numeric_values = [
         "motif_offset",
         "kmer_context_bases_0",
@@ -65,12 +72,17 @@ def _translate_metadata(metadata_props):
     bool_values = ["base_pred"]
     metadata = {}
     for kv_pair in metadata_props:
-        if kv_pair.key in numeric_values:
-            metadata[kv_pair.key] = int(kv_pair.value)
-        elif kv_pair.key in bool_values:
-            metadata[kv_pair.key] = kv_pair.value == "True"
+        mt_key = (
+            convert_names[kv_pair.key]
+            if kv_pair.key in convert_names
+            else kv_pair.key
+        )
+        if mt_key in numeric_values:
+            metadata[mt_key] = int(kv_pair.value)
+        elif mt_key in bool_values:
+            metadata[mt_key] = kv_pair.value == "True"
         else:
-            metadata[kv_pair.key] = kv_pair.value
+            metadata[mt_key] = kv_pair.value
     return metadata
 
 
@@ -141,7 +153,7 @@ def _node_to_dict(
                 input_number += 1
             except KeyError:
                 pass
-        node_info["size"] = (hidden_size,)
+        node_info["size"] = hidden_size
         node_info["activation"] = "tanh"
         node_info["gate"] = "sigmoid"
         node_info["bias"] = input_number == 3
