@@ -54,6 +54,8 @@ def rescale_lstsq(dacs, levels, shift, scale):
         levels,
         rcond=None,
     )[0]
+    if scale_est == 0:
+        return shift, scale
     new_shift = shift - (scale * shift_est / scale_est)
     new_scale = scale / scale_est
     return new_shift, new_scale
@@ -284,7 +286,6 @@ class SigMapRefiner:
                 optim_dacs = optim_dacs[clip_bases:-clip_bases]
         else:
             optim_dacs = dacs[seq_to_sig_map[0] : seq_to_sig_map[-1]]
-            optim_dacs = (optim_dacs - shift) / scale
         return rough_rescale_lstsq(optim_dacs, levels, shift, scale, quants)
 
     def rescale(
