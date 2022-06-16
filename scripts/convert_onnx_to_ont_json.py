@@ -58,18 +58,34 @@ def _translate_metadata(metadata_props):
             "Conversion to Guppy format not currently compatible with "
             f"multiple motifs. Found {metadata_props['num_motifs']}"
         )
+    if int(md_dict.get("refine_scale_iters", -1)) != -1:
+        raise ValueError(
+            "Conversion to Guppy format not currently compatible with "
+            f"refine_scale_iters. Found {metadata_props['refine_scale_iters']}"
+        )
     convert_names = {
         "motif_0": "motif",
         "motif_offset_0": "motif_offset",
     }
-    numeric_values = [
+    numeric_values = {
         "motif_offset",
         "kmer_context_bases_0",
         "kmer_context_bases_1",
         "chunk_context_0",
         "chunk_context_1",
-    ]
-    bool_values = ["base_pred"]
+        "refine_kmer_center_idx",
+    }
+    base64_values = {
+        "refine_kmer_levels",
+    }
+    bool_values = {
+        "refine_do_rough_rescale",
+    }
+    string_values = {
+        "motif",
+        "mod_bases",
+        "mod_long_names_0",
+    }
     metadata = {}
     for kv_pair in metadata_props:
         mt_key = (
@@ -80,8 +96,13 @@ def _translate_metadata(metadata_props):
         if mt_key in numeric_values:
             metadata[mt_key] = int(kv_pair.value)
         elif mt_key in bool_values:
-            metadata[mt_key] = kv_pair.value == "True"
-        else:
+            metadata[mt_key] = kv_pair.value == "True" or kv_pair.value == "1"
+        elif mt_key in base64_values:
+            value = np.frombuffer(
+                kv_pair.value.encode("cp437"), dtype=np.float32
+            )
+            metadata[mt_key + "_binary"] = base64.b64encode(value).decode()
+        elif mt_key in string_values:
             metadata[mt_key] = kv_pair.value
     return metadata
 
