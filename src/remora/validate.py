@@ -15,7 +15,12 @@ def parse_mods(bam_fns, regs, mod_b, is_mod, full_fp):
             for read in tqdm(bam, smoothing=0):
                 if read.modified_bases is None:
                     continue
-                if regs is not None and read.reference_name not in regs:
+                strand = "-" if read.is_reverse else "+"
+                ctg_coords = None
+                try:
+                    if regs is not None:
+                        ctg_coords = regs[(read.reference_name, strand)]
+                except KeyError:
                     continue
                 # note read.modified_bases stores positions in forward strand
                 # query sequence coordinates
@@ -33,15 +38,13 @@ def parse_mods(bam_fns, regs, mod_b, is_mod, full_fp):
                         r_pos = q_to_r[q_pos]
                     except KeyError:
                         continue
-                    if (
-                        regs is not None
-                        and r_pos not in regs[read.reference_name]
-                    ):
+                    if ctg_coords is not None and r_pos not in ctg_coords:
                         continue
                     if full_fp is not None:
                         full_fp.write(
                             f"{read.query_name}\t{q_pos}\t{m_prob}\t"
-                            f"{read.reference_name}\t{r_pos}\t{is_mod}\n"
+                            f"{read.reference_name}\t{r_pos}\t{strand}\t"
+                            f"{is_mod}\n"
                         )
                     probs.append(m_prob)
     return np.array(probs)
@@ -81,9 +84,11 @@ def parse_gt_mods(bam_fns, mod_b, can_pos, mod_pos, full_fp):
                     else:
                         continue
                     if full_fp is not None:
+                        strand = "-" if read.is_reverse else "+"
                         full_fp.write(
                             f"{read.query_name}\t{q_pos}\t{m_prob}\t"
-                            f"{read.reference_name}\t{r_pos}\t{is_mod}\n"
+                            f"{read.reference_name}\t{r_pos}\t{strand}\t"
+                            f"{is_mod}\n"
                         )
                     if is_mod:
                         mod_probs.append(m_prob)
@@ -129,14 +134,20 @@ def validate_from_modbams(args):
         regs = defaultdict(set)
         with open(args.regions_bed) as regs_fp:
             for line in regs_fp:
-                ctg, st, en = line.split()[:3]
-                regs[ctg].update(range(int(st), int(en)))
+                fields = line.split()
+                ctg, st, en = fields[:3]
+                if len(fields) < 6 or fields[5] not in "+-":
+                    for strand in "+-":
+                        regs[(ctg, strand)].update(range(int(st), int(en)))
+                else:
+                    regs[(ctg, fields[5])].update(range(int(st), int(en)))
     full_fp = None
     if args.full_output_filename is not None:
         full_fp = open(args.full_output_filename, "w", buffering=512)
         atexit.register(full_fp.close)
         full_fp.write(
-            "query_name\tquery_pos\tmod_prob\tref_name\tref_pos\tis_mod\n"
+            "query_name\tquery_pos\tmod_prob\tref_name\tref_pos\tstrand\t"
+            "is_mod\n"
         )
     if args.mod_bams is None:
         if args.ground_truth_positions is None:
