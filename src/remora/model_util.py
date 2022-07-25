@@ -314,6 +314,132 @@ def export_model(ckpt, model, save_filename):
     onnx.save(onnx_model, save_filename)
 
 
+def export_tensors(ckpt, model, save_path):
+    import toml
+
+    save_dir = os.path.expanduser(save_path)
+
+    if os.path.exists(save_dir):
+        LOGGER.info(
+            f'Directory "{save_dir}" already exists. Exported files will be overwritten.'
+        )
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    def save_tensor(mn, fn, x):
+        m = torch.nn.Module()
+        par = nn.Parameter(x, requires_grad=False)
+        m.register_parameter("0", par)
+        tensors = torch.jit.script(m)
+        tensors.save(f"{mn}/{fn}.tensor")
+        LOGGER.info(f"{mn}/{fn}.tensor")
+
+    model.eval()
+    layer_names = set()
+    for k, v in model.state_dict().items():
+        # if "weight" in k or "bias" in k:
+        save_tensor(save_path, k, v)
+        layer_names.add(k[: k.find(".")])
+
+    metadata = {}
+    general = {}
+    modbases = {}
+
+    general["creation_date"] = datetime.datetime.now().strftime(
+        "%m/%d/%Y, %H:%M:%S"
+    )
+
+    lstm_model_layers = {
+        "sig_conv1",
+        "sig_conv2",
+        "sig_conv3",
+        "seq_conv1",
+        "seq_conv2",
+        "merge_conv1",
+        "sig_bn1",
+        "sig_bn2",
+        "sig_bn3",
+        "seq_bn1",
+        "seq_bn2",
+        "merge_bn",
+        "lstm1",
+        "lstm2",
+        "fc",
+    }
+
+    conv_model_layers = {
+        "sig_conv1",
+        "sig_conv2",
+        "sig_conv3",
+        "seq_conv1",
+        "seq_conv2",
+        "seq_conv3",
+        "merge_conv1",
+        "merge_conv2",
+        "merge_conv3",
+        "merge_conv4",
+        "sig_bn1",
+        "sig_bn2",
+        "sig_bn3",
+        "seq_bn1",
+        "seq_bn2",
+        "seq_bn3",
+        "merge_bn1",
+        "merge_bn2",
+        "merge_bn3",
+        "merge_bn4",
+        "fc",
+    }
+
+    if layer_names == conv_model_layers:
+        general["model"] = "conv_only"
+    elif layer_names == lstm_model_layers:
+        general["model"] = "conv_lstm"
+    else:
+        LOGGER.warning("Unknown layer setup in export")
+        general["model"] = "unknown"
+
+    # add refinement metadata
+    refinement = {}
+    refinement["refine_do_rough_rescale"] = ckpt["refine_do_rough_rescale"]
+    if refinement["refine_do_rough_rescale"]:
+        refinement["refine_kmer_center_idx"] = ckpt["refine_kmer_center_idx"]
+        refine_kmer_levels = torch.Tensor(
+            ckpt["refine_kmer_levels"].astype(np.float32)
+        )
+        save_tensor(save_filepath, "refine_kmer_levels", refine_kmer_levels)
+
+    # add simple metadata
+    for ckpt_key in (
+        "mod_bases",
+        "offset",
+    ):
+        modbases[ckpt_key] = ckpt[ckpt_key]
+
+    if ckpt["mod_bases"] is not None:
+        for mod_idx in range(len(ckpt["mod_bases"])):
+            modbases[f"mod_long_names_{mod_idx}"] = str(
+                ckpt["mod_long_names"][mod_idx]
+            )
+    for key in ("chunk_context", "kmer_context_bases"):
+        for idx in range(2):
+            modbases[f"{key}_{idx}"] = ckpt[key][idx]
+
+    if len(ckpt["motifs"]) > 1:
+        raise RemoraError("Dorado only supports models with a single motif")
+
+    for (motif, motif_offset) in ckpt["motifs"]:
+        modbases["motif"] = motif
+        modbases["motif_offset"] = motif_offset
+
+    metadata["general"] = general
+    metadata["model_params"] = ckpt["model_params"]
+    metadata["modbases"] = modbases
+    metadata["refinement"] = refinement
+
+    toml.dump(metadata, open(os.path.join(save_filepath, "config.toml"), "w"))
+
+
 def load_onnx_model(model_filename, device=None, quiet=False):
     """Load onnx model. If device is specified load onto specified device.
 
