@@ -618,25 +618,41 @@ def register_model_export(parser):
     )
     subparser.add_argument(
         "output_path",
-        help="Path to save the onnx model file.",
+        help="Path to save the onnx model file, or the directory in which to save the dorado tensor files if '--format dorado' has been specified.",
     )
     subparser.add_argument(
         "--model-path",
         help="Path to a model architecture. Default: Use path from checkpoint.",
+    )
+    subparser.add_argument(
+        "--format",
+        default="onnx",
+        choices=["onnx", "dorado"],
+        help="Export format. Default: onnx",
     )
 
     subparser.set_defaults(func=run_model_export)
 
 
 def run_model_export(args):
-    from remora.model_util import continue_from_checkpoint, export_model
+    from remora.model_util import (
+        continue_from_checkpoint,
+        export_model,
+        export_tensors,
+    )
 
     LOGGER.info("Loading model")
     ckpt, model = continue_from_checkpoint(
         args.checkpoint_path, args.model_path
     )
-    LOGGER.info("Exporting model to ONNX format")
-    export_model(ckpt, model, args.output_path)
+    if args.format == "onnx":
+        LOGGER.info(f"Exporting model to ONNX format")
+        export_model(ckpt, model, args.output_path)
+    elif args.format == "dorado":
+        LOGGER.info(f"Exporting model to dorado format")
+        export_tensors(ckpt, model, args.output_path)
+    else:
+        raise RemoraError(f"Invalid export format: {args.format}")
 
 
 def register_model_list_pretrained(parser):
