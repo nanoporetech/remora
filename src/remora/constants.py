@@ -22,10 +22,12 @@ OPTIMIZERS = (ADAMW_OPT, SGD_OPT, ADAM_OPT)
 
 FINAL_MODEL_FILENAME = "model_final.checkpoint"
 FINAL_ONNX_MODEL_FILENAME = "model_final.onnx"
+FINAL_TORCHSCRIPT_MODEL_FILENAME = "model_final.pt"
 SAVE_DATASET_FILENAME = "remora_train_data.npz"
 
 BEST_MODEL_FILENAME = "model_best.checkpoint"
 BEST_ONNX_MODEL_FILENAME = "model_best.onnx"
+BEST_TORCHSCRIPT_MODEL_FILENAME = "model_best.pt"
 
 # should be an int to store in onnx
 MODEL_VERSION = 3

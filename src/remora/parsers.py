@@ -608,8 +608,8 @@ def run_model_train(args):
 def register_model_export(parser):
     subparser = parser.add_parser(
         "export",
-        description="Export a model to ONNX format for inference.",
-        help="Export a model to ONNX format for inference.",
+        description="Export a model to ONNX/TorchScript format for inference.",
+        help="Export a model to ONNX or TorchScript format for inference.",
         formatter_class=SubcommandHelpFormatter,
     )
     subparser.add_argument(
@@ -618,7 +618,8 @@ def register_model_export(parser):
     )
     subparser.add_argument(
         "output_path",
-        help="Path to save the onnx model file, or the directory in which to save the dorado tensor files if '--format dorado' has been specified.",
+        help="Path to save the onnx model file, or the directory in which to "
+        "save the dorado tensor files if '--format dorado' has been specified.",
     )
     subparser.add_argument(
         "--model-path",
@@ -627,7 +628,7 @@ def register_model_export(parser):
     subparser.add_argument(
         "--format",
         default="onnx",
-        choices=["onnx", "dorado"],
+        choices=["onnx", "dorado", "torchscript"],
         help="Export format. Default: onnx",
     )
 
@@ -637,8 +638,9 @@ def register_model_export(parser):
 def run_model_export(args):
     from remora.model_util import (
         continue_from_checkpoint,
-        export_model,
-        export_tensors,
+        export_model_onnx,
+        export_model_dorado,
+        export_model_torchscript,
     )
 
     LOGGER.info("Loading model")
@@ -647,10 +649,13 @@ def run_model_export(args):
     )
     if args.format == "onnx":
         LOGGER.info(f"Exporting model to ONNX format")
-        export_model(ckpt, model, args.output_path)
+        export_model_onnx(ckpt, model, args.output_path)
     elif args.format == "dorado":
         LOGGER.info(f"Exporting model to dorado format")
-        export_tensors(ckpt, model, args.output_path)
+        export_model_dorado(ckpt, model, args.output_path)
+    elif args.format == "torchscript":
+        LOGGER.info("Exporting model to TorchScript format")
+        export_model_torchscript(ckpt, model, args.output_path)
     else:
         raise RemoraError(f"Invalid export format: {args.format}")
 
@@ -736,8 +741,8 @@ def register_infer_from_taiyaki_mapped_signal(parser):
         help="Taiyaki mapped signal file on which to perform inference.",
     )
     subparser.add_argument(
-        "--onnx-model",
-        help="Path to a pretrained model in onnx format.",
+        "--model",
+        help="Path to a pretrained model in onnx or torchscript format.",
     )
     subparser.add_argument(
         "--pore",
@@ -826,7 +831,7 @@ def run_infer_from_taiyaki_mapped_signal(args):
     infer(
         input_msf,
         out_path,
-        args.onnx_model,
+        args.model,
         args.batch_size,
         args.device,
         args.focus_offset,
@@ -851,8 +856,8 @@ def register_infer_from_remora_dataset(parser):
         help="Remora training dataset",
     )
     subparser.add_argument(
-        "onnx_model",
-        help="Path to a pretrained model in onnx format.",
+        "model",
+        help="Path to a pretrained model.",
     )
     subparser.add_argument(
         "--out-file",
@@ -882,7 +887,7 @@ def register_infer_from_remora_dataset(parser):
 
 def run_infer_from_remora_dataset(args):
     from remora.data_chunks import RemoraDataset
-    from remora.model_util import ValidationLogger, load_onnx_model
+    from remora.model_util import ValidationLogger, load_model
     import torch
 
     LOGGER.info("Loading dataset from Remora file")
@@ -894,7 +899,7 @@ def run_infer_from_remora_dataset(args):
     )
 
     LOGGER.info("Loading model")
-    model, model_metadata = load_onnx_model(args.onnx_model, args.device)
+    model, model_metadata = load_model(args.model, args.device)
 
     dataset.trim_kmer_context_bases(model_metadata["kmer_context_bases"])
     dataset.trim_chunk_context(model_metadata["chunk_context"])
