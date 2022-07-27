@@ -1,9 +1,11 @@
 import atexit
 import os
 
+import torch
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from torch.jit._script import RecursiveScriptModule
 
 from remora import constants, log, RemoraError, encoded_kmers
 from remora.data_chunks import RemoraDataset, RemoraRead
@@ -75,6 +77,9 @@ def call_read_mods_core(
           2. Labels for each base (-1 if labels not provided)
           3. List of positions within the read
     """
+    is_torch_model = isinstance(model, RecursiveScriptModule)
+    if is_torch_model:
+        device = next(model.parameters()).device
     read.refine_signal_mapping(model_metadata["sig_map_refiner"])
     read_outputs, all_read_data, read_labels = [], [], []
     motifs = [Motif(*mot) for mot in model_metadata["motifs"]]
@@ -119,7 +124,20 @@ def call_read_mods_core(
         enc_kmers = encoded_kmers.compute_encoded_kmer_batch(
             bb, ab, seqs, seq_maps, seq_lens
         )
-        read_outputs.append(model.run([], {"sig": sigs, "seq": enc_kmers})[0])
+        if is_torch_model:
+            read_outputs.append(
+                model.forward(
+                    sigs=torch.from_numpy(sigs).to(device),
+                    seqs=torch.from_numpy(enc_kmers).to(device),
+                )
+                .detach()
+                .cpu()
+                .numpy()
+            )
+        else:
+            read_outputs.append(
+                model.run([], {"sig": sigs, "seq": enc_kmers})[0]
+            )
         read_labels.append(labels)
         all_read_data.extend(read_data)
     read_outputs = np.concatenate(read_outputs, axis=0)
@@ -180,7 +198,7 @@ def call_read_mods(
 def infer(
     input_msf,
     out_path,
-    onnx_model_path,
+    model_path,
     batch_size,
     device,
     focus_offset,
@@ -206,7 +224,7 @@ def infer(
 
     LOGGER.info("Loading model")
     model, model_metadata = load_model(
-        onnx_model_path,
+        model_path,
         pore=pore,
         basecall_model_type=basecall_model_type,
         basecall_model_version=basecall_model_version,

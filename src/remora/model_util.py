@@ -2,6 +2,7 @@ import os
 import sys
 import copy
 import json
+import toml
 import datetime
 import importlib
 import pkg_resources
@@ -36,6 +37,11 @@ VAL_METRICS = namedtuple(
         "filt_conf_mat",
     ),
 )
+
+
+##############
+# Validation #
+##############
 
 
 def compute_metrics(
@@ -192,32 +198,12 @@ class ValidationLogger:
         return ms
 
 
-def _load_python_model(model_file, **model_kwargs):
-    loader = importlib.machinery.SourceFileLoader("netmodule", model_file)
-    netmodule = importlib.util.module_from_spec(
-        importlib.util.spec_from_loader(loader.name, loader)
-    )
-    loader.exec_module(netmodule)
-    network = netmodule.network(**model_kwargs)
-    return network
+#############
+# Exporting #
+#############
 
 
-def continue_from_checkpoint(ckp_path, model_path=None):
-    """Load a checkpoint in order to continue training."""
-    if not isfile(ckp_path):
-        raise RemoraError(f"Checkpoint path is not a file ({ckp_path})")
-    LOGGER.info(f"Loading trained model from {ckp_path}")
-    ckpt = torch.load(ckp_path)
-    if ckpt["state_dict"] is None:
-        raise RemoraError("Model state not saved in checkpoint.")
-
-    model_path = ckpt["model_path"] if model_path is None else model_path
-    model = _load_python_model(model_path, **ckpt["model_params"])
-    model.load_state_dict(ckpt["state_dict"])
-    return ckpt, model
-
-
-def export_model(ckpt, model, save_filename):
+def export_model_onnx(ckpt, model, save_filename):
     kmer_len = sum(ckpt["kmer_context_bases"]) + 1
     sig_len = sum(ckpt["chunk_context"])
     sig = torch.from_numpy(np.zeros((1, 1, sig_len), dtype=np.float32))
@@ -314,31 +300,82 @@ def export_model(ckpt, model, save_filename):
     onnx.save(onnx_model, save_filename)
 
 
-def export_tensors(ckpt, model, save_path):
-    import toml
+def export_model_torchscript(ckpt, model, save_filename):
+    m = torch.jit.script(model)
+    meta = {}
+    meta["creation_date"] = datetime.datetime.now().strftime(
+        "%m/%d/%Y, %H:%M:%S"
+    )
+    meta["kmer_context_bases"] = ckpt["kmer_context_bases"]
+    meta["chunk_context"] = ckpt["chunk_context"]
+    # add simple metadata
+    for ckpt_key in (
+        "base_pred",
+        "mod_bases",
+        "refine_kmer_center_idx",
+        "refine_do_rough_rescale",
+        "refine_scale_iters",
+        "refine_algo",
+        "refine_half_bandwidth",
+        "base_start_justify",
+        "offset",
+    ):
+        meta[ckpt_key] = ckpt[ckpt_key]
 
-    save_dir = os.path.expanduser(save_path)
+    if ckpt["mod_bases"] is not None:
+        for mod_idx in range(len(ckpt["mod_bases"])):
+            meta[f"mod_long_names_{mod_idx}"] = str(
+                ckpt["mod_long_names"][mod_idx]
+            )
+    meta["num_motifs"] = str(ckpt["num_motifs"])
+    for idx, (motif, motif_offset) in enumerate(ckpt["motifs"]):
+        m_key = f"motif_{idx}"
+        mo_key = f"motif_offset_{idx}"
+        meta[m_key] = str(motif)
+        meta[mo_key] = str(motif_offset)
 
+    meta["num_motifs"] = str(len(ckpt["motifs"]))
+
+    # store refine arrays as bytes
+    meta["refine_kmer_levels"] = (
+        ckpt["refine_kmer_levels"].astype(np.float32).tobytes().decode("cp437")
+    )
+    meta["refine_sd_arr"] = (
+        ckpt["refine_sd_arr"].astype(np.float32).tobytes().decode("cp437")
+    )
+    meta["doc_string"] = "Nanopore Remora model"
+    try:
+        meta["model_version"] = ckpt["model_version"]
+    except KeyError:
+        LOGGER.warning("Model version not found in checkpoint. Setting to 0.")
+        meta["model_version"] = 0
+    json_object = json.dumps(meta, indent=4)
+    extra_files = {"meta.txt": json_object}
+    torch.jit.save(m, save_filename, _extra_files=extra_files)
+
+
+def export_model_dorado(ckpt, model, save_dir):
+    save_dir = os.path.expanduser(save_dir)
     if os.path.exists(save_dir):
         LOGGER.info(
-            f'Directory "{save_dir}" already exists. Exported files will be overwritten.'
+            f'Directory "{save_dir}" already exists. Exported files will '
+            "be overwritten."
         )
-
     os.makedirs(save_dir, exist_ok=True)
 
-    def save_tensor(mn, fn, x):
+    def save_tensor(fn, x):
         m = torch.nn.Module()
         par = nn.Parameter(x, requires_grad=False)
         m.register_parameter("0", par)
         tensors = torch.jit.script(m)
-        tensors.save(f"{mn}/{fn}.tensor")
-        LOGGER.info(f"{mn}/{fn}.tensor")
+        tensors.save(f"{save_dir}/{fn}.tensor")
+        LOGGER.info(f"{save_dir}/{fn}.tensor")
 
     model.eval()
     layer_names = set()
     for k, v in model.state_dict().items():
         # if "weight" in k or "bias" in k:
-        save_tensor(save_path, k, v)
+        save_tensor(k, v)
         layer_names.add(k[: k.find(".")])
 
     metadata = {}
@@ -407,7 +444,7 @@ def export_tensors(ckpt, model, save_path):
         refine_kmer_levels = torch.Tensor(
             ckpt["refine_kmer_levels"].astype(np.float32)
         )
-        save_tensor(save_filepath, "refine_kmer_levels", refine_kmer_levels)
+        save_tensor("refine_kmer_levels", refine_kmer_levels)
 
     # add simple metadata
     for ckpt_key in (
@@ -437,56 +474,40 @@ def export_tensors(ckpt, model, save_path):
     metadata["modbases"] = modbases
     metadata["refinement"] = refinement
 
-    toml.dump(metadata, open(os.path.join(save_filepath, "config.toml"), "w"))
+    toml.dump(metadata, open(os.path.join(save_dir, "config.toml"), "w"))
 
 
-def load_onnx_model(model_filename, device=None, quiet=False):
-    """Load onnx model. If device is specified load onto specified device.
+###########
+# Loading #
+###########
 
-    Args:
-        model_filename (str): Model path
-        device (int): GPU device ID
-        quiet (bool): Don't log full model loading info
 
-    Returns:
-        2-tuple containing:
-          1. ort.InferenceSession object for calling mods
-          2. Model metadata dictionary with information concerning data prep
-    """
-    providers = ["CPUExecutionProvider"]
-    provider_options = None
-    if device is not None:
-        if quiet:
-            LOGGER.debug("Loading Remora model onto GPU")
-        else:
-            LOGGER.info("Loading Remora model onto GPU")
-        if ort.get_device() != "GPU":
-            raise RemoraError(
-                "onnxruntime not compatible with GPU execution. Install "
-                "compatible package via `pip install onnxruntime-gpu`"
-            )
-        providers = ["CUDAExecutionProvider"]
-        provider_options = [{"device_id": str(device)}]
-    # set severity to error so CPU fallback messages are masked
-    ort.set_default_logger_severity(3)
-    LOGGER.debug(f"Using {ONNX_NUM_THREADS} thread(s) for ONNX")
-    so = ort.SessionOptions()
-    so.inter_op_num_threads = ONNX_NUM_THREADS
-    so.intra_op_num_threads = ONNX_NUM_THREADS
-    model_sess = ort.InferenceSession(
-        model_filename,
-        providers=providers,
-        provider_options=provider_options,
-        sess_options=so,
+def _load_python_model(model_file, **model_kwargs):
+    loader = importlib.machinery.SourceFileLoader("netmodule", model_file)
+    netmodule = importlib.util.module_from_spec(
+        importlib.util.spec_from_loader(loader.name, loader)
     )
-    LOGGER.debug(f"Remora model ONNX providers: {model_sess.get_providers()}")
-    if device is not None and model_sess.get_providers()[0].startswith("CPU"):
-        raise RemoraError(
-            "Model not loaded on GPU. Check install settings. See "
-            "requirements here https://onnxruntime.ai/docs"
-            "/execution-providers/CUDA-ExecutionProvider.html#requirements"
-        )
-    model_metadata = dict(model_sess.get_modelmeta().custom_metadata_map)
+    loader.exec_module(netmodule)
+    network = netmodule.network(**model_kwargs)
+    return network
+
+
+def continue_from_checkpoint(ckp_path, model_path=None):
+    """Load a checkpoint in order to continue training."""
+    if not isfile(ckp_path):
+        raise RemoraError(f"Checkpoint path is not a file ({ckp_path})")
+    LOGGER.info(f"Loading trained model from {ckp_path}")
+    ckpt = torch.load(ckp_path)
+    if ckpt["state_dict"] is None:
+        raise RemoraError("Model state not saved in checkpoint.")
+
+    model_path = ckpt["model_path"] if model_path is None else model_path
+    model = _load_python_model(model_path, **ckpt["model_params"])
+    model.load_state_dict(ckpt["state_dict"])
+    return ckpt, model
+
+
+def add_derived_metadata(model_metadata):
     model_metadata["base_pred"] = model_metadata["base_pred"] == "True"
     if model_metadata["mod_bases"] == "None":
         model_metadata["mod_bases"] = None
@@ -497,15 +518,17 @@ def load_onnx_model(model_filename, device=None, quiet=False):
             model_metadata["mod_long_names"].append(
                 model_metadata[f"mod_long_names_{mod_idx}"]
             )
-    model_metadata["kmer_context_bases"] = (
-        int(model_metadata["kmer_context_bases_0"]),
-        int(model_metadata["kmer_context_bases_1"]),
-    )
+    if "kmer_context_bases" not in model_metadata:
+        model_metadata["kmer_context_bases"] = (
+            int(model_metadata["kmer_context_bases_0"]),
+            int(model_metadata["kmer_context_bases_1"]),
+        )
     model_metadata["kmer_len"] = sum(model_metadata["kmer_context_bases"]) + 1
-    model_metadata["chunk_context"] = (
-        int(model_metadata["chunk_context_0"]),
-        int(model_metadata["chunk_context_1"]),
-    )
+    if "chunk_context" not in model_metadata:
+        model_metadata["chunk_context"] = (
+            int(model_metadata["chunk_context_0"]),
+            int(model_metadata["chunk_context_1"]),
+        )
     model_metadata["chunk_len"] = sum(model_metadata["chunk_context"])
 
     if "num_motifs" not in model_metadata:
@@ -579,6 +602,56 @@ def load_onnx_model(model_filename, device=None, quiet=False):
         model_metadata["base_start_justify"] = False
         model_metadata["offset"] = 0
 
+
+def load_onnx_model(model_filename, device=None, quiet=False):
+    """Load onnx model. If device is specified load onto specified device.
+
+    Args:
+        model_filename (str): Model path
+        device (int): GPU device ID
+        quiet (bool): Don't log full model loading info
+
+    Returns:
+        2-tuple containing:
+          1. ort.InferenceSession object for calling mods
+          2. Model metadata dictionary with information concerning data prep
+    """
+    providers = ["CPUExecutionProvider"]
+    provider_options = None
+    if device is not None:
+        if quiet:
+            LOGGER.debug("Loading Remora model onto GPU")
+        else:
+            LOGGER.info("Loading Remora model onto GPU")
+        if ort.get_device() != "GPU":
+            raise RemoraError(
+                "onnxruntime not compatible with GPU execution. Install "
+                "compatible package via `pip install onnxruntime-gpu`"
+            )
+        providers = ["CUDAExecutionProvider"]
+        provider_options = [{"device_id": str(device)}]
+    # set severity to error so CPU fallback messages are masked
+    ort.set_default_logger_severity(3)
+    LOGGER.debug(f"Using {ONNX_NUM_THREADS} thread(s) for ONNX")
+    so = ort.SessionOptions()
+    so.inter_op_num_threads = ONNX_NUM_THREADS
+    so.intra_op_num_threads = ONNX_NUM_THREADS
+    model_sess = ort.InferenceSession(
+        model_filename,
+        providers=providers,
+        provider_options=provider_options,
+        sess_options=so,
+    )
+    LOGGER.debug(f"Remora model ONNX providers: {model_sess.get_providers()}")
+    if device is not None and model_sess.get_providers()[0].startswith("CPU"):
+        raise RemoraError(
+            "Model not loaded on GPU. Check install settings. See "
+            "requirements here https://onnxruntime.ai/docs"
+            "/execution-providers/CUDA-ExecutionProvider.html#requirements"
+        )
+    model_metadata = dict(model_sess.get_modelmeta().custom_metadata_map)
+    add_derived_metadata(model_metadata)
+
     if not quiet:
         # skip attributes included in parsed values
         ckpt_attrs = "\n".join(
@@ -605,6 +678,36 @@ def load_onnx_model(model_filename, device=None, quiet=False):
     return model_sess, model_metadata
 
 
+def load_torchscript_model(model_filename, device=None):
+    """Load onnx model. If device is specified load onto specified device.
+
+    Args:
+        model_filename (str): Model path
+        device (int): GPU device ID
+
+    Returns:
+        2-tuple containing:
+          1. Compiled model object for calling mods
+          2. Model metadata dictionary with information concerning data prep
+    """
+
+    # values will be replaced with data
+    extra_files = {"meta.txt": ""}
+    if device is None:
+        model = torch.jit.load(
+            model_filename, _extra_files=extra_files, map_location="cpu"
+        )
+    else:
+        model = torch.jit.load(
+            model_filename,
+            _extra_files=extra_files,
+            map_location=torch.device(device),
+        )
+    model_metadata = json.loads(extra_files["meta.txt"])
+    add_derived_metadata(model_metadata)
+    return model, model_metadata
+
+
 def load_model(
     model_filename=None,
     *,
@@ -622,7 +725,11 @@ def load_model(
             raise RemoraError(
                 f"Remora model file ({model_filename}) not found."
             )
-        return load_onnx_model(model_filename, device, quiet=quiet)
+        try:
+            return load_torchscript_model(model_filename, device)
+        except (AttributeError, RuntimeError):
+            LOGGER.warning("Failed loading torchscript model. Trying onnx.")
+            return load_onnx_model(model_filename, device, quiet=quiet)
 
     if pore is None:
         raise RemoraError("Must specify a pore.")
@@ -724,7 +831,11 @@ def load_model(
         raise RemoraError(
             f"No pre-trained Remora model for this configuration {path}."
         )
-    return load_onnx_model(path, device, quiet=quiet)
+    try:
+        return load_torchscript_model(path, device)
+    except (AttributeError, RuntimeError):
+        LOGGER.warning("Failed loading torchscript model. Trying onnx.")
+        return load_onnx_model(path, device, quiet=quiet)
 
 
 def get_pretrained_models(

@@ -59,6 +59,8 @@ def save_model(
     model_name=constants.BEST_MODEL_FILENAME,
     as_onnx=False,
     model_name_onnx=constants.BEST_ONNX_MODEL_FILENAME,
+    as_torchscript=True,
+    model_name_torchscript=constants.BEST_TORCHSCRIPT_MODEL_FILENAME,
 ):
     ckpt_save_data["epoch"] = epoch + 1
     state_dict = model.state_dict()
@@ -73,10 +75,16 @@ def save_model(
         os.path.join(out_path, model_name),
     )
     if as_onnx:
-        model_util.export_model(
+        model_util.export_model_onnx(
             ckpt_save_data,
             model,
             os.path.join(out_path, model_name_onnx),
+        )
+    if as_torchscript:
+        model_util.export_model_torchscript(
+            ckpt_save_data,
+            model,
+            os.path.join(out_path, model_name_torchscript),
         )
 
 
@@ -357,7 +365,11 @@ def train_model(
                 f"val_acc {val_metrics.acc}"
             )
             save_model(
-                model, ckpt_save_data, out_path, epoch, opt, as_onnx=True
+                model,
+                ckpt_save_data,
+                out_path,
+                epoch,
+                opt,
             )
         else:
             early_stop_epochs += 1
@@ -389,8 +401,7 @@ def train_model(
                         epoch,
                         opt,
                         model_name=f"model_e_val_{e_set_idx}_best.checkpoint",
-                        as_onnx=True,
-                        model_name_onnx=f"model_e_val_{e_set_idx}_best.onnx",
+                        model_name_torchscript=f"model_e_val_{e_set_idx}_best.pt",
                     )
 
         if int(epoch + 1) % save_freq == 0:
@@ -400,7 +411,8 @@ def train_model(
                 out_path,
                 epoch,
                 opt,
-                f"model_{epoch + 1:06d}.checkpoint",
+                model_name=f"model_{epoch + 1:06d}.checkpoint",
+                model_name_torchscript=f"model_{epoch + 1:06d}.pt",
             )
 
         ebar.set_postfix(
@@ -425,9 +437,8 @@ def train_model(
         out_path,
         epoch,
         opt,
-        constants.FINAL_MODEL_FILENAME,
-        True,
-        constants.FINAL_ONNX_MODEL_FILENAME,
+        model_name=constants.FINAL_MODEL_FILENAME,
+        model_name_torchscript=constants.FINAL_TORCHSCRIPT_MODEL_FILENAME,
     )
     LOGGER.info("Training complete")
 

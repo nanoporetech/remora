@@ -8,7 +8,7 @@ pytestmark = pytest.mark.main
 
 # These are copied from remora.constants
 #  - can't figure out how to load this from pytest
-FINAL_MODEL_FILENAME = "model_final.onnx"
+FINAL_MODEL_FILENAME = "model_final.pt"
 SAVE_DATASET_FILENAME = "remora_train_data.npz"
 
 MODELS_DIR = Path(__file__).absolute().parent.parent / "models"
@@ -73,7 +73,7 @@ def test_mod_infer(tmpdir_factory, mod_tai_map_sig, fw_mod_model_dir):
             "infer",
             "from_taiyaki_mapped_signal",
             mod_tai_map_sig,
-            "--onnx-model",
+            "--model",
             str(fw_mod_model_dir / FINAL_MODEL_FILENAME),
             "--batch-size",
             "20",
@@ -115,7 +115,7 @@ def test_can_infer(tmpdir_factory, can_tai_map_sig, fw_mod_model_dir):
             "infer",
             "from_taiyaki_mapped_signal",
             can_tai_map_sig,
-            "--onnx-model",
+            "--model",
             str(fw_mod_model_dir / FINAL_MODEL_FILENAME),
             "--batch-size",
             "20",
@@ -166,7 +166,7 @@ def test_base_pred_infer(
             "infer",
             "from_taiyaki_mapped_signal",
             can_tai_map_sig,
-            "--onnx-model",
+            "--model",
             str(fw_base_pred_model_dir / FINAL_MODEL_FILENAME),
             "--batch-size",
             "20",
