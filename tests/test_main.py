@@ -43,7 +43,7 @@ def test_prep_mod(mod_chunks):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("model_path", MODEL_PATHS)
-def test_train_mod(model_path, tmpdir_factory, mod_chunks, train_cli_args):
+def test_train(model_path, tmpdir_factory, chunks, train_cli_args):
     """Run `model train` on the command line."""
     print(f"Running command line `remora model train` with model {model_path}")
     out_dir = tmpdir_factory.mktemp("remora_tests") / "train_mod_model"
@@ -53,7 +53,7 @@ def test_train_mod(model_path, tmpdir_factory, mod_chunks, train_cli_args):
             "remora",
             "model",
             "train",
-            str(mod_chunks),
+            str(chunks),
             "--output-path",
             str(out_dir),
             "--model",
@@ -65,62 +65,71 @@ def test_train_mod(model_path, tmpdir_factory, mod_chunks, train_cli_args):
 
 
 @pytest.mark.unit
-def test_mod_infer(tmpdir_factory, mod_tai_map_sig, fw_mod_model_dir):
-    out_dir = tmpdir_factory.mktemp("remora_tests") / "mod_infer"
+def test_mod_infer(tmpdir_factory, can_pod5, can_mappings, fw_mod_model_dir):
+    out_file = tmpdir_factory.mktemp("remora_tests") / "mod_infer.txt"
     check_call(
         [
             "remora",
             "infer",
-            "from_taiyaki_mapped_signal",
-            mod_tai_map_sig,
+            "from_pod5_and_bam",
+            can_pod5,
+            can_mappings,
             "--model",
             str(fw_mod_model_dir / FINAL_MODEL_FILENAME),
-            "--batch-size",
-            "20",
-            "--output-path",
-            out_dir,
+            "--out-file",
+            out_file,
         ],
     )
 
 
 @pytest.mark.unit
-def test_mod_infer_pretrain(tmpdir_factory, mod_tai_map_sig):
-    out_dir = tmpdir_factory.mktemp("remora_tests") / "mod_infer_pretrain"
-    check_call(
-        [
-            "remora",
-            "infer",
-            "from_taiyaki_mapped_signal",
-            mod_tai_map_sig,
-            "--pore",
-            "dna_r9.4.1_e8",
-            "--basecall-model-type",
-            "fast",
-            "--modified-bases",
-            "5mC",
-            "--batch-size",
-            "20",
-            "--output-path",
-            out_dir,
-        ],
-    )
+def test_mod_infer_pretrain(can_modbam):
+    print(can_modbam)
 
 
 @pytest.mark.unit
-def test_can_infer(tmpdir_factory, can_tai_map_sig, fw_mod_model_dir):
-    out_dir = tmpdir_factory.mktemp("remora_tests") / "can_infer"
+def test_mod_validate_from_dataset(tmpdir_factory, chunks, fw_mod_model_dir):
+    out_dir = tmpdir_factory.mktemp("remora_tests")
+    print(f"Trained validate results output: {out_dir}")
+    out_file = out_dir / "mod_validate.txt"
+    full_file = out_dir / "mod_validate_full.txt"
     check_call(
         [
             "remora",
-            "infer",
-            "from_taiyaki_mapped_signal",
-            can_tai_map_sig,
+            "validate",
+            "from_remora_dataset",
+            chunks,
             "--model",
             str(fw_mod_model_dir / FINAL_MODEL_FILENAME),
             "--batch-size",
             "20",
-            "--output-path",
-            out_dir,
+            "--out-file",
+            out_file,
+            "--full-output-filename",
+            full_file,
+        ],
+    )
+
+
+@pytest.mark.skip(
+    reason="pysam MM bug https://github.com/pysam-developers/pysam/issues/1123"
+)
+@pytest.mark.unit
+def test_mod_validate_from_modbams(tmpdir_factory, can_modbam, mod_modbam):
+    out_dir = tmpdir_factory.mktemp("remora_tests")
+    print(f"Pretrained validate results output: {out_dir}")
+    full_file = out_dir / "mod_validate_full.txt"
+    check_call(
+        [
+            "remora",
+            "validate",
+            "from_modbams",
+            "--bams",
+            can_modbam,
+            "--mod-bams",
+            mod_modbam,
+            "--full-output-filename",
+            full_file,
         ],
     )
 
@@ -130,6 +139,7 @@ def test_can_infer(tmpdir_factory, can_tai_map_sig, fw_mod_model_dir):
 ###################
 
 
+@pytest.mark.skip(reason="Base prediction")
 @pytest.mark.parametrize("model_path", MODEL_PATHS)
 def test_train_base_pred(
     model_path, tmpdir_factory, can_chunks, train_cli_args
@@ -154,23 +164,26 @@ def test_train_base_pred(
     return out_dir
 
 
+@pytest.mark.skip(reason="Base prediction")
 @pytest.mark.unit
-def test_base_pred_infer(
-    tmpdir_factory, can_tai_map_sig, fw_base_pred_model_dir
-):
-    out_dir = tmpdir_factory.mktemp("remora_tests") / "can_infer_base_pred"
-    print(out_dir)
+def test_base_pred_validate(tmpdir_factory, can_chunks, fw_base_pred_model_dir):
+    out_dir = tmpdir_factory.mktemp("remora_tests")
+    print(f"Trained validate base pred results output: {out_dir}")
+    out_file = out_dir / "base_pred_validate.txt"
+    full_file = out_dir / "base_pred_validate_full.txt"
     check_call(
         [
             "remora",
-            "infer",
-            "from_taiyaki_mapped_signal",
-            can_tai_map_sig,
+            "validate",
+            "from_remora_dataset",
+            can_chunks,
             "--model",
             str(fw_base_pred_model_dir / FINAL_MODEL_FILENAME),
             "--batch-size",
             "20",
-            "--output-path",
-            out_dir,
+            "--out-file",
+            out_file,
+            "--full-output-filename",
+            full_file,
         ],
     )

@@ -10,6 +10,8 @@ from remora import RemoraError
 
 def parse_mods(bam_fns, regs, mod_b, is_mod, full_fp):
     probs = []
+    # hid warnings for no index when using unmapped or unsorted files
+    pysam_save = pysam.set_verbosity(0)
     for bam_fn in bam_fns:
         with pysam.AlignmentFile(bam_fn, check_sq=False) as bam:
             for read in tqdm(bam, smoothing=0):
@@ -47,11 +49,14 @@ def parse_mods(bam_fns, regs, mod_b, is_mod, full_fp):
                             f"{is_mod}\n"
                         )
                     probs.append(m_prob)
+    pysam.set_verbosity(pysam_save)
     return np.array(probs)
 
 
 def parse_gt_mods(bam_fns, mod_b, can_pos, mod_pos, full_fp):
     can_probs, mod_probs = [], []
+    # hid warnings for no index when using unmapped or unsorted files
+    pysam_save = pysam.set_verbosity(0)
     for bam_fn in bam_fns:
         with pysam.AlignmentFile(bam_fn, check_sq=False) as bam:
             for read in tqdm(bam, smoothing=0):
@@ -94,6 +99,7 @@ def parse_gt_mods(bam_fns, mod_b, can_pos, mod_pos, full_fp):
                         mod_probs.append(m_prob)
                     else:
                         can_probs.append(m_prob)
+    pysam.set_verbosity(pysam_save)
     return np.array(can_probs), np.array(mod_probs)
 
 
@@ -127,12 +133,23 @@ def parse_ground_truth_file(gt_data_fn):
     return can_pos, mod_pos
 
 
-def validate_from_modbams(args):
-    if args.regions_bed is None:
+def validate_from_modbams(
+    bams,
+    mod_bams,
+    gt_pos_fn,
+    regs_bed,
+    full_out_fn,
+    mod_base,
+    fixed_thresh,
+    name,
+    pct_filt,
+    allow_unbalanced=False,
+):
+    if regs_bed is None:
         regs = None
     else:
         regs = defaultdict(set)
-        with open(args.regions_bed) as regs_fp:
+        with open(regs_bed) as regs_fp:
             for line in regs_fp:
                 fields = line.split()
                 ctg, st, en = fields[:3]
@@ -142,29 +159,31 @@ def validate_from_modbams(args):
                 else:
                     regs[(ctg, fields[5])].update(range(int(st), int(en)))
     full_fp = None
-    if args.full_output_filename is not None:
-        full_fp = open(args.full_output_filename, "w", buffering=512)
+    if full_out_fn is not None:
+        full_fp = open(full_out_fn, "w", buffering=512)
         atexit.register(full_fp.close)
         full_fp.write(
             "query_name\tquery_pos\tmod_prob\tref_name\tref_pos\tstrand\t"
             "is_mod\n"
         )
-    if args.mod_bams is None:
-        if args.ground_truth_positions is None:
+    if mod_bams is None:
+        if gt_pos_fn is None:
             raise RemoraError(
                 "Must provide either mod_bams or ground_truth_positions"
             )
-        can_pos, mod_pos = parse_ground_truth_file(args.ground_truth_positions)
+        can_pos, mod_pos = parse_ground_truth_file(gt_pos_fn)
         can_probs, mod_probs = parse_gt_mods(
-            args.bams, args.mod_base, can_pos, mod_pos, full_fp
+            bams, mod_base, can_pos, mod_pos, full_fp
         )
     else:
-        can_probs = parse_mods(args.bams, regs, args.mod_base, False, full_fp)
-        mod_probs = parse_mods(
-            args.mod_bams, regs, args.mod_base, True, full_fp
-        )
+        can_probs = parse_mods(bams, regs, mod_base, False, full_fp)
+        mod_probs = parse_mods(mod_bams, regs, mod_base, True, full_fp)
 
-    if not args.allow_unbalanced:
+    if can_probs.size == 0:
+        raise RemoraError("No valid modification calls from canonical set.")
+    if mod_probs.size == 0:
+        raise RemoraError("No valid modification calls from modified set.")
+    if not allow_unbalanced:
         if can_probs.size > mod_probs.size:
             np.random.shuffle(can_probs)
             can_probs = can_probs[: mod_probs.size]
@@ -175,14 +194,14 @@ def validate_from_modbams(args):
     all_probs = np.concatenate([can_probs, mod_probs])
     probs_cs = np.cumsum(np.bincount(all_probs)) / all_probs.size
 
-    if args.fixed_thresh is not None:
-        lt = int(args.fixed_thresh[0] * 255)
-        ht = int(args.fixed_thresh[1] * 255)
+    if fixed_thresh is not None:
+        lt = int(fixed_thresh[0] * 255)
+        ht = int(fixed_thresh[1] * 255)
         if lt >= ht:
             ht = lt + 1
         print(
             f"{calc_metrics(can_probs, mod_probs, lt, ht)[-1]}\t"
-            f"{lt}_{ht}\t{args.name}"
+            f"{lt}_{ht}\t{name}"
         )
         return
 
@@ -193,9 +212,7 @@ def validate_from_modbams(args):
         lcs = probs_cs[lt]
         try:
             ht = next(
-                i
-                for i, cs in enumerate(probs_cs)
-                if cs - lcs >= args.pct_filt / 100
+                i for i, cs in enumerate(probs_cs) if cs - lcs >= pct_filt / 100
             )
         except StopIteration:
             continue
@@ -208,7 +225,7 @@ def validate_from_modbams(args):
         ht = lt + 1
     print(
         f"{calc_metrics(can_probs, mod_probs, lt, ht)[-1]}\t{lt}_{ht}\t"
-        f"{args.name}"
+        f"{name}"
     )
 
     """ Alternative methods to find fixed percent of reads to filter
