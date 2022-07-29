@@ -10,8 +10,9 @@ run commands to avoid loading all modules when a user simply wants the help
 string.
 """
 
-import argparse
 import os
+import sys
+import argparse
 from pathlib import Path
 from shutil import rmtree
 
@@ -21,7 +22,10 @@ from remora import log, RemoraError
 LOGGER = log.get_logger()
 
 
-class SubcommandHelpFormatter(argparse.RawDescriptionHelpFormatter):
+class SubcommandHelpFormatter(
+    argparse.RawDescriptionHelpFormatter,
+    argparse.ArgumentDefaultsHelpFormatter,
+):
     """Helper function to prettier print subcommand help. This removes some
     extra lines of output when a final command parser is not selected.
     """
@@ -63,8 +67,12 @@ def register_dataset_prepare(parser):
         formatter_class=SubcommandHelpFormatter,
     )
     subparser.add_argument(
-        "input_reads",
-        help="Taiyaki mapped signal or RemoraReads pickle file.",
+        "pod5",
+        help="POD5 file corresponding to bam file.",
+    )
+    subparser.add_argument(
+        "bam",
+        help="BAM file containing mv tags.",
     )
 
     out_grp = subparser.add_argument_group("Output Arguments")
@@ -74,24 +82,11 @@ def register_dataset_prepare(parser):
         help="Output Remora training dataset file. Default: %(default)s",
     )
     out_grp.add_argument(
-        "--output-remora-reads-file",
-        help="Output Remora reads to disk. Default: Don't save reads.",
-    )
-    out_grp.add_argument(
         "--log-filename",
         help="Log filename. Default: Don't output log file.",
     )
 
     data_grp = subparser.add_argument_group("Data Arguments")
-    data_grp.add_argument(
-        "--mod-base",
-        nargs=2,
-        action="append",
-        metavar=("SINGLE_LETTER_CODE", "MOD_BASE"),
-        default=None,
-        help="If provided input is RemoraReads pickle, modified bases must "
-        "be provided. Exmaple: `--mod-base m 5mC --mod-base h 5hmC`",
-    )
     data_grp.add_argument(
         "--motif",
         nargs=2,
@@ -147,6 +142,12 @@ def register_dataset_prepare(parser):
         help="Offset selected chunk position by a number of bases. "
         "Default: %(default)d",
     )
+    data_grp.add_argument(
+        "--num-reads",
+        default=None,
+        type=int,
+        help="Number of reads.",
+    )
 
     refine_grp = subparser.add_argument_group("Signal Mapping Refine Arguments")
     refine_grp.add_argument(
@@ -197,6 +198,13 @@ def register_dataset_prepare(parser):
 
     label_grp = subparser.add_argument_group("Label Arguments")
     label_grp.add_argument(
+        "--mod-base",
+        nargs=2,
+        metavar=("SINGLE_LETTER_CODE", "MOD_BASE"),
+        default=None,
+        help="Modified base information. Exmaple: `--mod-base m 5mC`",
+    )
+    label_grp.add_argument(
         "--mod-base-control",
         action="store_true",
         help="Is this a modified bases control sample?",
@@ -209,10 +217,17 @@ def register_dataset_prepare(parser):
 
     comp_grp = subparser.add_argument_group("Compute Arguments")
     comp_grp.add_argument(
-        "--processes",
+        "--num-extract-alignment-workers",
         type=int,
         default=1,
-        help="Number of worker processes. Default: %(default)d",
+        help="Number of signal extraction workers. Default: %(default)d",
+    )
+    comp_grp.add_argument(
+        "--num-extract-chunks-workers",
+        type=int,
+        default=1,
+        help="Number of chunk extraction workers. If performing signal "
+        "refinement this should be increased. Default: %(default)d",
     )
 
     subparser.set_defaults(func=run_dataset_prepare)
@@ -225,6 +240,9 @@ def run_dataset_prepare(args):
 
     if args.log_filename is not None:
         log.init_logger(args.log_filename)
+    if args.mod_base is None and not args.mod_base_control:
+        LOGGER.error("Must specify either --mod-base or --mod-base-control")
+        sys.exit(1)
     motifs = [("N", 0)] if args.motif is None else args.motif
     motifs = [Motif(*mo) for mo in motifs]
     sig_map_refiner = SigMapRefiner(
@@ -237,12 +255,12 @@ def run_dataset_prepare(args):
         do_fix_guage=True,
     )
     extract_chunk_dataset(
-        args.input_reads,
+        args.bam,
+        args.pod5,
         args.output_remora_training_file,
-        args.output_remora_reads_file,
         args.mod_base,
-        motifs,
         args.mod_base_control,
+        motifs,
         args.chunk_context,
         args.min_samples_per_base,
         args.max_chunks_per_read,
@@ -251,7 +269,9 @@ def run_dataset_prepare(args):
         args.kmer_context_bases,
         args.base_start_justify,
         args.offset,
-        args.processes,
+        args.num_reads,
+        args.num_extract_alignment_workers,
+        args.num_extract_chunks_workers,
     )
 
 
@@ -524,7 +544,7 @@ def register_model_train(parser):
     )
     train_grp.add_argument(
         "--early-stopping",
-        default=0,
+        default=10,
         type=int,
         help="Stops training after a number of epochs without improvement."
         "If set to 0 no stopping is done. Default: %(default)d",
@@ -648,10 +668,10 @@ def run_model_export(args):
         args.checkpoint_path, args.model_path
     )
     if args.format == "onnx":
-        LOGGER.info(f"Exporting model to ONNX format")
+        LOGGER.info("Exporting model to ONNX format")
         export_model_onnx(ckpt, model, args.output_path)
     elif args.format == "dorado":
-        LOGGER.info(f"Exporting model to dorado format")
+        LOGGER.info("Exporting model to dorado format")
         export_model_dorado(ckpt, model, args.output_path)
     elif args.format == "torchscript":
         LOGGER.info("Exporting model to TorchScript format")
@@ -722,204 +742,121 @@ def register_infer(parser):
         formatter_class=SubcommandHelpFormatter,
     )
     ssubparser = subparser.add_subparsers(title="infer commands")
-    #  Since `infer` has several sub-commands, print help as default
+    # Since `infer` has several sub-commands, print help as default
     subparser.set_defaults(func=lambda x: subparser.print_help())
-    #  Register infer sub commands
-    register_infer_from_taiyaki_mapped_signal(ssubparser)
-    register_infer_from_remora_dataset(ssubparser)
+    # Register infer sub commands
+    register_infer_from_pod5_and_bam(ssubparser)
 
 
-def register_infer_from_taiyaki_mapped_signal(parser):
+def register_infer_from_pod5_and_bam(parser):
     subparser = parser.add_parser(
-        "from_taiyaki_mapped_signal",
-        description="Run a model for inference on a given dataset.",
-        help="Use modified base model for inference.",
-        formatter_class=SubcommandHelpFormatter,
-    )
-    subparser.add_argument(
-        "dataset_path",
-        help="Taiyaki mapped signal file on which to perform inference.",
-    )
-    subparser.add_argument(
-        "--model",
-        help="Path to a pretrained model in onnx or torchscript format.",
-    )
-    subparser.add_argument(
-        "--pore",
-        help="Choose the type of pore the Remora model has been trained on "
-        "(e.g. dna_r10.4_e8.1)",
-    )
-    subparser.add_argument(
-        "--basecall-model-type",
-        help="Choose the basecaller model type (choose from fast, hac or sup)",
-    )
-    subparser.add_argument(
-        "--basecall-model-version",
-        help="Choose a specific basecaller version",
-    )
-    subparser.add_argument(
-        "--modified-bases",
-        nargs="+",
-        help="Long name of the modified bases to call (e.g., 5mc, 5hmc).",
-    )
-    subparser.add_argument(
-        "--remora-model-type",
-        help="Choose the specific motif of the model you want to load. "
-        "If None, load CG model.",
-    )
-    subparser.add_argument(
-        "--remora-model-version",
-        type=int,
-        help="Choose the remora model version. If None, use latest.",
-    )
-    subparser.add_argument(
-        "--focus-offset",
-        type=int,
-        help="Offset into stored chunks to be inferred. Default: Call all "
-        "matches to motif (retrieved from model)",
-    )
-    subparser.add_argument(
-        "--output-path",
-        default="remora_infer_results",
-        help="Path to the output files. Default: %(default)s",
-    )
-    subparser.add_argument(
-        "--device",
-        type=int,
-        help="ID of GPU that is used for inference. Default: CPU",
-    )
-    subparser.add_argument(
-        "--batch-size",
-        default=200,
-        type=int,
-        help="Number of input units per batch. Default: %(default)d",
-    )
-    subparser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Overwrite existing output directory if existing.",
-    )
-
-    subparser.set_defaults(func=run_infer_from_taiyaki_mapped_signal)
-
-
-def run_infer_from_taiyaki_mapped_signal(args):
-    import atexit
-
-    try:
-        from taiyaki.mapped_signal_files import MappedSignalReader
-    except ImportError:
-        raise RemoraError("Taiyaki install required for remora infer command")
-
-    from remora.inference import infer
-
-    out_path = Path(args.output_path)
-    if args.overwrite:
-        if out_path.is_dir():
-            rmtree(out_path)
-        elif out_path.exists():
-            out_path.unlink()
-    elif out_path.exists():
-        raise RemoraError("Refusing to overwrite existing inference results.")
-    out_path.mkdir(parents=True, exist_ok=True)
-    log.init_logger(os.path.join(out_path, "log.txt"))
-
-    LOGGER.info("Opening mapped signal files")
-    input_msf = MappedSignalReader(args.dataset_path)
-    atexit.register(input_msf.close)
-
-    infer(
-        input_msf,
-        out_path,
-        args.model,
-        args.batch_size,
-        args.device,
-        args.focus_offset,
-        args.pore,
-        args.basecall_model_type,
-        args.basecall_model_version,
-        args.modified_bases,
-        args.remora_model_type,
-        args.remora_model_version,
-    )
-
-
-def register_infer_from_remora_dataset(parser):
-    subparser = parser.add_parser(
-        "from_remora_dataset",
-        description="Run validation on external Remora dataset",
+        "from_pod5_and_bam",
+        description="Infer modified bases from pod5 and bam inputs",
         help="Validate on Remora dataset",
         formatter_class=SubcommandHelpFormatter,
     )
     subparser.add_argument(
-        "remora_dataset_path",
-        help="Remora training dataset",
+        "pod5",
+        help="POD5 file corresponding to bam file.",
     )
     subparser.add_argument(
-        "model",
-        help="Path to a pretrained model.",
+        "bam",
+        help="BAM file containing mv tags.",
     )
-    subparser.add_argument(
+
+    out_grp = subparser.add_argument_group("Output Arguments")
+    out_grp.add_argument(
         "--out-file",
         help="Output path for the validation result file.",
     )
-    subparser.add_argument(
-        "--confidence-threshold",
-        type=float,
-        default=0.8,
-        help="Threshold to count a prediction as confident. "
-        "Default: %(default)f",
+    out_grp.add_argument(
+        "--log-filename",
+        help="Log filename. Default: Don't output log file.",
     )
-    subparser.add_argument(
-        "--batch-size",
-        default=constants.DEFAULT_BATCH_SIZE,
+
+    mdl_grp = subparser.add_argument_group("Output Arguments")
+    mdl_grp.add_argument(
+        "--model",
+        help="Path to a pretrained model in onnx or torchscript format.",
+    )
+    mdl_grp.add_argument(
+        "--pore",
+        help="Choose the type of pore the Remora model has been trained on "
+        "(e.g. dna_r10.4_e8.1)",
+    )
+    mdl_grp.add_argument(
+        "--basecall-model-type",
+        help="Choose the basecaller model type (choose from fast, hac or sup)",
+    )
+    mdl_grp.add_argument(
+        "--basecall-model-version",
+        help="Choose a specific basecaller version",
+    )
+    mdl_grp.add_argument(
+        "--modified-bases",
+        nargs="+",
+        help="Long name of the modified bases to call (e.g., 5mc, 5hmc).",
+    )
+    mdl_grp.add_argument(
+        "--remora-model-type",
+        help="Choose the specific motif of the model you want to load. "
+        "If None, load CG model.",
+    )
+    mdl_grp.add_argument(
+        "--remora-model-version",
         type=int,
-        help="Number of input units per batch. Default: %(default)d",
+        help="Choose the remora model version. If None, use latest.",
     )
-    subparser.add_argument(
+
+    comp_grp = subparser.add_argument_group("Compute Arguments")
+    comp_grp.add_argument(
         "--device",
         type=int,
-        help="ID of GPU that is used for inference. Default: CPU",
+        help="ID of GPU that is used for inference. Default: CPU only",
+    )
+    comp_grp.add_argument(
+        "--num-extract-alignment-workers",
+        type=int,
+        default=1,
+        help="Number of signal extraction workers. Default: %(default)d",
+    )
+    comp_grp.add_argument(
+        "--num-infer-workers",
+        type=int,
+        default=1,
+        help="Number of chunk extraction workers. If performing signal "
+        "refinement this should be increased. Default: %(default)d",
     )
 
-    subparser.set_defaults(func=run_infer_from_remora_dataset)
+    subparser.set_defaults(func=run_infer_from_pod5_and_bam)
 
 
-def run_infer_from_remora_dataset(args):
-    from remora.data_chunks import RemoraDataset
-    from remora.model_util import ValidationLogger, load_model
-    import torch
+def run_infer_from_pod5_and_bam(args):
+    from remora.model_util import load_model
+    from remora.inference import infer_from_pod5_and_bam
 
-    LOGGER.info("Loading dataset from Remora file")
-    dataset = RemoraDataset.load_from_file(
-        args.remora_dataset_path,
-        batch_size=args.batch_size,
-        shuffle_on_iter=False,
-        drop_last=False,
-    )
-
-    LOGGER.info("Loading model")
-    model, model_metadata = load_model(args.model, args.device)
-
-    dataset.trim_kmer_context_bases(model_metadata["kmer_context_bases"])
-    dataset.trim_chunk_context(model_metadata["chunk_context"])
-    LOGGER.info(f"Loaded dataset summary:\n{dataset.summary}")
-
-    val_fp = ValidationLogger(Path(args.out_file))
-    criterion = torch.nn.CrossEntropyLoss()
-
-    LOGGER.info("Running external validation")
-    val_metrics = val_fp.validate_model(
-        model,
-        model_metadata["mod_bases"],
-        criterion,
-        dataset,
-        args.confidence_threshold,
-    )
-    LOGGER.info(
-        "Validation results:\n"
-        f"Validation accuracy : {val_metrics.acc:.6f}\n"
-        f"    Validation loss : {val_metrics.loss:.6f}\n"
+    if args.log_filename is not None:
+        log.init_logger(args.log_filename)
+    model_kwargs = {
+        "model_filename": args.model,
+        "pore": args.pore,
+        "basecall_model_type": args.basecall_model_type,
+        "basecall_model_version": args.basecall_model_version,
+        "modified_bases": args.modified_bases,
+        "remora_model_type": args.remora_model_type,
+        "remora_model_version": args.remora_model_version,
+        "device": args.device,
+    }
+    # test that model can be loaded in parent process
+    model = load_model(**model_kwargs)
+    del model
+    infer_from_pod5_and_bam(
+        args.pod5,
+        args.bam,
+        model_kwargs,
+        args.out_file,
+        args.num_extract_alignment_workers,
+        args.num_infer_workers,
     )
 
 
@@ -938,8 +875,9 @@ def register_validate(parser):
     ssubparser = subparser.add_subparsers(title="validation commands")
     # Since `validate` has several sub-commands, print help as default
     subparser.set_defaults(func=lambda x: subparser.print_help())
-    # Register model sub commands
+    # Register validate sub commands
     register_validate_from_modbams(ssubparser)
+    register_validate_from_remora_dataset(ssubparser)
 
 
 def register_validate_from_modbams(parser):
@@ -952,16 +890,57 @@ def register_validate_from_modbams(parser):
         7) thresholds (in modbam 0-255 scale), and 8) [--name]""",
         formatter_class=SubcommandHelpFormatter,
     )
-    subparser.add_argument("--bams", nargs="+", required=True)
-    subparser.add_argument("--mod-bams", nargs="+")
-    subparser.add_argument("--ground-truth-positions")
-    subparser.add_argument("--full-output-filename")
-    subparser.add_argument("--name", default="sample")
-    subparser.add_argument("--fixed-thresh", nargs=2, type=float)
-    subparser.add_argument("--regions-bed")
-    subparser.add_argument("--pct-filt", type=float)
-    subparser.add_argument("--mod-base", default="m")
-    subparser.add_argument("--allow-unbalanced", action="store_true")
+    subparser.add_argument(
+        "--bams",
+        nargs="+",
+        required=True,
+        help="BAM files. If `--ground-truth-positions` is not provided these "
+        "should be control (unmodified) reads.",
+    )
+    subparser.add_argument(
+        "--mod-bams",
+        nargs="+",
+        help="BAM file containing reads with modified bases at each "
+        "`--regions-bed` position.",
+    )
+    subparser.add_argument(
+        "--ground-truth-positions",
+        help="CVS file containing fields: contig, strand, position, is_mod. "
+        "Where is_mod must be either `True` or `False`.",
+    )
+    subparser.add_argument(
+        "--full-output-filename", help="Output per-read calls to TSV file."
+    )
+    subparser.add_argument(
+        "--name",
+        default="sample",
+        help="Name of this sample/comparison. Useful when tabulating "
+        "several runs.",
+    )
+    subparser.add_argument(
+        "--regions-bed",
+        help="Only extract probabilities from specified reference locations",
+    )
+    subparser.add_argument(
+        "--fixed-thresh",
+        nargs=2,
+        type=float,
+        help="Apply fixed thresholds in probability space.",
+    )
+    subparser.add_argument(
+        "--pct-filt",
+        type=float,
+        default=10.0,
+        help="Filter a specified percentage (or less given ties) of calls.",
+    )
+    subparser.add_argument(
+        "--mod-base", default="m", help="Modified base single letter code."
+    )
+    subparser.add_argument(
+        "--allow-unbalanced",
+        action="store_true",
+        help="Allow classes to be unbalanced for metric computation.",
+    )
 
     subparser.set_defaults(func=run_validate_from_modbams)
 
@@ -969,4 +948,142 @@ def register_validate_from_modbams(parser):
 def run_validate_from_modbams(args):
     from remora.validate import validate_from_modbams
 
-    validate_from_modbams(args)
+    validate_from_modbams(
+        bams=args.bams,
+        mod_bams=args.mod_bams,
+        gt_pos_fn=args.ground_truth_positions,
+        regs_bed=args.regions_bed,
+        full_out_fn=args.full_output_filename,
+        mod_base=args.mod_base,
+        fixed_thresh=args.fixed_thresh,
+        name=args.name,
+        pct_filt=args.pct_filt,
+        allow_unbalanced=args.allow_unbalanced,
+    )
+
+
+def register_validate_from_remora_dataset(parser):
+    subparser = parser.add_parser(
+        "from_remora_dataset",
+        description="Run validation on external Remora dataset",
+        help="Validate on Remora dataset",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    subparser.add_argument(
+        "remora_dataset_path",
+        help="Remora training dataset",
+    )
+
+    mdl_grp = subparser.add_argument_group("Model Arguments")
+    mdl_grp.add_argument(
+        "--model",
+        help="Path to a pretrained model.",
+    )
+    mdl_grp.add_argument(
+        "--pore",
+        help="Choose the type of pore the Remora model has been trained on "
+        "(e.g. dna_r10.4_e8.1)",
+    )
+    mdl_grp.add_argument(
+        "--basecall-model-type",
+        help="Choose the basecaller model type (choose from fast, hac or sup)",
+    )
+    mdl_grp.add_argument(
+        "--basecall-model-version",
+        help="Choose a specific basecaller version",
+    )
+    mdl_grp.add_argument(
+        "--modified-bases",
+        nargs="+",
+        help="Long name of the modified bases to call (e.g., 5mc, 5hmc).",
+    )
+    mdl_grp.add_argument(
+        "--remora-model-type",
+        help="Choose the specific motif of the model you want to load. "
+        "If None, load CG model.",
+    )
+    mdl_grp.add_argument(
+        "--remora-model-version",
+        type=int,
+        help="Choose the remora model version. If None, use latest.",
+    )
+
+    out_grp = subparser.add_argument_group("Output Arguments")
+    out_grp.add_argument(
+        "--out-file",
+        help="Output path for the validation result file.",
+    )
+    out_grp.add_argument(
+        "--full-output-filename", help="Output per-read calls to TSV file."
+    )
+
+    val_grp = subparser.add_argument_group("Validation Arguments")
+    val_grp.add_argument(
+        "--confidence-threshold",
+        type=float,
+        default=0.8,
+        help="Threshold to count a prediction as confident. "
+        "Default: %(default)f",
+    )
+
+    comp_grp = subparser.add_argument_group("Compute Arguments")
+    comp_grp.add_argument(
+        "--batch-size",
+        default=constants.DEFAULT_BATCH_SIZE,
+        type=int,
+        help="Number of input units per batch. Default: %(default)d",
+    )
+    comp_grp.add_argument(
+        "--device",
+        type=int,
+        help="ID of GPU that is used for inference. Default: CPU",
+    )
+
+    subparser.set_defaults(func=run_validate_from_remora_dataset)
+
+
+def run_validate_from_remora_dataset(args):
+    from remora.data_chunks import RemoraDataset
+    from remora.model_util import ValidationLogger, load_model
+    import torch
+
+    LOGGER.info("Loading dataset from Remora file")
+    dataset = RemoraDataset.load_from_file(
+        args.remora_dataset_path,
+        batch_size=args.batch_size,
+        shuffle_on_iter=False,
+        drop_last=False,
+    )
+
+    LOGGER.info("Loading model")
+    model, model_metadata = load_model(
+        args.model,
+        pore=args.pore,
+        basecall_model_type=args.basecall_model_type,
+        basecall_model_version=args.basecall_model_version,
+        modified_bases=args.modified_bases,
+        remora_model_type=args.remora_model_type,
+        remora_model_version=args.remora_model_version,
+        device=args.device,
+    )
+
+    dataset.trim_kmer_context_bases(model_metadata["kmer_context_bases"])
+    dataset.trim_chunk_context(model_metadata["chunk_context"])
+    LOGGER.info(f"Loaded dataset summary:\n{dataset.summary}")
+
+    val_fp = ValidationLogger(Path(args.out_file), args.full_output_filename)
+    criterion = torch.nn.CrossEntropyLoss()
+
+    LOGGER.info("Running external validation")
+    val_metrics = val_fp.validate_model(
+        model,
+        model_metadata["mod_bases"],
+        criterion,
+        dataset,
+        args.confidence_threshold,
+    )
+    LOGGER.info(
+        "Validation results:\n"
+        f"Validation accuracy : {val_metrics.acc:.6f}\n"
+        f"    Validation loss : {val_metrics.loss:.6f}\n"
+    )

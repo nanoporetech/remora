@@ -274,10 +274,8 @@ class RemoraRead:
         chunk_context,
         kmer_context_bases,
         label=-1,
-        seq_start=None,
-        seq_end=None,
         base_pred=False,
-        read_seq_pos=-1,
+        read_focus_base=-1,
         check_chunk=True,
     ):
         chunk_len = sum(chunk_context)
@@ -302,12 +300,10 @@ class RemoraRead:
                 sig_end = self.sig.size
             chunk_sig[fill_st:fill_en] = self.sig[sig_start:sig_end]
 
-        if seq_start is None or seq_end is None:
-            seq_start = (
-                np.searchsorted(self.seq_to_sig_map, sig_start, side="right")
-                - 1
-            )
-            seq_end = np.searchsorted(self.seq_to_sig_map, sig_end, side="left")
+        seq_start = (
+            np.searchsorted(self.seq_to_sig_map, sig_start, side="right") - 1
+        )
+        seq_end = np.searchsorted(self.seq_to_sig_map, sig_end, side="left")
 
         # extract/compute sequence to signal mapping for this chunk
         chunk_seq_to_sig = self.seq_to_sig_map[seq_start : seq_end + 1].copy()
@@ -345,15 +341,15 @@ class RemoraRead:
                 chunk_seq_en = self.int_seq.size
             chunk_seq[fill_st:fill_en] = self.int_seq[chunk_seq_st:chunk_seq_en]
         chunk = Chunk(
-            chunk_sig,
-            chunk_seq,
-            chunk_seq_to_sig,
-            kmer_context_bases,
-            focus_sig_idx - sig_start,
-            read_seq_pos - seq_start,
-            read_seq_pos,
-            self.read_id,
-            label,
+            signal=chunk_sig,
+            seq_w_context=chunk_seq,
+            seq_to_sig_map=chunk_seq_to_sig,
+            kmer_context_bases=kmer_context_bases,
+            chunk_sig_focus_idx=focus_sig_idx - sig_start,
+            chunk_focus_base=read_focus_base - seq_start,
+            read_focus_base=read_focus_base,
+            read_id=self.read_id,
+            label=label,
         )
         if check_chunk:
             chunk.check()
@@ -390,7 +386,7 @@ class RemoraRead:
                     kmer_context_bases,
                     label=label,
                     base_pred=base_pred,
-                    read_seq_pos=focus_base,
+                    read_focus_base=focus_base,
                 )
             except Exception as e:
                 LOGGER.debug(f"FAILED_CHUNK_EXTRACT {e}")
@@ -411,12 +407,12 @@ class Chunk:
             values representing indices into signal for each base.
         kmer_context_bases (tuple): Number of context bases included before and
             after the chunk sequence
-        sig_focus_pos (int): Index within signal array on which the chunk is
-            focuesed for prediction. May be used in model architecture in the
+        chunk_sig_focus_idx (int): Index within signal array on which the chunk
+            is focuesed for prediction. May be used in model architecture in the
             future.
-        seq_focus_pos (int): Index within sequence (without context bases) on
-            which the chunk is focuesed for prediction.
-        read_seq_pos (int): Position within read for validation purposes
+        chunk_focus_base (int): Index within chunk sequence (without context
+            bases) on which the chunk is focuesed for prediction.
+        read_focus_base (int): Position within full read for validation purposes
         read_id (str): Read ID
         label (int): Integer label for training/validation.
     """
@@ -425,20 +421,22 @@ class Chunk:
     seq_w_context: np.ndarray
     seq_to_sig_map: np.ndarray
     kmer_context_bases: tuple
-    sig_focus_pos: int
-    seq_focus_pos: int
-    read_seq_pos: int
+    chunk_sig_focus_idx: int
+    chunk_focus_base: int
+    read_focus_base: int
     read_id: str = None
     label: int = None
     _base_sig_lens: np.ndarray = None
 
     def mask_focus_base(self):
-        self.seq_w_context[self.seq_focus_pos + self.kmer_context_bases[0]] = -1
+        self.seq_w_context[
+            self.chunk_focus_base + self.kmer_context_bases[0]
+        ] = -1
 
     def check(self):
         if self.signal.size <= 0:
             LOGGER.debug(
-                f"FAILED_CHUNK: no_sig {self.read_id} {self.read_seq_pos}"
+                f"FAILED_CHUNK: no_sig {self.read_id} {self.read_focus_base}"
             )
             raise RemoraError("No signal for chunk")
         if (
@@ -446,7 +444,7 @@ class Chunk:
             != self.seq_to_sig_map.size - 1
         ):
             LOGGER.debug(
-                f"FAILED_CHUNK: map_len {self.read_id} {self.read_seq_pos}"
+                f"FAILED_CHUNK: map_len {self.read_id} {self.read_focus_base}"
             )
             raise RemoraError("Invalid sig to seq map length")
         if not np.all(np.diff(self.seq_to_sig_map) >= 0):
@@ -507,7 +505,14 @@ class RemoraDataset:
             dtype : np.short
             dims  : nchunks
         labels: torch.LongTensor
-        read_data (list): Read data (read_ids, and focus positions
+        read_ids (np.array): Read IDs
+            dtype : "U36"
+            dims  : nchunks
+        read_focus_bases (np.array): Base position within the read. This may be
+            the basecalled sequence or the read-oriented reference sequence
+            position depending on the extraction method.
+            dtype : "U36"
+            dims  : nchunks
         nchunks (int): Current number of chunks. If None (default), will be set
             to sig_tensor.shape[0]. If set, only chunks up to this value are
             assumed to be valid.
@@ -520,7 +525,8 @@ class RemoraDataset:
         base_pred (bool): Are labels predicting base? Default is mod_bases.
         mod_bases (str): Modified base single letter codes represented by labels
         mod_long_names (list): Modified base long names represented by labels
-        store_read_data (bool): Is read data stored? Mostly for validation
+        motifs (list): Tuples containing sequence motifs and relative position.
+            E.g. ("N", 0) for all-contexts or ("CG", 0) for CG-contexts.
         batch_size (int): Size of batches to be produced
         shuffle_on_iter (bool): Shuffle data before each iteration over batches
         drop_last (bool): Drop the last batch of each iteration
@@ -541,7 +547,8 @@ class RemoraDataset:
     seq_mappings: np.ndarray
     seq_lens: np.ndarray
     labels: np.ndarray
-    read_data: list
+    read_ids: np.ndarray
+    read_focus_bases: np.ndarray
     nchunks: int = None
 
     # scalar metadata attributes
@@ -551,10 +558,9 @@ class RemoraDataset:
     base_pred: bool = False
     mod_bases: str = ""
     mod_long_names: list = None
-    motifs: tuple = ("N", 0)
+    motifs: list = None
 
     # batch attributes (defaults set for training)
-    store_read_data: bool = False
     batch_size: int = constants.DEFAULT_BATCH_SIZE
     shuffle_on_iter: bool = True
     drop_last: bool = True
@@ -604,11 +610,13 @@ class RemoraDataset:
         ] = chunk.seq_to_sig_map
         self.seq_lens[self.nchunks] = chunk.seq_len
         self.labels[self.nchunks] = chunk.label
-        if self.store_read_data:
-            self.read_data.append((chunk.read_id, chunk.read_seq_pos))
+        self.read_ids[self.nchunks] = chunk.read_id
+        self.read_focus_bases[self.nchunks] = chunk.read_focus_base
         self.nchunks += 1
 
-    def add_batch(self, b_sig, b_seq, b_ss_map, b_seq_lens, b_labels, b_rd):
+    def add_batch(
+        self, b_sig, b_seq, b_ss_map, b_seq_lens, b_labels, b_rids, b_rfbs
+    ):
         batch_size = b_labels.size
         b_st, b_en = self.nchunks, self.nchunks + batch_size
         if self.nchunks + batch_size > self.labels.size:
@@ -619,8 +627,8 @@ class RemoraDataset:
         self.seq_mappings[b_st:b_en] = b_ss_map
         self.seq_lens[b_st:b_en] = b_seq_lens
         self.labels[b_st:b_en] = b_labels
-        if self.store_read_data:
-            self.read_data.extend(b_rd)
+        self.read_ids[b_st:b_en] = b_rids
+        self.read_focus_bases[b_st:b_en] = b_rfbs
         self.nchunks += batch_size
 
     def clip_chunks(self):
@@ -634,10 +642,10 @@ class RemoraDataset:
         self.seq_mappings = self.seq_mappings[: self.nchunks]
         self.seq_lens = self.seq_lens[: self.nchunks]
         self.labels = self.labels[: self.nchunks]
+        self.read_ids = self.read_ids[: self.nchunks]
+        self.read_focus_bases = self.read_focus_bases[: self.nchunks]
         # reset nbatches after clipping dataset
         self.set_nbatches()
-        if self.store_read_data and len(self.read_data) != self.nchunks:
-            raise RemoraError("More chunks indicated than read_data provided.")
 
     def trim_kmer_context_bases(self, new_kmer_context_bases):
         if new_kmer_context_bases is None:
@@ -687,21 +695,23 @@ class RemoraDataset:
         self.seq_mappings = self.seq_mappings[shuf_idx]
         self.seq_lens = self.seq_lens[shuf_idx]
         self.labels = self.labels[shuf_idx]
-        if self.store_read_data:
-            self.read_data = [self.read_data[si] for si in shuf_idx]
+        self.read_ids = self.read_ids[shuf_idx]
+        self.read_focus_bases = self.read_focus_bases[shuf_idx]
         self.shuffled = True
 
-    def head(self, val_prop=0.01, shuffle_on_iter=False, drop_last=False):
-        val_trn_slice = int(val_prop * self.nchunks)
+    def head(
+        self, nchunks=None, prop=0.01, shuffle_on_iter=False, drop_last=False
+    ):
+        if nchunks is None:
+            nchunks = int(prop * self.nchunks)
         return RemoraDataset(
-            self.sig_tensor[:val_trn_slice].copy(),
-            self.seq_array[:val_trn_slice].copy(),
-            self.seq_mappings[:val_trn_slice].copy(),
-            self.seq_lens[:val_trn_slice].copy(),
-            self.labels[:val_trn_slice].copy(),
-            [self.read_data[idx] for idx in np.arange(val_trn_slice)]
-            if self.read_data
-            else None,
+            self.sig_tensor[:nchunks].copy(),
+            self.seq_array[:nchunks].copy(),
+            self.seq_mappings[:nchunks].copy(),
+            self.seq_lens[:nchunks].copy(),
+            self.labels[:nchunks].copy(),
+            self.read_ids[:nchunks].copy(),
+            self.read_focus_bases[:nchunks].copy(),
             shuffle_on_iter=shuffle_on_iter,
             drop_last=drop_last,
             chunk_context=self.chunk_context,
@@ -711,7 +721,6 @@ class RemoraDataset:
             mod_bases=self.mod_bases,
             mod_long_names=self.mod_long_names,
             motifs=self.motifs,
-            store_read_data=self.store_read_data,
             batch_size=self.batch_size,
             sig_map_refiner=self.sig_map_refiner,
         )
@@ -723,7 +732,8 @@ class RemoraDataset:
             self.seq_mappings.copy(),
             self.seq_lens.copy(),
             self.labels.copy(),
-            self.read_data,
+            self.read_ids.copy(),
+            self.read_focus_bases.copy(),
             shuffle_on_iter=self.shuffle_on_iter,
             drop_last=self.drop_last,
             chunk_context=self.chunk_context,
@@ -733,7 +743,6 @@ class RemoraDataset:
             mod_bases=self.mod_bases,
             mod_long_names=self.mod_long_names,
             motifs=self.motifs,
-            store_read_data=self.store_read_data,
             batch_size=self.batch_size,
         )
 
@@ -746,10 +755,9 @@ class RemoraDataset:
     def __next__(self):
         if self._batch_i >= self.nbatches:
             raise StopIteration
+        self._batch_i += 1
         if self.balanced_batch:
             batch_ids = []
-            batch_read_data = None
-            self._batch_i += 1
             for class_label in range(self.num_labels):
                 class_indices = np.where(self.labels == class_label)[0]
                 size = int(self.batch_size / self.num_labels)
@@ -757,8 +765,6 @@ class RemoraDataset:
                     len(class_indices), size=size, replace=False
                 )
                 batch_ids.extend(class_indices[bi])
-            if self.store_read_data:
-                batch_read_data = [self.read_data[bi] for bi in batch_ids]
             return (
                 (
                     self.sig_tensor[batch_ids],
@@ -767,16 +773,15 @@ class RemoraDataset:
                     self.seq_lens[batch_ids],
                 ),
                 self.labels[batch_ids],
-                batch_read_data,
+                (
+                    self.read_ids[batch_ids],
+                    self.read_focus_bases[batch_ids],
+                ),
             )
 
         else:
-            b_st = self._batch_i * self.batch_size
+            b_st = (self._batch_i - 1) * self.batch_size
             b_en = b_st + self.batch_size
-            self._batch_i += 1
-            batch_read_data = None
-            if self.store_read_data:
-                batch_read_data = self.read_data[b_st:b_en]
             return (
                 (
                     self.sig_tensor[b_st:b_en],
@@ -785,7 +790,10 @@ class RemoraDataset:
                     self.seq_lens[b_st:b_en],
                 ),
                 self.labels[b_st:b_en],
-                batch_read_data,
+                (
+                    self.read_ids[b_st:b_en],
+                    self.read_focus_bases[b_st:b_en],
+                ),
             )
 
     def __len__(self):
@@ -830,7 +838,6 @@ class RemoraDataset:
             "mod_bases": self.mod_bases,
             "mod_long_names": self.mod_long_names,
             "motifs": self.motifs,
-            "store_read_data": self.store_read_data,
             "batch_size": self.batch_size,
             "sig_map_refiner": self.sig_map_refiner,
         }
@@ -876,9 +883,8 @@ class RemoraDataset:
             self.seq_mappings[val_indices],
             self.seq_lens[val_indices],
             self.labels[val_indices],
-            [self.read_data[idx] for idx in val_indices]
-            if self.store_read_data
-            else None,
+            self.read_ids[val_indices],
+            self.read_focus_bases[val_indices],
             shuffle_on_iter=False,
             drop_last=False,
             **common_kwargs,
@@ -889,9 +895,8 @@ class RemoraDataset:
             self.seq_mappings[trn_indices],
             self.seq_lens[trn_indices],
             self.labels[trn_indices],
-            [self.read_data[idx] for idx in trn_indices]
-            if self.store_read_data
-            else None,
+            self.read_ids[trn_indices],
+            self.read_focus_bases[trn_indices],
             shuffle_on_iter=True,
             drop_last=False,
             balanced_batch=self.balanced_batch,
@@ -916,9 +921,8 @@ class RemoraDataset:
                         self.seq_mappings[label_indices],
                         self.seq_lens[label_indices],
                         self.labels[label_indices],
-                        self.read_data[label_indices]
-                        if self.store_read_data
-                        else None,
+                        self.read_ids[label_indices],
+                        self.read_focus_bases[label_indices],
                         shuffle_on_iter=False,
                         drop_last=False,
                         chunk_context=self.chunk_context,
@@ -928,7 +932,6 @@ class RemoraDataset:
                         mod_bases=self.mod_bases,
                         mod_long_names=self.mod_long_names,
                         motifs=self.motifs,
-                        store_read_data=self.store_read_data,
                         batch_size=self.batch_size,
                         sig_map_refiner=self.sig_map_refiner,
                     ),
@@ -953,11 +956,6 @@ class RemoraDataset:
                 )
             )
         choices = np.concatenate(choices)
-        b_rd = (
-            None
-            if self.read_data is None
-            else [self.read_data[idx] for idx in choices]
-        )
 
         return RemoraDataset(
             sig_tensor=self.sig_tensor[choices],
@@ -965,7 +963,8 @@ class RemoraDataset:
             seq_mappings=self.seq_mappings[choices],
             seq_lens=self.seq_lens[choices],
             labels=self.labels[choices],
-            read_data=b_rd,
+            read_ids=self.read_ids[choices],
+            read_focus_bases=self.read_focus_bases[choices],
             nchunks=outs * min_class_len,
             chunk_context=self.chunk_context,
             max_seq_len=self.max_seq_len,
@@ -988,9 +987,8 @@ class RemoraDataset:
             self.seq_mappings[indices],
             self.seq_lens[indices],
             self.labels[indices],
-            [self.read_data[idx] for idx in indices]
-            if self.store_read_data
-            else None,
+            self.read_ids[indices],
+            self.read_focus_bases[indices],
             shuffle_on_iter=False,
             drop_last=False,
             chunk_context=self.chunk_context,
@@ -1000,7 +998,6 @@ class RemoraDataset:
             mod_bases=self.mod_bases,
             mod_long_names=self.mod_long_names,
             motifs=self.motifs,
-            store_read_data=self.store_read_data,
             batch_size=self.batch_size,
             sig_map_refiner=self.sig_map_refiner,
         )
@@ -1027,7 +1024,8 @@ class RemoraDataset:
             seq_mappings=self.seq_mappings,
             seq_lens=self.seq_lens,
             labels=self.labels,
-            read_data=self.read_data,
+            read_ids=self.read_ids,
+            read_focus_bases=self.read_focus_bases,
             chunk_context=self.chunk_context,
             kmer_context_bases=self.kmer_context_bases,
             base_pred=self.base_pred,
@@ -1054,11 +1052,13 @@ class RemoraDataset:
                 f"Remora dataset version ({version}) does "
                 f"not match current distribution ({DATASET_VERSION})"
             )
-        read_data = data["read_data"].tolist()
         chunk_context = tuple(data["chunk_context"].tolist())
         kmer_context_bases = tuple(data["kmer_context_bases"].tolist())
         base_pred = data["base_pred"].item()
-        mod_bases = data["mod_bases"].item()
+        try:
+            mod_bases = data["mod_bases"].item()
+        except ValueError:
+            mod_bases = ""
         mod_long_names = tuple(data["mod_long_names"].tolist())
         if isinstance(data["motif_offset"].tolist(), int):
             motifs = [
@@ -1083,14 +1083,14 @@ class RemoraDataset:
             data["seq_mappings"],
             data["seq_lens"],
             data["labels"],
-            read_data,
+            data["read_ids"],
+            data["read_focus_bases"],
             chunk_context=chunk_context,
             kmer_context_bases=kmer_context_bases,
             base_pred=base_pred,
             mod_bases=mod_bases,
             mod_long_names=mod_long_names,
             motifs=motifs,
-            store_read_data=read_data is not None,
             sig_map_refiner=sig_map_refiner,
             base_start_justify=base_start_justify,
             offset=offset,
@@ -1187,7 +1187,6 @@ class RemoraDataset:
         kmer_context_bases,
         max_seq_len=None,
         min_samps_per_base=None,
-        store_read_data=False,
         *args,
         **kwargs,
     ):
@@ -1210,16 +1209,17 @@ class RemoraDataset:
         )
         seq_lens = np.empty(num_chunks, dtype=np.short)
         labels = np.empty(num_chunks, dtype=np.long)
-        read_data = [] if store_read_data else None
+        read_ids = np.empty(num_chunks, dtype="U36")
+        read_pos = np.empty(num_chunks, dtype=int)
         return cls(
             sig_tensor,
             seq_array,
             seq_mappings,
             seq_lens,
             labels,
-            read_data,
+            read_ids,
+            read_pos,
             nchunks=0,
-            store_read_data=store_read_data,
             chunk_context=chunk_context,
             max_seq_len=max_seq_len,
             kmer_context_bases=kmer_context_bases,
@@ -1331,25 +1331,25 @@ def merge_datasets(input_datasets, balance=False, quiet=False):
         for (
             (b_sig, b_seq, b_ss_map, b_seq_lens),
             b_labels,
-            b_rd,
+            (b_rids, b_rfbs),
         ) in input_dataset:
             b_labels = label_conv[b_labels]
             if added_chunks + b_labels.size >= num_chunks:
                 batch_size = num_chunks - added_chunks
-                b_rd = None if b_rd is None else b_rd[:batch_size]
                 output_dataset.add_batch(
                     b_sig[:batch_size],
                     b_seq[:batch_size],
                     b_ss_map[:batch_size],
                     b_seq_lens[:batch_size],
                     b_labels[:batch_size],
-                    b_rd,
+                    b_rids[:batch_size],
+                    b_rfbs[:batch_size],
                 )
                 added_chunks += batch_size
                 break
             added_chunks += b_labels.size
             output_dataset.add_batch(
-                b_sig, b_seq, b_ss_map, b_seq_lens, b_labels, b_rd
+                b_sig, b_seq, b_ss_map, b_seq_lens, b_labels, b_rids, b_rfbs
             )
         log_fp(
             f"Copied {added_chunks} chunks. New label distribution: "

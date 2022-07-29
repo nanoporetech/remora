@@ -2,6 +2,11 @@ import os
 import re
 import queue
 import array
+import platform
+import traceback
+from time import sleep
+import multiprocessing as mp
+from threading import Thread
 from os.path import realpath, expanduser
 
 import numpy as np
@@ -35,6 +40,31 @@ SEQ_TO_INT_ARR[0] = 0
 SEQ_TO_INT_ARR[2] = 1
 SEQ_TO_INT_ARR[6] = 2
 SEQ_TO_INT_ARR[19] = 3
+COMP_BASES = dict(zip(map(ord, "ACGT"), map(ord, "TGCA")))
+NP_COMP_BASES = np.array([3, 2, 1, 0], dtype=np.uintp)
+U_TO_T_BASES = {ord("U"): ord("T")}
+
+DEFAULT_QUEUE_SIZE = 10_000
+
+
+def comp(seq):
+    return seq.translate(COMP_BASES)
+
+
+def revcomp(seq):
+    return seq.translate(COMP_BASES)[::-1]
+
+
+def comp_np(np_seq):
+    return NP_COMP_BASES[np_seq]
+
+
+def revcomp_np(np_seq):
+    return NP_COMP_BASES[np_seq][::-1]
+
+
+def u_to_t(seq):
+    return seq.translate(U_TO_T_BASES)
 
 
 def seq_to_int(seq):
@@ -296,16 +326,186 @@ def format_mm_ml_tags(seq, poss, probs, mod_bases, can_base):
     return mm_tag, ml_tag
 
 
-def queue_iter(in_q, num_proc=1):
-    comp_proc = 0
+###################
+# Multiprocessing #
+###################
+
+
+def _put_item(item, out_q):
+    """Put item into queue with timeout to handle KeyboardInterrupt"""
     while True:
         try:
-            r_val = in_q.get(timeout=0.1)
+            return out_q.put(item, timeout=0.1)
+        except queue.Full:
+            continue
+
+
+def _get_item(in_q):
+    """Get item from queue with timeout to handle KeyboardInterrupt"""
+    while True:
+        try:
+            return in_q.get(timeout=0.1)
         except queue.Empty:
             continue
-        if r_val is StopIteration:
+
+
+def queue_iter(in_q, num_proc=1):
+    comp_proc = 0
+    while comp_proc < num_proc:
+        item = _get_item(in_q)
+        if item is StopIteration:
             comp_proc += 1
-            if comp_proc >= num_proc:
-                break
         else:
-            yield r_val
+            yield item
+
+
+def fill_q(iterator, in_q, num_recievers):
+    try:
+        for item in iterator:
+            _put_item(item, in_q)
+    except KeyboardInterrupt:
+        pass
+    for _ in range(num_recievers):
+        _put_item(StopIteration, in_q)
+
+
+def mt_func(func, in_q, out_q, prep_func, name, *args, **kwargs):
+    LOGGER.debug(f"Starting {name} worker")
+    try:
+        if prep_func is not None:
+            args, kwargs = prep_func(*args, **kwargs)
+        for val in queue_iter(in_q):
+            try:
+                out_q.put(func(val, *args, **kwargs))
+            except Exception as e:
+                # avoid killing thread for a python error.
+                LOGGER.debug(
+                    f"UNEXPECTED_ERROR in {name} worker: '{e}'.\n"
+                    f"Full traceback: {traceback.format_exc()}"
+                )
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        LOGGER.debug(
+            f"UNEXPECTED_ERROR in {name} worker: '{e}'.\n"
+            f"Full traceback: {traceback.format_exc()}"
+        )
+    LOGGER.debug(f"Completed {name} worker")
+    out_q.put(StopIteration)
+
+
+class MultitaskMap:
+    """Map a function to an input queue using multitasking (multiprocessing or
+    threading)
+
+    MtMap supports multiprocessing or threading backends via the
+    use_process argument.
+
+    Elements of the input queue will be passed as the first argument to the
+    func followed by args and kwargs provided.
+
+    MtMap also supports a prepare function to perform work on the input
+    arguments within the newly spawned task. The prep_func should take the args
+    and kwargs provided to MtMap and return a new set of args and kwargs to be
+    passed to the worker function along with elements from the in_q. This
+    can be useful for objects that need initialization within a task.
+
+    MtMap supports KeyboardInterrupt without flooding the output with stack
+    traces from each killed task to exit gracefully and avoid stalling.
+    """
+
+    def __init__(
+        self,
+        func,
+        iterator,
+        prep_func=None,
+        num_workers=1,
+        q_maxsize=DEFAULT_QUEUE_SIZE,
+        use_process=False,
+        args=(),
+        kwargs={},
+        name="MultitaskMap",
+    ):
+        self.name = name
+        self.num_workers = num_workers
+        self.out_q = mp.Queue(q_maxsize)
+        in_q = mp.Queue(q_maxsize)
+
+        mt_worker = mp.Process if use_process else Thread
+        # TODO save workers to self and provide method to watch workers
+        # for failures to avoid deadlock
+        mt_worker(
+            target=fill_q,
+            args=(iterator, in_q, self.num_workers),
+            name=f"{self.name}_filler",
+        ).start()
+        args = [func, in_q, self.out_q, prep_func, self.name] + list(args)
+        for idx in range(self.num_workers):
+            mt_worker(
+                target=mt_func,
+                args=args,
+                kwargs=kwargs,
+                name=f"{self.name}_{idx}",
+            ).start()
+        # processes take a second to start up on mac
+        if platform.system() == "Darwin":
+            sleep(1)
+
+    def __iter__(self):
+        try:
+            yield from queue_iter(self.out_q, self.num_workers)
+        except KeyboardInterrupt:
+            LOGGER.debug(f"MultitaskMap {self.name} interrupted")
+            pass
+
+
+def background_filler(func, args, kwargs, out_q, name):
+    LOGGER.debug(f"Starting {name} background filler")
+    try:
+        for item in func(*args, **kwargs):
+            _put_item(item, out_q)
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        LOGGER.debug(
+            f"UNEXPECTED_ERROR in {name} worker: '{e}'.\n"
+            f"Full traceback: {traceback.format_exc()}"
+        )
+    LOGGER.debug(f"Completed {name} background filler")
+    out_q.put(StopIteration)
+
+
+class BackgroundIter:
+    def __init__(
+        self,
+        func,
+        q_maxsize=DEFAULT_QUEUE_SIZE,
+        use_process=False,
+        args=(),
+        kwargs={},
+        name="BackgroundIter",
+    ):
+        self.name = name
+        self.out_q = mp.Queue(q_maxsize)
+
+        mt_worker = mp.Process if use_process else Thread
+        worker = mt_worker(
+            target=background_filler,
+            args=(func, args, kwargs, self.out_q, self.name),
+            name=f"{self.name}_filler",
+        )
+        worker.start()
+        # processes take a second to start up on mac
+        if platform.system() == "Darwin":
+            sleep(1)
+
+    def __iter__(self):
+        try:
+            yield from queue_iter(self.out_q)
+        except KeyboardInterrupt:
+            LOGGER.debug(f"BackgroundIter {self.name} interrupted")
+            pass
+
+
+if __name__ == "__main__":
+    RuntimeError("This is a module.")

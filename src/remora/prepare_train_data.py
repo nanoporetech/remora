@@ -1,105 +1,67 @@
-import h5py
-import pickle
-import multiprocessing as mp
+from pathlib import Path
+from collections import defaultdict
 
+import pysam
+import pod5_format
+import numpy as np
 from tqdm import tqdm
 
 from remora import log, RemoraError
-from remora.data_chunks import RemoraRead, RemoraDataset
-from remora.util import validate_mod_bases, get_can_converter, queue_iter
-
-TAI_AVAIL = True
-try:
-    from taiyaki.mapped_signal_files import MappedSignalReader
-except ImportError:
-    TAI_AVAIL = False
+from remora.util import MultitaskMap, BackgroundIter
+from remora.data_chunks import RemoraDataset, RemoraRead
+from remora.io import (
+    index_bam,
+    read_is_primary,
+    iter_signal,
+    prep_extract_alignments,
+    extract_alignments,
+    iter_alignments,
+    prep_extract_signal,
+    extract_signal,
+)
 
 LOGGER = log.get_logger()
 
+# CIGAR operations which correspond to query and reference sequence
+MATCH_OPS = np.array(
+    [True, False, False, False, False, False, False, True, True]
+)
+QUERY_OPS = np.array([True, True, False, False, True, False, False, True, True])
+REF_OPS = np.array([True, False, True, True, False, False, False, True, True])
 
-def iter_reads_from_taiyaki(input_fn, base_pred, motifs, mod_base_control):
-    with MappedSignalReader(input_fn) as input_msf:
-        alphabet_info = input_msf.get_alphabet_information()
-        can_conv = get_can_converter(
-            alphabet_info.alphabet, alphabet_info.collapse_alphabet
+
+####################
+# Chunk extraction #
+####################
+
+
+def compute_ref_to_signal(query_to_signal, cigar, ref_len):
+    ops, lens = map(np.array, zip(*cigar))
+    is_match = MATCH_OPS[ops]
+    match_counts = lens[is_match]
+    offsets = np.array([match_counts, np.ones_like(match_counts)])
+
+    ref_knots = np.cumsum(np.where(REF_OPS[ops], lens, 0))
+    ref_knots = np.concatenate(
+        [[0], (ref_knots[is_match] - offsets).T.flatten(), [ref_knots[-1]]]
+    )
+    query_knots = np.cumsum(np.where(QUERY_OPS[ops], lens, 0))
+    query_knots = np.concatenate(
+        [[0], (query_knots[is_match] - offsets).T.flatten(), [query_knots[-1]]]
+    )
+    return np.floor(
+        np.interp(
+            np.interp(np.arange(ref_len), ref_knots, query_knots),
+            np.arange(query_to_signal.size),
+            query_to_signal,
         )
-        if base_pred:
-            label_conv = get_can_converter(
-                alphabet_info.alphabet, alphabet_info.collapse_alphabet
-            )
-        else:
-            label_conv = validate_mod_bases(
-                alphabet_info.mod_bases,
-                motifs,
-                alphabet_info.alphabet,
-                alphabet_info.collapse_alphabet,
-                mod_base_control,
-            )
-        for read in input_msf:
-            try:
-                read = RemoraRead.from_taiyaki_read(read, can_conv, label_conv)
-            except RemoraError as e:
-                LOGGER.debug(
-                    f"failed_taiyaki_remora_read_comv {read.read_id} {e}"
-                )
-                yield None
-                continue
-            read.add_motif_focus_bases(motifs)
-            yield read
+    ).astype(int)
 
 
-def iter_read_from_pickle(input_fn):
-    try:
-        with open(input_fn, "rb") as pkl_fp:
-            while True:
-                yield pickle.load(pkl_fp)
-    except EOFError:
-        pass
-    except Exception as e:
-        LOGGER.error(f"Failed to read RemoraReads pickle: {e}")
-
-
-def fill_reads_q(
-    reads_q,
-    input_fn,
-    base_pred=False,
-    motifs=("N", 0),
-    mod_base_control=True,
-    num_proc=1,
-    max_reads=None,
-):
-    put_reads = 0
-    if h5py.is_hdf5(input_fn):
-        try:
-            for read in iter_reads_from_taiyaki(
-                input_fn, base_pred, motifs, mod_base_control
-            ):
-                reads_q.put(read)
-                put_reads += 1
-                if max_reads is not None and put_reads >= max_reads:
-                    break
-        except RemoraError as e:
-            LOGGER.error(f"Failed to read Taiyaki reads: {e}")
-    else:
-        for read in iter_read_from_pickle(input_fn):
-            reads_q.put(read)
-            put_reads += 1
-            if max_reads is not None and put_reads >= max_reads:
-                break
-    for _ in range(num_proc):
-        reads_q.put(StopIteration)
-
-
-def reads_writer(remora_reads_q, out_reads_fn, num_proc):
-    with open(out_reads_fn, "wb") as out_reads_fp:
-        for read in queue_iter(remora_reads_q, num_proc):
-            pickle.dump(read, out_reads_fp)
-
-
-def extract_chunks_worker(
-    reads_q,
-    chunks_q,
-    remora_reads_q,
+def extract_chunks(
+    read_errs,
+    int_label,
+    motifs,
     sig_map_refiner,
     max_chunks_per_read,
     chunk_context,
@@ -108,16 +70,33 @@ def extract_chunks_worker(
     base_start_justify,
     offset,
 ):
-    for read in queue_iter(reads_q):
+    read_chunks = []
+    for read_idx, (read, err) in enumerate(read_errs):
         if read is None:
-            chunks_q.put([])
+            read_chunks.append(tuple((read, err)))
             continue
-        read.refine_signal_mapping(sig_map_refiner)
-        if remora_reads_q is not None:
-            remora_reads_q.put(read)
-        read.downsample_focus_bases(max_chunks_per_read)
-        read_chunks = list(
-            read.iter_chunks(
+        if read.ref_seq is None:
+            read_chunks.append(
+                tuple((None, "No reference sequence (missing MD tag)"))
+            )
+            continue
+        read.ref_to_signal = compute_ref_to_signal(
+            read.query_to_signal, read.cigar, len(read.ref_seq)
+        )
+        remora_read = RemoraRead(
+            dacs=read.signal,
+            shift=read.shift_dacs_to_norm,
+            scale=read.scale_dacs_to_norm,
+            seq_to_sig_map=read.ref_to_signal,
+            str_seq=read.ref_seq,
+            labels=np.full(len(read.ref_seq), int_label, dtype=int),
+            read_id=read.read_id,
+        )
+        remora_read.add_motif_focus_bases(motifs)
+        remora_read.refine_signal_mapping(sig_map_refiner)
+        remora_read.downsample_focus_bases(max_chunks_per_read)
+        read_align_chunks = list(
+            remora_read.iter_chunks(
                 chunk_context,
                 kmer_context_bases,
                 base_pred,
@@ -125,69 +104,26 @@ def extract_chunks_worker(
                 offset,
             )
         )
-        LOGGER.debug(f"extracted {len(read_chunks)} chunks from {read.read_id}")
-        chunks_q.put(read_chunks)
-    if remora_reads_q is not None:
-        remora_reads_q.put(StopIteration)
-    chunks_q.put(StopIteration)
+        LOGGER.debug(
+            f"extracted {len(read_align_chunks)} chunks from {read.read_id} "
+            f"alignment {read_idx}"
+        )
+        read_chunks.append(tuple((read_align_chunks, None)))
+    return read_chunks
 
 
-def check_alphabet(input_fn, base_pred, mod_base_control, mod_bases):
-    if h5py.is_hdf5(input_fn):
-        LOGGER.info("Extracting metadata from Taiyaki mapped signal file")
-        with MappedSignalReader(input_fn) as input_msf:
-            num_reads = len(input_msf.get_read_ids())
-            alphabet_info = input_msf.get_alphabet_information()
-        if base_pred and alphabet_info.alphabet != "ACGT":
-            raise RemoraError(
-                "Base prediction is not compatible with modified base "
-                "training data. It requires a canonical alphabet (found "
-                f"'{alphabet_info.alphabet}')."
-            )
-        mod_bases = alphabet_info.mod_bases
-        mod_long_names = alphabet_info.mod_long_names
-    else:
-        LOGGER.info("Counting reads from RemoraRead pickle file")
-        num_reads = sum(1 for _ in iter_read_from_pickle(input_fn))
-        if mod_bases is None:
-            if mod_base_control:
-                mod_bases = ""
-                mod_long_names = []
-            else:
-                raise RemoraError(
-                    "Must provide modbases with RemoraReads pickle"
-                )
-        else:
-            mod_bases, mod_long_names = zip(*mod_bases)
-            mod_bases = "".join(mod_bases)
-    num_types_specified = sum(
-        (
-            int(base_pred),
-            int(mod_bases != ""),
-            int(mod_base_control),
-        )
-    )
-    if num_types_specified == 0:
-        raise RemoraError(
-            "Must specify one of modified base(s), modified base control, or "
-            "base prediction model type option."
-        )
-    elif num_types_specified > 1:
-        raise RemoraError(
-            "Must specify only one of modified base(s), modified base "
-            "control, and base prediction model type option."
-        )
-
-    return mod_bases, mod_long_names, num_reads
+############
+# Pipeline #
+############
 
 
 def extract_chunk_dataset(
-    input_fn,
+    bam_fn,
+    pod5_fn,
     out_fn,
-    out_reads_fn,
-    mod_bases,
-    motifs,
+    mod_base,
     mod_base_control,
+    motifs,
     chunk_context,
     min_samps_per_base,
     max_chunks_per_read,
@@ -196,11 +132,37 @@ def extract_chunk_dataset(
     kmer_context_bases,
     base_start_justify,
     offset,
-    num_proc,
+    num_reads,
+    num_extract_alignment_threads,
+    num_extract_chunks_threads,
+    signal_first=True,
+    skip_non_primary=True,
 ):
-    mod_bases, mod_long_names, num_reads = check_alphabet(
-        input_fn, base_pred, mod_base_control, mod_bases
-    )
+    if signal_first:
+        bam_idx, num_bam_reads = index_bam(bam_fn, skip_non_primary)
+        with pod5_format.CombinedReader(Path(pod5_fn)) as pod5_fp:
+            num_pod5_reads = sum(1 for _ in pod5_fp.reads())
+            LOGGER.info(
+                f"Found {num_bam_reads} BAM records and "
+                f"{num_pod5_reads} POD5 reads"
+            )
+            if num_reads is None:
+                num_reads = num_pod5_reads
+            else:
+                num_reads = min(num_reads, num_pod5_reads, num_bam_reads)
+    else:
+        LOGGER.info("Counting reads in BAM file")
+        pysam_save = pysam.set_verbosity(0)
+        with pysam.AlignmentFile(bam_fn, mode="rb", check_sq=False) as bam_fp:
+            num_bam_reads = bam_fp.count(
+                until_eof=True, read_callback=read_is_primary
+            )
+            LOGGER.info(f"Found {num_bam_reads} BAM records")
+            if num_reads is None:
+                num_reads = num_bam_reads
+            else:
+                num_reads = min(num_reads, num_bam_reads)
+        pysam.set_verbosity(pysam_save)
 
     LOGGER.info("Allocating memory for output tensors")
     # initialize empty dataset with pre-allocated memory
@@ -210,8 +172,8 @@ def extract_chunk_dataset(
         kmer_context_bases=kmer_context_bases,
         min_samps_per_base=min_samps_per_base,
         base_pred=base_pred,
-        mod_bases=mod_bases,
-        mod_long_names=mod_long_names,
+        mod_bases=[] if mod_base_control else [mod_base[0]],
+        mod_long_names=[] if mod_base_control else [mod_base[1]],
         motifs=[mot.to_tuple() for mot in motifs],
         sig_map_refiner=sig_map_refiner,
         base_start_justify=base_start_justify,
@@ -219,73 +181,81 @@ def extract_chunk_dataset(
     )
 
     LOGGER.info("Processing reads")
-    reads_q = mp.Queue()
-    filler_p = mp.Process(
-        target=fill_reads_q,
-        args=(reads_q, input_fn, base_pred, motifs, mod_base_control, num_proc),
-        daemon=True,
-        name="ReadQueueFiller",
+    if signal_first:
+        signals = BackgroundIter(
+            iter_signal,
+            args=(pod5_fn, num_reads),
+            name="ExtractSignal",
+            use_process=True,
+        )
+        reads = MultitaskMap(
+            extract_alignments,
+            signals,
+            prep_func=prep_extract_alignments,
+            num_workers=num_extract_alignment_threads,
+            args=(bam_idx, bam_fn),
+            name="AddAlignments",
+            use_process=True,
+        )
+    else:
+        mappings = BackgroundIter(
+            iter_alignments,
+            args=(bam_fn, num_reads, skip_non_primary),
+            name="ExtractMappings",
+            use_process=True,
+        )
+        reads = MultitaskMap(
+            extract_signal,
+            mappings,
+            prep_func=prep_extract_signal,
+            num_workers=num_extract_alignment_threads,
+            args=(pod5_fn,),
+            name="AddSignal",
+            use_process=True,
+        )
+    chunks = MultitaskMap(
+        extract_chunks,
+        reads,
+        num_workers=num_extract_chunks_threads,
+        args=(
+            0 if mod_base_control else 1,
+            motifs,
+            sig_map_refiner,
+            max_chunks_per_read,
+            chunk_context,
+            kmer_context_bases,
+            base_pred,
+            base_start_justify,
+            offset,
+        ),
+        name="ExtractChunks",
+        use_process=True,
     )
-    filler_p.start()
 
-    chunk_workers = []
-    chunks_q = mp.Queue()
-    remora_reads_q = mp.Queue(maxsize=1000) if out_reads_fn else None
-    for chunk_pi in range(num_proc):
-        chunk_workers.append(
-            mp.Process(
-                target=extract_chunks_worker,
-                args=(
-                    reads_q,
-                    chunks_q,
-                    remora_reads_q,
-                    sig_map_refiner,
-                    max_chunks_per_read,
-                    chunk_context,
-                    kmer_context_bases,
-                    base_pred,
-                    base_start_justify,
-                    offset,
-                ),
-                daemon=True,
-                name=f"ChunkExtractor{chunk_pi:03d}",
-            )
-        )
-        chunk_workers[-1].start()
-
-    if out_reads_fn is not None:
-        reads_writer_p = mp.Process(
-            target=reads_writer,
-            args=(
-                remora_reads_q,
-                out_reads_fn,
-                num_proc,
-            ),
-            daemon=True,
-            name="RemoraReadWriter",
-        )
-        reads_writer_p.start()
-    num_fail_chunks = 0
+    errs = defaultdict(int)
     for read_chunks in tqdm(
-        queue_iter(chunks_q, num_proc),
+        chunks,
         total=num_reads,
         smoothing=0,
-        unit="Reads",
+        unit=" Reads",
         desc="Extracting chunks",
     ):
-        for chunk in read_chunks:
-            try:
-                dataset.add_chunk(chunk)
-            except RemoraError:
-                num_fail_chunks += 1
-    if num_fail_chunks > 0:
-        LOGGER.info(f"{num_fail_chunks} chunks removed by max seq len")
-
-    filler_p.join()
-    for c_worker in chunk_workers:
-        c_worker.join()
-    if out_reads_fn is not None:
-        reads_writer_p.join()
+        if len(read_chunks) == 0:
+            errs["No chunks extracted"] += 1
+            continue
+        for read_align_chunks, err in read_chunks:
+            if read_align_chunks is None:
+                errs[err] += 1
+                continue
+            for chunk in read_align_chunks:
+                try:
+                    dataset.add_chunk(chunk)
+                except RemoraError as e:
+                    errs[str(e)] += 1
+    if len(errs) > 0:
+        err_types = sorted([(num, err) for err, num in errs.items()])[::-1]
+        err_str = "\n".join(f"{num:>7} : {err:<80}" for num, err in err_types)
+        LOGGER.info(f"Unsuccessful read/chunk reasons:\n{err_str}")
 
     dataset.clip_chunks()
     dataset.shuffle()

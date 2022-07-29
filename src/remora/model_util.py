@@ -4,6 +4,7 @@ import copy
 import json
 import toml
 import datetime
+import warnings
 import importlib
 import pkg_resources
 from os.path import isfile
@@ -18,6 +19,7 @@ from tqdm import tqdm
 import onnxruntime as ort
 from sklearn.metrics import confusion_matrix
 
+from remora.util import softmax_axis1
 from remora.refine_signal_map import SigMapRefiner
 from remora import log, RemoraError, encoded_kmers, util, constants
 
@@ -97,6 +99,7 @@ def validate_model(
     dataset,
     filt_frac=constants.DEFAULT_FILT_FRAC,
     display_progress_bar=True,
+    results_writer=None,
 ):
     label_conv = get_label_coverter(
         dataset.mod_bases, model_mod_bases, dataset.base_pred
@@ -115,7 +118,11 @@ def validate_model(
         if display_progress_bar
         else dataset
     )
-    for (sigs, seqs, seq_maps, seq_lens), labels, _ in ds_iter:
+    for (
+        (sigs, seqs, seq_maps, seq_lens),
+        labels,
+        (read_ids, read_focus_bases),
+    ) in ds_iter:
         model_labels = label_conv[labels]
         all_labels.append(model_labels)
         enc_kmers = encoded_kmers.compute_encoded_kmer_batch(
@@ -137,6 +144,10 @@ def validate_model(
             .cpu()
             .numpy()
         )
+        if results_writer is not None:
+            results_writer.write_results(
+                output, model_labels, read_ids, read_focus_bases
+            )
     all_outputs = np.concatenate(all_outputs, axis=0)
     all_labels = np.concatenate(all_labels)
     if is_torch_model:
@@ -144,8 +155,40 @@ def validate_model(
     return compute_metrics(all_outputs, all_labels, all_loss, filt_frac)
 
 
+class resultsWriter:
+    def __init__(self, output_path):
+        self.sep = "\t"
+        self.out_fp = open(output_path, "w")
+        df = pd.DataFrame(
+            columns=[
+                "read_id",
+                "read_focus_base",
+                "label",
+                "class_pred",
+                "class_probs",
+            ]
+        )
+        df.to_csv(self.out_fp, sep=self.sep, index=False)
+
+    def write_results(self, output, labels, read_ids, read_focus_bases):
+        class_preds = output.argmax(axis=1)
+        str_probs = [",".join(map(str, r)) for r in softmax_axis1(output)]
+        pd.DataFrame(
+            {
+                "read_id": read_ids,
+                "read_focus_base": read_focus_bases,
+                "label": labels,
+                "class_pred": class_preds,
+                "class_probs": str_probs,
+            }
+        ).to_csv(self.out_fp, header=False, index=False, sep=self.sep)
+
+    def close(self):
+        self.out_fp.close()
+
+
 class ValidationLogger:
-    def __init__(self, out_path):
+    def __init__(self, out_path, full_results_path=None):
         self.fp = open(out_path, "w", buffering=1)
         self.fp.write(
             "\t".join(
@@ -163,6 +206,11 @@ class ValidationLogger:
                 )
             )
             + "\n"
+        )
+        self.results_writer = (
+            None
+            if full_results_path is None
+            else resultsWriter(full_results_path)
         )
 
     def close(self):
@@ -187,6 +235,7 @@ class ValidationLogger:
             dataset,
             filt_frac,
             display_progress_bar=display_progress_bar,
+            results_writer=self.results_writer,
         )
         cm_str = json.dumps(ms.conf_mat.tolist(), separators=(",", ":"))
         fcm_str = json.dumps(ms.filt_conf_mat.tolist(), separators=(",", ":"))
@@ -215,7 +264,8 @@ def export_model_onnx(ckpt, model, save_filename):
         model_to_save = copy.deepcopy(model).cpu()
     else:
         model_to_save = model
-    with torch.no_grad():
+    with torch.no_grad(), warnings.catch_warnings():
+        warnings.simplefilter("ignore")
         torch.onnx.export(
             model_to_save,
             (sig, seq),

@@ -46,7 +46,7 @@ The Remora training/prediction input unit (refered to as a chunk) consists of:
 
 Chunks have a fixed signal length defined at data preparation time and saved as a model attribute.
 A fixed position within the chunk is defined as the "focus position".
-This position is the center of the base of interest.
+By default, this position is the center of the "focus base" being interrogated by the model.
 
 Pre-trained Models
 ------------------
@@ -54,8 +54,8 @@ Pre-trained Models
 Pre-trained models are included in the Remora repository.
 To see the selection of models included in the current installation run ``remora model list_pretrained``.
 
-Models my be run from `Bonito <https://github.com/nanoporetech/bonito>`_ or `Megalodon <https://github.com/nanoporetech/megalodon>`_.
-See documentation in these repositories for applying Remora models.
+Models my be run from `Bonito <https://github.com/nanoporetech/bonito>`_.
+See Bonito documentation to apply Remora models.
 
 More advanced research models may be supplied via `Rerio <https://github.com/nanoporetech/rerio>`_.
 
@@ -63,8 +63,9 @@ Python API
 ----------
 
 The Remora API can be applied to make modified base calls given a basecalled read via a ``RemoraRead`` object.
-``sig`` should be a float32 numpy array.
-``seq`` is a string derived from ``sig`` (can be either basecalls or other downstream derived sequence; e.g. mapped reference positions).
+``dacs`` should be an int16 numpy array.
+``shit`` and ``scale`` are float values to convert dacs to mean 0/SD 1 scaling (or similar) for input to the Remora neural network.
+``str_seq`` is a string derived from ``sig`` (can be either basecalls or other downstream derived sequence; e.g. mapped reference positions).
 ``seq_to_sig_map`` should be an int32 numpy array of length ``len(seq) + 1`` and elements should be indices within ``sig`` array assigned to each base in ``seq``.
 
 .. code-block:: python
@@ -74,7 +75,7 @@ The Remora API can be applied to make modified base calls given a basecalled rea
   from remora.inference import call_read_mods
 
   model, model_metadata = load_model("remora_train_results/model_best.onnx")
-  read = RemoraRead(sig, seq_to_sig_map, str_seq=seq)
+  read = RemoraRead(dacs, shift, scale, seq_to_sig_map, str_seq=seq)
   mod_probs, _, pos = call_read_mods(
     read,
     model,
@@ -89,68 +90,34 @@ For example, run ``mod_probs.argmax(axis=1)`` to obtain the prediction for each 
 Data Preparation
 ----------------
 
-Remora data preparation begins from Taiyaki mapped signal files generally produced from Megalodon containing modified base annotations.
-This requires installation of Taiyaki via
+Remora data preparation begins from a POD5 file (containing signal data) and a BAM file containing basecalls from the POD5 file.
+Note that the BAM file much contain the move table (default in Bonito and ``--moves_out`` in Guppy).
 
-.. code-block:: bash
-
-  git clone https://github.com/nanoporetech/taiyaki
-  pip install taiyaki/
-
-An example dataset might be pre-processed with the following commands.
-
-.. code-block:: bash
-
-  megalodon \
-    pcr_fast5s/ \
-    --reference ref.mmi \
-    --output-directory mega_res_pcr \
-    --outputs mappings signal_mappings \
-    --num-reads 10000 \
-    --guppy-config dna_r9.4.1_450bps_fast.cfg \
-    --devices 0 \
-    --processes 20
-  # Note the --ref-mods-all-motifs option defines the modified base characteristics
-  megalodon \
-    sssI_fast5s/ \
-    --ref-mods-all-motifs m 5mC CG 0 \
-    --reference ref.mmi \
-    --output-directory mega_res_sssI \
-    --outputs mappings signal_mappings \
-    --num-reads 10000 \
-    --guppy-config dna_r9.4.1_450bps_fast.cfg \
-    --devices 0 \
-    --processes 20
-
-  python \
-    taiyaki/misc/merge_mappedsignalfiles.py \
-    mapped_signal_train_data.hdf5 \
-    --input mega_res_pcr/signal_mappings.hdf5 None \
-    --input mega_res_sssI/signal_mappings.hdf5 None \
-    --allow_mod_merge \
-    --batch_format
-
-After the construction of a training dataset, chunks must be extracted and saved in a Remora-friendly format.
-The following command performs this task in Remora.
+The following example generates training data from canonical (PCR) and modified (M.SssI treatment) samples in the same fashion as the releasd 5mC CG-context models.
 
 .. code-block:: bash
 
   remora \
     dataset prepare \
-    mapped_signal_train_data.hdf5 \
-    --output-remora-training-file remora_train_chunks.npz \
-    --log-filename remora_train_chunks.log \
+    can_signal.pod5 \
+    can_basecalls.bam \
+    --output-remora-training-file can_chunks.npz \
     --motif CG 0 \
-    --chunk-context 50 50 \
-    --kmer-context-bases 4 4 \
-    --max-chunks-per-read 15 \
-    --log-filename log.txt
+   --mod-base-control
+  remora \
+    dataset prepare \
+    mod_signal.pod5 \
+    mod_basecalls.bam \
+    --output-remora-training-file mod_chunks.npz \
+    --motif CG 0 \
+    --mod-base m 5mC
+  remora \
+    dataset merge \
+    --input-dataset can_chunks.npz 10_000_000 \
+    --input-dataset mod_chunks.npz 10_000_000 \
+    --output-dataset chunks.npz
 
-The resulting ``remora_train_chunks.npz`` file can then be used to train a Remora model.
-
-Additionally, ``remora dataset prepare`` can now accpet a pickle containing ``RemoraRead`` objects.
-This allows users more flexibility to prepare reads for custom data preparation.
-Note that ``RemoraRead`` pickle files can grow quite large.
+The resulting ``chunks.npz`` file can then be used to train a Remora model.
 
 Model Training
 --------------
@@ -162,85 +129,48 @@ For example a model can be trained with the following command.
 
   remora \
     model train \
-    remora_train_chunks.npz \
+    chunks.npz \
     --model remora/models/ConvLSTM_w_ref.py \
     --device 0 \
-    --size 96 \
-    --epochs 100 \
-    --early-stopping 10 \
     --scheduler StepLR \
     --lr-sched-kwargs step_size 10 int \
     --lr-sched-kwargs gamma 0.5 float \
-    --output-path remora_train_results
+    --output-path train_results
 
-This command will produce a final model in ONNX format for use in Bonito, Megalodon or ``remora infer`` commands.
+This command will produce a "best" model in torchscript format for use in Bonito, or ``remora infer`` commands.
 
 Model Inference
 ---------------
 
-For testing purposes inference within Remora is provided given Taiyaki mapped signal files as input.
-The below command will call the held out validation dataset from the data preparation section above.
+For testing purposes inference within Remora is provided.
 
 .. code-block:: bash
 
   remora \
-    infer from_taiyaki_mapped_signal \
-    mega_res_pcr/split_signal_mappings.split_a.hdf5 \
-    remora_train_results/model_best.onnx \
-    --output-path remora_infer_results_pcr.txt \
+    infer from_pod5_and_bam \
+    can_signal.pod5 \
+    can_basecalls.bam \
+    --model train_results/model_best.pt \
+    --out-file can_infer.bam \
     --device 0
   remora \
-    infer from_taiyaki_mapped_signal \
-    mega_res_sssI/split_signal_mappings.split_a.hdf5 \
-    remora_train_results/model_best.onnx \
-    --output-path remora_infer_results_sssI.txt \
+    infer from_pod5_and_bam \
+    mod_signal.pod5 \
+    mod_basecalls.bam \
+    --model train_results/model_best.pt \
+    --out-file mod_infer.bam \
     --device 0
 
-Note that in order to perfrom inference on a GPU device the ``onnxruntime-gpu`` package must be installed.
-
-GPU Troubleshooting
--------------------
-
-Note that standard Remora models are small enough to run quite quickly on CPU resources and this is the primary recommandation.
-Running Remora models on GPU compute resources is considered experimental with minimal support.
-
-Deployment of Remora models is facilitated by the Open Neural Network Exchange (ONNX) format.
-The ``onnxruntime`` python package is used to run the models.
-In order to support running models on GPU resources the GPU compatible package must be installed (``pip install onnxruntime-gpu``).
-
-Once installed the ``remora infer`` command takes a ``--device`` argument.
-Similarly, the API ``remora.model_util.load_model`` function takes a ``device`` argument.
-These arguments specify the GPU device ID to use for inference.
-
-Once the ``device`` option is specified, Remora will attempt to load the model on the GPU resources.
-If this fails a ``RemoraError`` will be raised.
-The likely cause of this is the required CUDA and cuDNN dependency versions.
-See the requirements on the `onnxruntime documentation page here <https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html#requirements>`_.
-
-To check the versions of the various dependencies see the following commands.
+Finally, ``Remora`` provides tools to validate these results.
 
 .. code-block:: bash
 
-   # check cuda version
-   nvcc --version
-   # check cuDNN version
-   grep -A 2 "define CUDNN_MAJOR" `whereis cudnn | cut -f2 -d" "`
-   # check onnxruntime version
-   python -c "import onnxruntime as ort; print(ort.__version__)"
-
-These versions should match a row in the table linked above.
-CUDA and cuDNN versions can be downloaded from the NVIDIA website (`cuDNN link <https://developer.nvidia.com/rdp/cudnn-archive>`_; `CUDA link <https://developer.nvidia.com/cuda-toolkit-archive>`_).
-The cuDNN download can be specified at runtime as in the following example.
-
-.. code-block:: bash
-
-   CUDA_PATH=/path/to/cuda/include/cuda.h \
-     CUDNN_H_PATH=/path/to/cuda/include/cudnn.h \
-     remora \
-     infer [arguments]
-
-The ``onnxruntime`` dependency can be set via the python package install command.
-For example `pip install "onnxruntime-gpu<1.7"`.
+  remora \
+    validate from_modbams \
+    --bams can_infer.bam \
+    --mod-bams mod_infer.bam \
+    --full-output-filename validation_results.txt \
+    --mod-base m
 
 Terms and Licence
 -----------------

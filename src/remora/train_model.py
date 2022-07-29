@@ -209,7 +209,9 @@ def train_model(
         )
     trn_ds, val_ds = dataset.split_data(val_prop=val_prop, stratified=True)
     trn_ds.shuffle()
-    val_trn_ds = trn_ds.head(val_prop, shuffle_on_iter=False, drop_last=False)
+    val_trn_ds = trn_ds.head(
+        prop=val_prop, shuffle_on_iter=False, drop_last=False
+    )
     LOGGER.info(f"Train label distribution: {trn_ds.get_label_counts()}")
     LOGGER.info(
         f"Held-out validation label distribution: {val_ds.get_label_counts()}"
@@ -386,23 +388,24 @@ def train_model(
                     nepoch=epoch + 1,
                     niter=niter,
                 )
-                if e_val_metrics.acc > best_alt_val_accs[e_set_idx]:
-                    best_alt_val_accs[e_set_idx] = e_val_metrics.acc
-                    early_stop_epochs = 0
-                    LOGGER.debug(
-                        f"Saving best model based on e_val_{e_set_idx} "
-                        f"validation sets after {epoch + 1} epochs "
-                        f"with val_acc {e_val_metrics.acc}"
-                    )
-                    save_model(
-                        model,
-                        ckpt_save_data,
-                        out_path,
-                        epoch,
-                        opt,
-                        model_name=f"model_e_val_{e_set_idx}_best.checkpoint",
-                        model_name_torchscript=f"model_e_val_{e_set_idx}_best.pt",
-                    )
+                if e_val_metrics.acc <= best_alt_val_accs[e_set_idx]:
+                    continue
+                best_alt_val_accs[e_set_idx] = e_val_metrics.acc
+                early_stop_epochs = 0
+                LOGGER.debug(
+                    f"Saving best model based on e_val_{e_set_idx} "
+                    f"validation sets after {epoch + 1} epochs "
+                    f"with val_acc {e_val_metrics.acc}"
+                )
+                save_model(
+                    model,
+                    ckpt_save_data,
+                    out_path,
+                    epoch,
+                    opt,
+                    model_name=f"model_e_val_{e_set_idx}_best.checkpoint",
+                    model_name_torchscript=f"model_e_val_{e_set_idx}_best.pt",
+                )
 
         if int(epoch + 1) % save_freq == 0:
             save_model(

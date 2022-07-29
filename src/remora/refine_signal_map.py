@@ -208,7 +208,9 @@ class SigMapRefiner:
         LOGGER.debug(f"Choosen central position: {self.center_idx}")
 
     def __post_init__(self):
-        if self._levels_array is not None:
+        if self._levels_array is not None and not np.array_equal(
+            self._levels_array, np.array(None)
+        ):
             self.is_loaded = True
             self.kmer_len = int(np.log(self._levels_array.size) / np.log(4))
             assert 4**self.kmer_len == self._levels_array.size
