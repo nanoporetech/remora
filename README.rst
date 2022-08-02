@@ -63,8 +63,8 @@ Python API
 ----------
 
 The Remora API can be applied to make modified base calls given a basecalled read via a ``RemoraRead`` object.
-``dacs`` should be an int16 numpy array.
-``shit`` and ``scale`` are float values to convert dacs to mean 0/SD 1 scaling (or similar) for input to the Remora neural network.
+``dacs`` (Data acquisition values) should be an int16 numpy array.
+``shift`` and ``scale`` are float values to convert dacs to mean=0 SD=1 scaling (or similar) for input to the Remora neural network.
 ``str_seq`` is a string derived from ``sig`` (can be either basecalls or other downstream derived sequence; e.g. mapped reference positions).
 ``seq_to_sig_map`` should be an int32 numpy array of length ``len(seq) + 1`` and elements should be indices within ``sig`` array assigned to each base in ``seq``.
 
