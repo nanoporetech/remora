@@ -808,6 +808,14 @@ def register_infer_from_pod5_and_bam(parser):
         help="Choose the remora model version. If None, use latest.",
     )
 
+    data_grp = subparser.add_argument_group("Data Arguments")
+    data_grp.add_argument(
+        "--num-reads",
+        default=None,
+        type=int,
+        help="Number of reads.",
+    )
+
     comp_grp = subparser.add_argument_group("Compute Arguments")
     comp_grp.add_argument(
         "--device",
@@ -855,6 +863,7 @@ def run_infer_from_pod5_and_bam(args):
         args.bam,
         model_kwargs,
         args.out_file,
+        args.num_reads,
         args.num_extract_alignment_workers,
         args.num_infer_workers,
     )
