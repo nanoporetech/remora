@@ -1,3 +1,4 @@
+import os
 from copy import copy
 from collections import defaultdict
 
@@ -25,6 +26,7 @@ from remora.util import (
 )
 
 LOGGER = log.get_logger()
+_PROF_FN = os.getenv("REMORA_INFER_PROFILE_FILE")
 
 
 ################
@@ -236,11 +238,24 @@ def infer_mods(read_errs, model, model_metadata):
     return mod_read_mappings
 
 
+if _PROF_FN:
+    _infer_mods_wrapper = infer_mods
+
+    def infer_mods(*args, **kwargs):
+        import cProfile
+
+        prof = cProfile.Profile()
+        retval = prof.runcall(_infer_mods_wrapper, *args, **kwargs)
+        prof.dump_stats(_PROF_FN)
+        return retval
+
+
 def infer_from_pod5_and_bam(
     pod5_fn,
     bam_fn,
     model_kwargs,
     out_fn,
+    num_reads,
     num_extract_alignment_threads,
     num_extract_chunks_threads,
     skip_non_primary=True,
@@ -248,7 +263,7 @@ def infer_from_pod5_and_bam(
     bam_idx, num_bam_reads = index_bam(bam_fn, skip_non_primary)
     signals = BackgroundIter(
         iter_signal,
-        args=(pod5_fn,),
+        args=(pod5_fn, num_reads),
         name="ExtractSignal",
         use_process=True,
     )
