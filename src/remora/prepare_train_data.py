@@ -51,7 +51,7 @@ def compute_ref_to_signal(query_to_signal, cigar, ref_len):
     )
     return np.floor(
         np.interp(
-            np.interp(np.arange(ref_len), ref_knots, query_knots),
+            np.interp(np.arange(ref_len + 1), ref_knots, query_knots),
             np.arange(query_to_signal.size),
             query_to_signal,
         )
@@ -83,11 +83,15 @@ def extract_chunks(
         read.ref_to_signal = compute_ref_to_signal(
             read.query_to_signal, read.cigar, len(read.ref_seq)
         )
+        trim_signal = read.signal[
+            read.ref_to_signal[0] : read.ref_to_signal[-1]
+        ]
+        shift_ref_to_sig = read.ref_to_signal - read.ref_to_signal[0]
         remora_read = RemoraRead(
-            dacs=read.signal,
+            dacs=trim_signal,
             shift=read.shift_dacs_to_norm,
             scale=read.scale_dacs_to_norm,
-            seq_to_sig_map=read.ref_to_signal,
+            seq_to_sig_map=shift_ref_to_sig,
             str_seq=read.ref_seq,
             labels=np.full(len(read.ref_seq), int_label, dtype=int),
             read_id=read.read_id,
