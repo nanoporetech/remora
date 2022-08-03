@@ -195,11 +195,15 @@ def infer_mods(read_errs, model, model_metadata):
         read = next((read for read, _ in read_errs if read is not None))
     except StopIteration:
         return read_errs
+    trim_signal = read.signal[
+        read.query_to_signal[0] : read.query_to_signal[-1]
+    ]
+    shift_q_to_sig = read.query_to_signal - read.query_to_signal[0]
     read = RemoraRead(
-        dacs=read.signal,
+        dacs=trim_signal,
         shift=read.shift_dacs_to_norm,
         scale=read.scale_dacs_to_norm,
-        seq_to_sig_map=read.query_to_signal,
+        seq_to_sig_map=shift_q_to_sig,
         str_seq=read.seq,
         read_id=read.read_id,
     )
