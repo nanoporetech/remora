@@ -351,6 +351,7 @@ def export_model_onnx(ckpt, model, save_filename):
 
 
 def export_model_torchscript(ckpt, model, save_filename):
+    model.eval()
     m = torch.jit.script(model)
     meta = {}
     meta["creation_date"] = datetime.datetime.now().strftime(
