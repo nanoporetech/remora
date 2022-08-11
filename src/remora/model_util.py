@@ -654,6 +654,30 @@ def add_derived_metadata(model_metadata):
         model_metadata["offset"] = 0
 
 
+def repr_model_metadata(metadata):
+    # skip attributes included in parsed values
+    return "\n".join(
+        f"  {k: >20} : {v}"
+        for k, v in metadata.items()
+        if not any(
+            k.startswith(val)
+            for val in (
+                "mod_long_names_",
+                "kmer_context_bases_",
+                "chunk_context_",
+                "motif_",
+                "refine_kmer_levels",
+                "refine_sd_arr",
+                "refine_kmer_center_idx",
+                "refine_do_rough_rescale",
+                "refine_scale_iters",
+                "refine_algo",
+                "refine_half_bandwidth",
+            )
+        )
+    )
+
+
 def load_onnx_model(model_filename, device=None, quiet=False):
     """Load onnx model. If device is specified load onto specified device.
 
@@ -702,39 +726,19 @@ def load_onnx_model(model_filename, device=None, quiet=False):
         )
     model_metadata = dict(model_sess.get_modelmeta().custom_metadata_map)
     add_derived_metadata(model_metadata)
-
     if not quiet:
-        # skip attributes included in parsed values
-        ckpt_attrs = "\n".join(
-            f"  {k: >20} : {v}"
-            for k, v in model_metadata.items()
-            if not any(
-                k.startswith(val)
-                for val in (
-                    "mod_long_names_",
-                    "kmer_context_bases_",
-                    "chunk_context_",
-                    "motif_",
-                    "refine_kmer_levels",
-                    "refine_sd_arr",
-                    "refine_kmer_center_idx",
-                    "refine_do_rough_rescale",
-                    "refine_scale_iters",
-                    "refine_algo",
-                    "refine_half_bandwidth",
-                )
-            )
-        )
-        LOGGER.debug(f"Loaded Remora model attrs\n{ckpt_attrs}\n")
+        md_str = repr_model_metadata(model_metadata)
+        LOGGER.debug(f"Loaded Remora model attrs\n{md_str}\n")
     return model_sess, model_metadata
 
 
-def load_torchscript_model(model_filename, device=None):
+def load_torchscript_model(model_filename, device=None, quiet=False):
     """Load onnx model. If device is specified load onto specified device.
 
     Args:
         model_filename (str): Model path
         device (int): GPU device ID
+        quiet (bool): Print model info to debug
 
     Returns:
         2-tuple containing:
@@ -756,6 +760,9 @@ def load_torchscript_model(model_filename, device=None):
         )
     model_metadata = json.loads(extra_files["meta.txt"])
     add_derived_metadata(model_metadata)
+    if not quiet:
+        md_str = repr_model_metadata(model_metadata)
+        LOGGER.debug(f"Loaded Remora model attrs\n{md_str}\n")
     return model, model_metadata
 
 
@@ -777,7 +784,7 @@ def load_model(
                 f"Remora model file ({model_filename}) not found."
             )
         try:
-            return load_torchscript_model(model_filename, device)
+            return load_torchscript_model(model_filename, device, quiet=quiet)
         except (AttributeError, RuntimeError):
             LOGGER.warning("Failed loading torchscript model. Trying onnx.")
             return load_onnx_model(model_filename, device, quiet=quiet)

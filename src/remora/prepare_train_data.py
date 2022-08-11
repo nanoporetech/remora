@@ -151,7 +151,7 @@ def extract_chunk_dataset(
                 f"{num_pod5_reads} POD5 reads"
             )
             if num_reads is None:
-                num_reads = num_pod5_reads
+                num_reads = min(num_pod5_reads, num_bam_reads)
             else:
                 num_reads = min(num_reads, num_pod5_reads, num_bam_reads)
     else:
@@ -188,7 +188,7 @@ def extract_chunk_dataset(
     if signal_first:
         signals = BackgroundIter(
             iter_signal,
-            args=(pod5_fn, num_reads),
+            args=(pod5_fn, num_reads, list(bam_idx.keys())),
             name="ExtractSignal",
             use_process=True,
         )

@@ -1,11 +1,13 @@
 import os
 from copy import copy
+from pathlib import Path
 from collections import defaultdict
 
 import pysam
 import torch
 import numpy as np
 from tqdm import tqdm
+from pod5_format import CombinedReader
 from torch.jit._script import RecursiveScriptModule
 
 from remora.model_util import load_model
@@ -253,7 +255,8 @@ if _PROF_FN:
 def infer_from_pod5_and_bam(
     pod5_fn,
     bam_fn,
-    model_kwargs,
+    model,
+    model_metadata,
     out_fn,
     num_reads,
     num_extract_alignment_threads,
@@ -261,9 +264,19 @@ def infer_from_pod5_and_bam(
     skip_non_primary=True,
 ):
     bam_idx, num_bam_reads = index_bam(bam_fn, skip_non_primary)
+    with CombinedReader(Path(pod5_fn)) as pod5_fp:
+        num_pod5_reads = sum(1 for _ in pod5_fp.reads())
+        LOGGER.info(
+            f"Found {num_bam_reads} BAM records and "
+            f"{num_pod5_reads} POD5 reads"
+        )
+        if num_reads is None:
+            num_reads = min(num_pod5_reads, num_bam_reads)
+        else:
+            num_reads = min(num_reads, num_pod5_reads, num_bam_reads)
     signals = BackgroundIter(
         iter_signal,
-        args=(pod5_fn, num_reads),
+        args=(pod5_fn, num_reads, list(bam_idx.keys())),
         name="ExtractSignal",
         use_process=True,
     )
@@ -278,14 +291,16 @@ def infer_from_pod5_and_bam(
         use_process=True,
     )
 
+    use_process = True
+    if isinstance(model, RecursiveScriptModule):
+        use_process = next(model.parameters()).device.type == "cpu"
     mod_reads_mappings = MultitaskMap(
         infer_mods,
         reads,
-        prep_func=prepare_infer_mods,
         num_workers=num_extract_chunks_threads,
-        kwargs=model_kwargs,
+        args=(model, model_metadata),
         name="InferMods",
-        use_process=True,
+        use_process=use_process,
     )
 
     errs = defaultdict(int)
@@ -295,6 +310,7 @@ def infer_from_pod5_and_bam(
     for mod_read_mappings in tqdm(
         mod_reads_mappings,
         smoothing=0,
+        total=num_reads,
         unit=" Reads",
         desc="Inferring mods",
     ):

@@ -856,12 +856,12 @@ def run_infer_from_pod5_and_bam(args):
         "device": args.device,
     }
     # test that model can be loaded in parent process
-    model = load_model(**model_kwargs)
-    del model
+    model, model_metadata = load_model(**model_kwargs, quiet=False)
     infer_from_pod5_and_bam(
         args.pod5,
         args.bam,
-        model_kwargs,
+        model,
+        model_metadata,
         args.out_file,
         args.num_reads,
         args.num_extract_alignment_workers,
