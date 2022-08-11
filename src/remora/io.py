@@ -4,9 +4,9 @@ from dataclasses import dataclass
 from collections import defaultdict
 
 import pysam
-import pod5_format
 import numpy as np
 from tqdm import tqdm
+from pod5_format import CombinedReader
 
 from remora import log
 from remora.util import revcomp
@@ -89,10 +89,12 @@ class Read:
 ##########################
 
 
-def iter_signal(pod5_fn, num_reads=None):
+def iter_signal(pod5_fn, num_reads=None, read_ids=None):
     LOGGER.debug("Reading from POD5")
-    with pod5_format.CombinedReader(Path(pod5_fn)) as pod5_fp:
-        for read_num, read in enumerate(pod5_fp.reads()):
+    with CombinedReader(Path(pod5_fn)) as pod5_fp:
+        for read_num, read in enumerate(
+            pod5_fp.reads(selection=read_ids, preload=["samples"])
+        ):
             if num_reads is not None and read_num >= num_reads:
                 return
             yield (
@@ -232,7 +234,7 @@ def iter_alignments(
 
 
 def prep_extract_signal(pod5_fn):
-    pod5_fp = pod5_format.CombinedReader(Path(pod5_fn))
+    pod5_fp = CombinedReader(Path(pod5_fn))
     return [
         pod5_fp,
     ], {}

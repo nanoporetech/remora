@@ -438,6 +438,7 @@ class MultitaskMap:
             target=fill_q,
             args=(iterator, in_q, self.num_workers),
             name=f"{self.name}_filler",
+            daemon=True,
         ).start()
         args = [func, in_q, self.out_q, prep_func, self.name] + list(args)
         for idx in range(self.num_workers):
@@ -446,6 +447,7 @@ class MultitaskMap:
                 args=args,
                 kwargs=kwargs,
                 name=f"{self.name}_{idx}",
+                daemon=True,
             ).start()
         # processes take a second to start up on mac
         if platform.system() == "Darwin":
@@ -489,12 +491,12 @@ class BackgroundIter:
         self.out_q = mp.Queue(q_maxsize)
 
         mt_worker = mp.Process if use_process else Thread
-        worker = mt_worker(
+        mt_worker(
             target=background_filler,
             args=(func, args, kwargs, self.out_q, self.name),
             name=f"{self.name}_filler",
-        )
-        worker.start()
+            daemon=True,
+        ).start()
         # processes take a second to start up on mac
         if platform.system() == "Darwin":
             sleep(1)
