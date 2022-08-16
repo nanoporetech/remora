@@ -1,3 +1,4 @@
+import sys
 import argparse
 import multiprocessing as mp
 
@@ -135,6 +136,7 @@ def main(args):
         sd_params=args.refine_short_dwell_parameters,
         do_fix_guage=True,
     )
+    # TODO replace with pod5+bam pipeline from prep/infer commands
     reads_q = mp.Queue()
     filler_p = mp.Process(
         target=fill_reads_q,
@@ -166,8 +168,12 @@ def get_parser():
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "input_reads",
-        help="Taiyaki mapped signal or RemoraReads pickle file.",
+        "pod5",
+        help="POD5 file corresponding to bam file.",
+    )
+    parser.add_argument(
+        "bam",
+        help="BAM file containing mv tags.",
     )
 
     parser.add_argument(
@@ -237,4 +243,9 @@ def get_parser():
 
 
 if __name__ == "__main__":
+    print(
+        "This script is deprecated and needs to be updated to work with "
+        "pod5+bam inputs"
+    )
+    sys.exit(1)
     main(get_parser().parse_args())

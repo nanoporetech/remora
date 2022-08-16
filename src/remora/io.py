@@ -1,3 +1,4 @@
+import os
 from copy import copy
 from pathlib import Path
 from dataclasses import dataclass
@@ -16,6 +17,9 @@ LOGGER = log.get_logger()
 # Note sm and sd tags are not required, but highly recommended to pass
 # basecaller scaling into remora
 REQUIRED_TAGS = {"mv", "MD"}
+
+_SIG_PROF_FN = os.getenv("REMORA_EXTRACT_SIGNAL_PROFILE_FILE")
+_ALIGN_PROF_FN = os.getenv("REMORA_EXTRACT_ALIGN_PROFILE_FILE")
 
 
 def parse_bed(bed_fn):
@@ -131,6 +135,18 @@ def iter_signal(pod5_fn, num_reads=None, read_ids=None):
     LOGGER.debug("Completed signal worker")
 
 
+if _SIG_PROF_FN:
+    _iter_signal_wrapper = iter_signal
+
+    def iter_signal(*args, **kwargs):
+        import cProfile
+
+        sig_prof = cProfile.Profile()
+        retval = sig_prof.runcall(_iter_signal_wrapper, *args, **kwargs)
+        sig_prof.dump_stats(_SIG_PROF_FN)
+        return retval
+
+
 def prep_extract_alignments(bam_idx, bam_fn, req_tags=REQUIRED_TAGS):
     pysam_save = pysam.set_verbosity(0)
     bam_fp = pysam.AlignmentFile(bam_fn, mode="rb", check_sq=False)
@@ -207,6 +223,18 @@ def extract_alignments(read_err, bam_idx, bam_fp, req_tags=REQUIRED_TAGS):
         align_read.full_align = bam_read.to_dict()
         read_alignments.append(tuple((align_read, None)))
     return read_alignments
+
+
+if _ALIGN_PROF_FN:
+    _extract_align_wrapper = extract_alignments
+
+    def extract_alignments(*args, **kwargs):
+        import cProfile
+
+        align_prof = cProfile.Profile()
+        retval = align_prof.runcall(_extract_align_wrapper, *args, **kwargs)
+        align_prof.dump_stats(_ALIGN_PROF_FN)
+        return retval
 
 
 ##########################
