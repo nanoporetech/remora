@@ -105,7 +105,7 @@ def test_mod_validate_from_dataset(tmpdir_factory, chunks, fw_mod_model_dir):
             "20",
             "--out-file",
             out_file,
-            "--full-output-filename",
+            "--full-results-filename",
             full_file,
         ],
     )
@@ -128,7 +128,7 @@ def test_mod_validate_from_modbams(tmpdir_factory, can_modbam, mod_modbam):
             can_modbam,
             "--mod-bams",
             mod_modbam,
-            "--full-output-filename",
+            "--full-results-filename",
             full_file,
         ],
     )
@@ -183,7 +183,7 @@ def test_base_pred_validate(tmpdir_factory, can_chunks, fw_base_pred_model_dir):
             "20",
             "--out-file",
             out_file,
-            "--full-output-filename",
+            "--full-results-filename",
             full_file,
         ],
     )

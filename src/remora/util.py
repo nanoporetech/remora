@@ -1,4 +1,3 @@
-import os
 import re
 import queue
 import array
@@ -228,50 +227,6 @@ def validate_mod_bases(
     return label_conv
 
 
-class plotter:
-    def __init__(self, outdir):
-        self.outdir = outdir
-        self.losses = []
-        self.accuracy = []
-
-    def append_result(self, accuracy, loss):
-        self.losses.append(loss)
-        self.accuracy.append(accuracy)
-
-    def save_plots(self):
-        import matplotlib.pyplot as plt
-
-        fig1 = plt.figure()
-        ax1 = plt.subplot(111)
-        ax1.plot(list(range(len(self.accuracy))), self.accuracy)
-        ax1.set_ylabel("Validation accuracy")
-        ax1.set_xlabel("Epochs")
-
-        fig2 = plt.figure()
-        ax2 = plt.subplot(111)
-        ax2.plot(list(range(len(self.losses))), self.losses)
-        ax2.set_ylabel("Validation loss")
-        ax2.set_xlabel("Epochs")
-
-        if not os.path.isdir(self.outdir):
-            os.mkdir(self.outdir)
-
-        fig1.savefig(os.path.join(self.outdir, "accuracy.png"), format="png")
-        fig2.savefig(os.path.join(self.outdir, "loss.png"), format="png")
-
-
-class BatchLogger:
-    def __init__(self, out_path):
-        self.fp = open(out_path / "batch.log", "w", buffering=1)
-        self.fp.write("\t".join(("Iteration", "Loss")) + "\n")
-
-    def close(self):
-        self.fp.close()
-
-    def log_batch(self, loss, niter):
-        self.fp.write(f"{niter}\t{loss:.6f}\n")
-
-
 def format_mm_ml_tags(seq, poss, probs, mod_bases, can_base):
     """Format MM and ML tags for BAM output. See
     https://samtools.github.io/hts-specs/SAMtags.pdf for format details.
@@ -349,7 +304,7 @@ def _get_item(in_q):
             continue
 
 
-def queue_iter(in_q, num_proc=1):
+def _queue_iter(in_q, num_proc=1):
     comp_proc = 0
     while comp_proc < num_proc:
         item = _get_item(in_q)
@@ -359,7 +314,7 @@ def queue_iter(in_q, num_proc=1):
             yield item
 
 
-def fill_q(iterator, in_q, num_recievers):
+def _fill_q(iterator, in_q, num_recievers):
     try:
         for item in iterator:
             _put_item(item, in_q)
@@ -369,12 +324,12 @@ def fill_q(iterator, in_q, num_recievers):
         _put_item(StopIteration, in_q)
 
 
-def mt_func(func, in_q, out_q, prep_func, name, *args, **kwargs):
+def _mt_func(func, in_q, out_q, prep_func, name, *args, **kwargs):
     LOGGER.debug(f"Starting {name} worker")
     try:
         if prep_func is not None:
             args, kwargs = prep_func(*args, **kwargs)
-        for val in queue_iter(in_q):
+        for val in _queue_iter(in_q):
             try:
                 out_q.put(func(val, *args, **kwargs))
             except Exception as e:
@@ -391,6 +346,22 @@ def mt_func(func, in_q, out_q, prep_func, name, *args, **kwargs):
             f"Full traceback: {traceback.format_exc()}"
         )
     LOGGER.debug(f"Completed {name} worker")
+    out_q.put(StopIteration)
+
+
+def _background_filler(func, args, kwargs, out_q, name):
+    LOGGER.debug(f"Starting {name} background filler")
+    try:
+        for item in func(*args, **kwargs):
+            _put_item(item, out_q)
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        LOGGER.debug(
+            f"UNEXPECTED_ERROR in {name} worker: '{e}'.\n"
+            f"Full traceback: {traceback.format_exc()}"
+        )
+    LOGGER.debug(f"Completed {name} background filler")
     out_q.put(StopIteration)
 
 
@@ -435,7 +406,7 @@ class MultitaskMap:
         # TODO save workers to self and provide method to watch workers
         # for failures to avoid deadlock
         mt_worker(
-            target=fill_q,
+            target=_fill_q,
             args=(iterator, in_q, self.num_workers),
             name=f"{self.name}_filler",
             daemon=True,
@@ -443,7 +414,7 @@ class MultitaskMap:
         args = [func, in_q, self.out_q, prep_func, self.name] + list(args)
         for idx in range(self.num_workers):
             mt_worker(
-                target=mt_func,
+                target=_mt_func,
                 args=args,
                 kwargs=kwargs,
                 name=f"{self.name}_{idx}",
@@ -455,26 +426,10 @@ class MultitaskMap:
 
     def __iter__(self):
         try:
-            yield from queue_iter(self.out_q, self.num_workers)
+            yield from _queue_iter(self.out_q, self.num_workers)
         except KeyboardInterrupt:
             LOGGER.debug(f"MultitaskMap {self.name} interrupted")
             pass
-
-
-def background_filler(func, args, kwargs, out_q, name):
-    LOGGER.debug(f"Starting {name} background filler")
-    try:
-        for item in func(*args, **kwargs):
-            _put_item(item, out_q)
-    except KeyboardInterrupt:
-        pass
-    except Exception as e:
-        LOGGER.debug(
-            f"UNEXPECTED_ERROR in {name} worker: '{e}'.\n"
-            f"Full traceback: {traceback.format_exc()}"
-        )
-    LOGGER.debug(f"Completed {name} background filler")
-    out_q.put(StopIteration)
 
 
 class BackgroundIter:
@@ -492,7 +447,7 @@ class BackgroundIter:
 
         mt_worker = mp.Process if use_process else Thread
         mt_worker(
-            target=background_filler,
+            target=_background_filler,
             args=(func, args, kwargs, self.out_q, self.name),
             name=f"{self.name}_filler",
             daemon=True,
@@ -503,7 +458,7 @@ class BackgroundIter:
 
     def __iter__(self):
         try:
-            yield from queue_iter(self.out_q)
+            yield from _queue_iter(self.out_q)
         except KeyboardInterrupt:
             LOGGER.debug(f"BackgroundIter {self.name} interrupted")
             pass

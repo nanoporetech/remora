@@ -12,6 +12,7 @@ string.
 
 import os
 import sys
+import atexit
 import argparse
 from pathlib import Path
 from shutil import rmtree
@@ -92,11 +93,15 @@ def register_dataset_prepare(parser):
         nargs=2,
         action="append",
         metavar=("MOTIF", "FOCUS_POSITION"),
-        default=None,
         help="Extract training chunks centered on a defined motif. Argument "
         "takes 2 values representing 1) sequence motif and 2) focus position "
         "within the motif. For example to restrict to CpG sites use "
         '"--motif CG 0". Default: Any context ("N 0")',
+    )
+    data_grp.add_argument(
+        "--focus-reference-positions",
+        help="BED file containing reference positions around which to extract "
+        "training chunks.",
     )
     data_grp.add_argument(
         "--chunk-context",
@@ -234,6 +239,7 @@ def register_dataset_prepare(parser):
 
 
 def run_dataset_prepare(args):
+    from remora.io import parse_bed
     from remora.util import Motif
     from remora.refine_signal_map import SigMapRefiner
     from remora.prepare_train_data import extract_chunk_dataset
@@ -245,6 +251,12 @@ def run_dataset_prepare(args):
         sys.exit(1)
     motifs = [("N", 0)] if args.motif is None else args.motif
     motifs = [Motif(*mo) for mo in motifs]
+    focus_ref_pos = (
+        None
+        if args.focus_reference_positions is None
+        else parse_bed(args.focus_reference_positions)
+    )
+
     sig_map_refiner = SigMapRefiner(
         kmer_model_filename=args.refine_kmer_level_table,
         do_rough_rescale=args.refine_rough_rescale,
@@ -261,6 +273,7 @@ def run_dataset_prepare(args):
         args.mod_base,
         args.mod_base_control,
         motifs,
+        focus_ref_pos,
         args.chunk_context,
         args.min_samples_per_base,
         args.max_chunks_per_read,
@@ -774,7 +787,7 @@ def register_infer_from_pod5_and_bam(parser):
         help="Log filename. Default: Don't output log file.",
     )
 
-    mdl_grp = subparser.add_argument_group("Output Arguments")
+    mdl_grp = subparser.add_argument_group("Model Arguments")
     mdl_grp.add_argument(
         "--model",
         help="Path to a pretrained model in onnx or torchscript format.",
@@ -814,6 +827,12 @@ def register_infer_from_pod5_and_bam(parser):
         default=None,
         type=int,
         help="Number of reads.",
+    )
+    data_grp.add_argument(
+        "--reference-anchored",
+        action="store_true",
+        help="Infer per-read modified bases against reference bases instead "
+        "of basecalls.",
     )
 
     comp_grp = subparser.add_argument_group("Compute Arguments")
@@ -866,6 +885,7 @@ def run_infer_from_pod5_and_bam(args):
         args.num_reads,
         args.num_extract_alignment_workers,
         args.num_infer_workers,
+        ref_anchored=args.reference_anchored,
     )
 
 
@@ -918,7 +938,7 @@ def register_validate_from_modbams(parser):
         "Where is_mod must be either `True` or `False`.",
     )
     subparser.add_argument(
-        "--full-output-filename", help="Output per-read calls to TSV file."
+        "--full-results-filename", help="Output per-read calls to TSV file."
     )
     subparser.add_argument(
         "--name",
@@ -929,12 +949,6 @@ def register_validate_from_modbams(parser):
     subparser.add_argument(
         "--regions-bed",
         help="Only extract probabilities from specified reference locations",
-    )
-    subparser.add_argument(
-        "--fixed-thresh",
-        nargs=2,
-        type=float,
-        help="Apply fixed thresholds in probability space.",
     )
     subparser.add_argument(
         "--pct-filt",
@@ -962,9 +976,8 @@ def run_validate_from_modbams(args):
         mod_bams=args.mod_bams,
         gt_pos_fn=args.ground_truth_positions,
         regs_bed=args.regions_bed,
-        full_out_fn=args.full_output_filename,
+        full_results_fn=args.full_results_filename,
         mod_base=args.mod_base,
-        fixed_thresh=args.fixed_thresh,
         name=args.name,
         pct_filt=args.pct_filt,
         allow_unbalanced=args.allow_unbalanced,
@@ -1023,16 +1036,15 @@ def register_validate_from_remora_dataset(parser):
         help="Output path for the validation result file.",
     )
     out_grp.add_argument(
-        "--full-output-filename", help="Output per-read calls to TSV file."
+        "--full-results-filename", help="Output per-read calls to TSV file."
     )
 
     val_grp = subparser.add_argument_group("Validation Arguments")
     val_grp.add_argument(
-        "--confidence-threshold",
+        "--pct-filt",
         type=float,
-        default=0.8,
-        help="Threshold to count a prediction as confident. "
-        "Default: %(default)f",
+        default=10.0,
+        help="Filter a specified percentage (or less given ties) of calls.",
     )
 
     comp_grp = subparser.add_argument_group("Compute Arguments")
@@ -1052,9 +1064,11 @@ def register_validate_from_remora_dataset(parser):
 
 
 def run_validate_from_remora_dataset(args):
-    from remora.data_chunks import RemoraDataset
-    from remora.model_util import ValidationLogger, load_model
     import torch
+
+    from remora.model_util import load_model
+    from remora.validate import ValidationLogger
+    from remora.data_chunks import RemoraDataset
 
     LOGGER.info("Loading dataset from Remora file")
     dataset = RemoraDataset.load_from_file(
@@ -1080,19 +1094,23 @@ def run_validate_from_remora_dataset(args):
     dataset.trim_chunk_context(model_metadata["chunk_context"])
     LOGGER.info(f"Loaded dataset summary:\n{dataset.summary}")
 
-    val_fp = ValidationLogger(Path(args.out_file), args.full_output_filename)
-    criterion = torch.nn.CrossEntropyLoss()
+    if args.out_file is None:
+        out_fp = sys.stdout
+    else:
+        out_fp = open(args.out_file, "w", buffering=1)
+        atexit.register(out_fp.close)
+    if args.full_results_filename is None:
+        full_results_fp = None
+    else:
+        full_results_fp = open(args.full_results_filename, "w", buffering=1)
+        atexit.register(full_results_fp.close)
 
-    LOGGER.info("Running external validation")
+    LOGGER.info("Running validation")
+    val_fp = ValidationLogger(out_fp, full_results_fp)
     val_metrics = val_fp.validate_model(
         model,
         model_metadata["mod_bases"],
-        criterion,
+        torch.nn.CrossEntropyLoss(),
         dataset,
-        args.confidence_threshold,
-    )
-    LOGGER.info(
-        "Validation results:\n"
-        f"Validation accuracy : {val_metrics.acc:.6f}\n"
-        f"    Validation loss : {val_metrics.loss:.6f}\n"
+        args.pct_filt / 100,
     )

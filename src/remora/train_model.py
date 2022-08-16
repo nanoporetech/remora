@@ -8,7 +8,15 @@ from tqdm import tqdm
 from thop import profile
 
 from remora.data_chunks import RemoraDataset
-from remora import constants, util, log, RemoraError, encoded_kmers, model_util
+from remora import (
+    constants,
+    util,
+    log,
+    RemoraError,
+    encoded_kmers,
+    model_util,
+    validate,
+)
 
 LOGGER = log.get_logger()
 BREACH_THRESHOLD = 0.8
@@ -144,11 +152,12 @@ def train_model(
     # load attributes from file
     LOGGER.info(f"Dataset summary:\n{dataset.summary}")
 
-    out_log = out_path / "validation.log"
-    val_fp = model_util.ValidationLogger(out_log)
+    val_fp = open(out_path / "validation.log", mode="w", buffering=1)
     atexit.register(val_fp.close)
-    batch_fp = util.BatchLogger(out_path)
+    val_fp = validate.ValidationLogger(val_fp)
+    batch_fp = open(out_path / "batch.log", "w", buffering=1)
     atexit.register(batch_fp.close)
+    batch_fp.write("Iteration\tLoss\n")
 
     LOGGER.info("Loading model")
     copy_model_path = util.resolve_path(os.path.join(out_path, "model.py"))
@@ -320,8 +329,9 @@ def train_model(
             loss.backward()
             opt.step()
 
-            batch_fp.log_batch(
-                loss.detach().cpu(), (epoch * len(trn_ds)) + epoch_i
+            batch_fp.write(
+                f"{(epoch * len(trn_ds)) + epoch_i}\t"
+                f"{loss.detach().cpu():.6f}\n"
             )
             pbar.update()
             pbar.refresh()

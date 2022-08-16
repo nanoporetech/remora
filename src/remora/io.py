@@ -18,6 +18,20 @@ LOGGER = log.get_logger()
 REQUIRED_TAGS = {"mv", "MD"}
 
 
+def parse_bed(bed_fn):
+    regs = defaultdict(set)
+    with open(bed_fn) as regs_fp:
+        for line in regs_fp:
+            fields = line.split()
+            ctg, st, en = fields[:3]
+            if len(fields) < 6 or fields[5] not in "+-":
+                for strand in "+-":
+                    regs[(ctg, strand)].update(range(int(st), int(en)))
+            else:
+                regs[(ctg, fields[5])].update(range(int(st), int(en)))
+    return regs
+
+
 def read_is_primary(read):
     return not (read.is_supplementary or read.is_secondary)
 
@@ -55,6 +69,13 @@ def index_bam(bam_fn, skip_non_primary, req_tags=REQUIRED_TAGS):
 
 
 @dataclass
+class RefPos:
+    ctg: str
+    strand: str
+    start: int
+
+
+@dataclass
 class Read:
     read_id: str
     signal: np.array = None
@@ -70,6 +91,7 @@ class Read:
     shift_dacs_to_norm: float = None
     scale_dacs_to_norm: float = None
     ref_seq: str = None
+    ref_pos: RefPos = None
     cigar: list = None
     ref_to_signal: np.array = None
     full_align: str = None
@@ -168,6 +190,11 @@ def extract_alignments(read_err, bam_idx, bam_fp, req_tags=REQUIRED_TAGS):
             seq = revcomp(seq)
             ref_seq = revcomp(ref_seq)
             cigar = cigar[::-1]
+        ref_pos = RefPos(
+            ctg=bam_read.reference_name,
+            strand="-" if bam_read.is_reverse else "+",
+            start=bam_read.reference_start,
+        )
 
         align_read = copy(read)
         align_read.seq = seq
@@ -175,6 +202,7 @@ def extract_alignments(read_err, bam_idx, bam_fp, req_tags=REQUIRED_TAGS):
         align_read.mv_table = mv_table
         align_read.query_to_signal = query_to_signal
         align_read.ref_seq = ref_seq
+        align_read.ref_pos = ref_pos
         align_read.cigar = cigar
         align_read.full_align = bam_read.to_dict()
         read_alignments.append(tuple((align_read, None)))
@@ -214,6 +242,11 @@ def iter_alignments(
             if read.is_reverse:
                 ref_seq = revcomp(ref_seq)
                 cigar = cigar[::-1]
+            ref_pos = RefPos(
+                ctg=read.reference_name,
+                strand="-" if read.is_reverse else "+",
+                start=read.reference_start,
+            )
             yield (
                 Read(
                     read.query_name,
@@ -225,6 +258,7 @@ def iter_alignments(
                     shift_pa_to_norm=tags.get("sm"),
                     scale_pa_to_norm=tags.get("sd"),
                     ref_seq=ref_seq,
+                    ref_pos=ref_pos,
                     cigar=cigar,
                     full_align=read.to_dict(),
                 ),

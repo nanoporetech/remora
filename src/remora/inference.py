@@ -10,9 +10,8 @@ from tqdm import tqdm
 from pod5_format import CombinedReader
 from torch.jit._script import RecursiveScriptModule
 
-from remora.model_util import load_model
 from remora import constants, log, RemoraError, encoded_kmers
-from remora.data_chunks import RemoraDataset, RemoraRead
+from remora.data_chunks import RemoraDataset, RemoraRead, compute_ref_to_signal
 from remora.io import (
     index_bam,
     iter_signal,
@@ -25,6 +24,7 @@ from remora.util import (
     format_mm_ml_tags,
     softmax_axis1,
     Motif,
+    revcomp,
 )
 
 LOGGER = log.get_logger()
@@ -190,11 +190,7 @@ def mods_tags_to_str(mods_tags):
     ]
 
 
-def prepare_infer_mods(*args, **kwargs):
-    return load_model(*args, **kwargs), {}
-
-
-def infer_mods(read_errs, model, model_metadata):
+def infer_mods(read_errs, model, model_metadata, ref_anchored=False):
     try:
         read = next((read for read, _ in read_errs if read is not None))
     except StopIteration:
@@ -203,21 +199,38 @@ def infer_mods(read_errs, model, model_metadata):
         read.query_to_signal[0] : read.query_to_signal[-1]
     ]
     shift_q_to_sig = read.query_to_signal - read.query_to_signal[0]
-    read = RemoraRead(
-        dacs=trim_signal,
-        shift=read.shift_dacs_to_norm,
-        scale=read.scale_dacs_to_norm,
-        seq_to_sig_map=shift_q_to_sig,
-        str_seq=read.seq,
-        read_id=read.read_id,
-    )
+    if ref_anchored:
+        read.ref_to_signal = compute_ref_to_signal(
+            read.query_to_signal, read.cigar, len(read.ref_seq)
+        )
+        trim_signal = read.signal[
+            read.ref_to_signal[0] : read.ref_to_signal[-1]
+        ]
+        shift_ref_to_sig = read.ref_to_signal - read.ref_to_signal[0]
+        remora_read = RemoraRead(
+            dacs=trim_signal,
+            shift=read.shift_dacs_to_norm,
+            scale=read.scale_dacs_to_norm,
+            seq_to_sig_map=shift_ref_to_sig,
+            str_seq=read.ref_seq,
+            read_id=read.read_id,
+        )
+    else:
+        remora_read = RemoraRead(
+            dacs=trim_signal,
+            shift=read.shift_dacs_to_norm,
+            scale=read.scale_dacs_to_norm,
+            seq_to_sig_map=shift_q_to_sig,
+            str_seq=read.seq,
+            read_id=read.read_id,
+        )
     try:
-        read.check()
+        remora_read.check()
     except RemoraError as e:
         err = f"Remora read prep error: {e}"
     mod_tags = mods_tags_to_str(
         call_read_mods(
-            read,
+            remora_read,
             model,
             model_metadata,
             return_mm_ml_tags=True,
@@ -227,7 +240,7 @@ def infer_mods(read_errs, model, model_metadata):
     for mapping, err in read_errs:
         # TODO add check that seq and cigar are the same
         if mapping is None:
-            mod_read_mappings.append(tuple((mapping, err)))
+            mod_read_mappings.append(tuple((None, err)))
             continue
         mod_mapping = copy(mapping)
         mod_mapping.full_align["tags"] = [
@@ -236,6 +249,14 @@ def infer_mods(read_errs, model, model_metadata):
             if not (tag.startswith("MM") or tag.startswith("ML"))
         ]
         mod_mapping.full_align["tags"].extend(mod_tags)
+        if ref_anchored:
+            mod_mapping.full_align["cigar"] = f"{len(mod_mapping.ref_seq)}M"
+            mod_mapping.full_align["seq"] = (
+                read.ref_seq
+                if read.ref_pos.strand == "+"
+                else revcomp(read.ref_seq)
+            )
+            mod_mapping.full_align["qual"] = "*"
         mod_read_mappings.append(tuple((mod_mapping, None)))
     return mod_read_mappings
 
@@ -262,6 +283,7 @@ def infer_from_pod5_and_bam(
     num_extract_alignment_threads,
     num_extract_chunks_threads,
     skip_non_primary=True,
+    ref_anchored=False,
 ):
     bam_idx, num_bam_reads = index_bam(bam_fn, skip_non_primary)
     with CombinedReader(Path(pod5_fn)) as pod5_fp:
@@ -298,7 +320,7 @@ def infer_from_pod5_and_bam(
         infer_mods,
         reads,
         num_workers=num_extract_chunks_threads,
-        args=(model, model_metadata),
+        args=(model, model_metadata, ref_anchored),
         name="InferMods",
         use_process=use_process,
     )
