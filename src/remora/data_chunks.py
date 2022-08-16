@@ -99,30 +99,6 @@ class RemoraRead:
         self._base_levels = None
 
     @classmethod
-    def from_taiyaki_read(
-        cls, read, can_conv, label_conv=None, check_read=True
-    ):
-        dacs = read.get_dacs(read.get_mapped_dacs_region())
-        rd_factor = read.range / read.digitisation
-        shift_from_dacs = (read.shift_frompA / rd_factor) - read.offset
-        scale_from_dacs = read.scale_frompA / rd_factor
-        int_seq = can_conv[read.Reference]
-        seq_to_sig_map = read.Ref_to_signal - read.Ref_to_signal[0]
-        labels = None if label_conv is None else label_conv[read.Reference]
-        read = cls(
-            dacs,
-            shift_from_dacs,
-            scale_from_dacs,
-            seq_to_sig_map,
-            int_seq=int_seq,
-            read_id=util.to_str(read.read_id),
-            labels=labels,
-        )
-        if check_read:
-            read.check()
-        return read
-
-    @classmethod
     def test_read(cls, nbases=20, signal_per_base=10):
         """Spoofed read for testing"""
         return cls(
