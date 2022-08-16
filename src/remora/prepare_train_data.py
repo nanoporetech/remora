@@ -8,7 +8,7 @@ from tqdm import tqdm
 
 from remora import log, RemoraError
 from remora.util import MultitaskMap, BackgroundIter
-from remora.data_chunks import RemoraDataset, RemoraRead
+from remora.data_chunks import RemoraDataset, RemoraRead, compute_ref_to_signal
 from remora.io import (
     index_bam,
     read_is_primary,
@@ -22,46 +22,40 @@ from remora.io import (
 
 LOGGER = log.get_logger()
 
-# CIGAR operations which correspond to query and reference sequence
-MATCH_OPS = np.array(
-    [True, False, False, False, False, False, False, True, True]
-)
-QUERY_OPS = np.array([True, True, False, False, True, False, False, True, True])
-REF_OPS = np.array([True, False, True, True, False, False, False, True, True])
-
 
 ####################
 # Chunk extraction #
 ####################
 
 
-def compute_ref_to_signal(query_to_signal, cigar, ref_len):
-    ops, lens = map(np.array, zip(*cigar))
-    is_match = MATCH_OPS[ops]
-    match_counts = lens[is_match]
-    offsets = np.array([match_counts, np.ones_like(match_counts)])
-
-    ref_knots = np.cumsum(np.where(REF_OPS[ops], lens, 0))
-    ref_knots = np.concatenate(
-        [[0], (ref_knots[is_match] - offsets).T.flatten(), [ref_knots[-1]]]
-    )
-    query_knots = np.cumsum(np.where(QUERY_OPS[ops], lens, 0))
-    query_knots = np.concatenate(
-        [[0], (query_knots[is_match] - offsets).T.flatten(), [query_knots[-1]]]
-    )
-    return np.floor(
-        np.interp(
-            np.interp(np.arange(ref_len + 1), ref_knots, query_knots),
-            np.arange(query_to_signal.size),
-            query_to_signal,
+def add_focus_ref_pos(read, focus_ref_pos, ref_pos):
+    try:
+        cs_focus_pos = focus_ref_pos[(ref_pos.ctg, ref_pos.strand)]
+    except KeyError:
+        # no focus positions on contig/strand
+        return
+    read_len = read.int_seq.size
+    read_focus_ref_pos = np.array(
+        sorted(
+            set(range(ref_pos.start, ref_pos.start + read_len)).intersection(
+                cs_focus_pos
+            )
         )
-    ).astype(int)
+    )
+    if read_focus_ref_pos.size == 0:
+        return
+    read.focus_bases = (
+        read_focus_ref_pos - ref_pos.start
+        if ref_pos.strand == "+"
+        else ref_pos.start + read_len - read_focus_ref_pos[::-1] - 1
+    )
 
 
 def extract_chunks(
     read_errs,
     int_label,
     motifs,
+    focus_ref_pos,
     sig_map_refiner,
     max_chunks_per_read,
     chunk_context,
@@ -96,7 +90,10 @@ def extract_chunks(
             labels=np.full(len(read.ref_seq), int_label, dtype=int),
             read_id=read.read_id,
         )
-        remora_read.add_motif_focus_bases(motifs)
+        if focus_ref_pos is not None:
+            add_focus_ref_pos(remora_read, focus_ref_pos, read.ref_pos)
+        else:
+            remora_read.add_motif_focus_bases(motifs)
         remora_read.refine_signal_mapping(sig_map_refiner)
         remora_read.downsample_focus_bases(max_chunks_per_read)
         read_align_chunks = list(
@@ -128,6 +125,7 @@ def extract_chunk_dataset(
     mod_base,
     mod_base_control,
     motifs,
+    focus_ref_pos,
     chunk_context,
     min_samps_per_base,
     max_chunks_per_read,
@@ -221,9 +219,10 @@ def extract_chunk_dataset(
         extract_chunks,
         reads,
         num_workers=num_extract_chunks_threads,
-        args=(
+        args=[
             0 if mod_base_control else 1,
             motifs,
+            focus_ref_pos,
             sig_map_refiner,
             max_chunks_per_read,
             chunk_context,
@@ -231,7 +230,7 @@ def extract_chunk_dataset(
             base_pred,
             base_start_justify,
             offset,
-        ),
+        ],
         name="ExtractChunks",
         use_process=True,
     )

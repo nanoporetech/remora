@@ -17,6 +17,35 @@ MISMATCH_ARRS = {
     2: np.array([0, 1, 3]),
     3: np.array([0, 1, 2]),
 }
+# CIGAR operations which correspond to query and reference sequence
+MATCH_OPS = np.array(
+    [True, False, False, False, False, False, False, True, True]
+)
+QUERY_OPS = np.array([True, True, False, False, True, False, False, True, True])
+REF_OPS = np.array([True, False, True, True, False, False, False, True, True])
+
+
+def compute_ref_to_signal(query_to_signal, cigar, ref_len):
+    ops, lens = map(np.array, zip(*cigar))
+    is_match = MATCH_OPS[ops]
+    match_counts = lens[is_match]
+    offsets = np.array([match_counts, np.ones_like(match_counts)])
+
+    ref_knots = np.cumsum(np.where(REF_OPS[ops], lens, 0))
+    ref_knots = np.concatenate(
+        [[0], (ref_knots[is_match] - offsets).T.flatten(), [ref_knots[-1]]]
+    )
+    query_knots = np.cumsum(np.where(QUERY_OPS[ops], lens, 0))
+    query_knots = np.concatenate(
+        [[0], (query_knots[is_match] - offsets).T.flatten(), [query_knots[-1]]]
+    )
+    return np.floor(
+        np.interp(
+            np.interp(np.arange(ref_len + 1), ref_knots, query_knots),
+            np.arange(query_to_signal.size),
+            query_to_signal,
+        )
+    ).astype(int)
 
 
 @dataclass
