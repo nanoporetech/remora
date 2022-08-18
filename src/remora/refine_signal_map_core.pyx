@@ -91,11 +91,12 @@ def extract_levels(
     int center_idx
 ):
     levels = np.zeros(int_seq.shape[0], dtype=np.float32)
-    cdef int pos
+    cdef float[::1] levels_mv = levels
+    cdef int pos, center_pos, kmer_idx
     for pos in range(int_seq.shape[0] - kmer_len):
-        levels[pos + center_idx] = int_kmer_levels[
-            index_from_int_kmer(int_seq[pos : pos + kmer_len], kmer_len)
-        ]
+        center_pos = pos + center_idx
+        kmer_idx = index_from_int_kmer(int_seq[pos : pos + kmer_len], kmer_len)
+        levels_mv[center_pos] = int_kmer_levels[kmer_idx]
     return levels
 
 

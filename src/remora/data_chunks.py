@@ -185,7 +185,7 @@ class RemoraRead:
             else self.focus_bases.copy(),
         )
 
-    def refine_signal_mapping(self, sig_map_refiner):
+    def refine_signal_mapping(self, sig_map_refiner, check_read=False):
         if not sig_map_refiner.is_loaded:
             return
         if sig_map_refiner.do_rough_rescale:
@@ -231,7 +231,8 @@ class RemoraRead:
                 f"refine_mapping_median_adjust: {np.median(sig_map_diffs)} "
                 f"{self.read_id}"
             )
-        self.check()
+        if check_read:
+            self.check()
 
     def iter_motif_hits(self, motif):
         yield from np.where(
@@ -281,7 +282,7 @@ class RemoraRead:
         label=-1,
         base_pred=False,
         read_focus_base=-1,
-        check_chunk=True,
+        check_chunk=False,
     ):
         chunk_len = sum(chunk_context)
         sig_start = focus_sig_idx - chunk_context[0]
@@ -369,6 +370,7 @@ class RemoraRead:
         base_pred=False,
         base_start_justify=False,
         offset=0,
+        check_chunks=False,
     ):
         for focus_base in self.focus_bases:
             label = -1 if self.labels is None else self.labels[focus_base]
@@ -392,7 +394,10 @@ class RemoraRead:
                     label=label,
                     base_pred=base_pred,
                     read_focus_base=focus_base,
+                    check_chunk=check_chunks,
                 )
+            except RemoraError as e:
+                LOGGER.debug(f"FAILED_CHUNK_CHECK {e}")
             except Exception as e:
                 LOGGER.debug(f"FAILED_CHUNK_EXTRACT {e}")
 
