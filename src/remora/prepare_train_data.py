@@ -96,6 +96,11 @@ def extract_chunks(
             remora_read.add_motif_focus_bases(motifs)
         remora_read.refine_signal_mapping(sig_map_refiner)
         remora_read.downsample_focus_bases(max_chunks_per_read)
+        try:
+            remora_read.check()
+        except RemoraError as e:
+            LOGGER.debug(f"Read prep failed: {e}")
+            continue
         read_align_chunks = list(
             remora_read.iter_chunks(
                 chunk_context,
@@ -103,6 +108,7 @@ def extract_chunks(
                 base_pred,
                 base_start_justify,
                 offset,
+                check_chunks=True,
             )
         )
         LOGGER.debug(

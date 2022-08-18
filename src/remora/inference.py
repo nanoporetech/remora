@@ -190,7 +190,9 @@ def mods_tags_to_str(mods_tags):
     ]
 
 
-def infer_mods(read_errs, model, model_metadata, ref_anchored=False):
+def infer_mods(
+    read_errs, model, model_metadata, ref_anchored=False, check_read=False
+):
     try:
         read = next((read for read, _ in read_errs if read is not None))
     except StopIteration:
@@ -225,7 +227,8 @@ def infer_mods(read_errs, model, model_metadata, ref_anchored=False):
             read_id=read.read_id,
         )
     try:
-        remora_read.check()
+        if check_read:
+            remora_read.check()
     except RemoraError as e:
         err = f"Remora read prep error: {e}"
     mod_tags = mods_tags_to_str(
@@ -329,16 +332,22 @@ def infer_from_pod5_and_bam(
     pysam_save = pysam.set_verbosity(0)
     in_bam = pysam.AlignmentFile(bam_fn, "rb")
     out_bam = pysam.AlignmentFile(out_fn, "wb", template=in_bam)
-    for mod_read_mappings in tqdm(
-        mod_reads_mappings,
+    sig_called = 0
+    bar = tqdm(
         smoothing=0,
         total=num_reads,
         unit=" Reads",
         desc="Inferring mods",
-    ):
+    )
+    for mod_read_mappings in mod_reads_mappings:
+        bar.update()
         if len(mod_read_mappings) == 0:
             errs["No valid mappings"] += 1
             continue
+        if mod_read_mappings[0][0] is not None:
+            sig_called += mod_read_mappings[0][0].signal.size
+            msps = sig_called / 1_000_000 / bar.format_dict["elapsed"]
+            bar.set_postfix_str(f"{msps:.2f} Msamps/s", refresh=False)
         for mod_mapping, err in mod_read_mappings:
             if mod_mapping is None:
                 errs[err] += 1
@@ -348,6 +357,7 @@ def infer_from_pod5_and_bam(
                     mod_mapping.full_align, out_bam.header
                 )
             )
+    bar.close()
     pysam.set_verbosity(pysam_save)
     if len(errs) > 0:
         err_types = sorted([(num, err) for err, num in errs.items()])[::-1]
