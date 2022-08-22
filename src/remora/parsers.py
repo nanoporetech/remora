@@ -671,15 +671,21 @@ def register_model_export(parser):
 def run_model_export(args):
     from remora.model_util import (
         continue_from_checkpoint,
+        load_torchscript_model,
         export_model_onnx,
         export_model_dorado,
         export_model_torchscript,
     )
 
     LOGGER.info("Loading model")
-    ckpt, model = continue_from_checkpoint(
-        args.checkpoint_path, args.model_path
-    )
+    try:
+        ckpt, model = continue_from_checkpoint(
+            args.checkpoint_path, args.model_path
+        )
+        LOGGER.info("Loaded model from checkpoint")
+    except NotImplementedError:
+        model, ckpt = load_torchscript_model(args.checkpoint_path)
+        LOGGER.info("Loaded a torchscript model")
     if args.format == "onnx":
         LOGGER.info("Exporting model to ONNX format")
         export_model_onnx(ckpt, model, args.output_path)
