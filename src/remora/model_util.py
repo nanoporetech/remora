@@ -11,6 +11,7 @@ from os.path import isfile
 
 import onnx
 import torch
+from torch.nn.utils.fusion import fuse_conv_bn_eval
 import numpy as np
 import pandas as pd
 from torch import nn
@@ -136,6 +137,7 @@ def export_model_torchscript(ckpt, model, save_filename):
     )
     meta["kmer_context_bases"] = ckpt["kmer_context_bases"]
     meta["chunk_context"] = ckpt["chunk_context"]
+
     # add simple metadata
     for ckpt_key in (
         "base_pred",
@@ -147,6 +149,7 @@ def export_model_torchscript(ckpt, model, save_filename):
         "refine_half_bandwidth",
         "base_start_justify",
         "offset",
+        "model_params",
     ):
         meta[ckpt_key] = ckpt[ckpt_key]
 
@@ -201,10 +204,30 @@ def export_model_dorado(ckpt, model, save_dir):
 
     model.eval()
     layer_names = set()
-    for k, v in model.state_dict().items():
-        # if "weight" in k or "bias" in k:
-        save_tensor(k, v)
-        layer_names.add(k[: k.find(".")])
+
+    conv_to_bn = {
+        "sig_conv1": "sig_bn1",
+        "sig_conv2": "sig_bn2",
+        "sig_conv3": "sig_bn3",
+        "seq_conv1": "seq_bn1",
+        "seq_conv2": "seq_bn2",
+        "seq_conv3": "seq_bn3",
+        "merge_conv1": "merge_bn",
+        "merge_conv2": "merge_bn2",
+        "merge_conv3": "merge_bn3",
+        "merge_conv4": "merge_bn4",
+    }
+
+    for name, module in model.named_modules():
+        if name == "" or "bn" in name or "drop" in name:
+            continue
+        if name in conv_to_bn.keys():
+            fused = fuse_conv_bn_eval(module, getattr(model, conv_to_bn[name]))
+            module.weight = fused.weight
+            module.bias = fused.bias
+        for k, v in module.state_dict().items():
+            save_tensor(f"{name}.{k}", v)
+        layer_names.add(name)
 
     metadata = {}
     general = {}
@@ -221,12 +244,6 @@ def export_model_dorado(ckpt, model, save_dir):
         "seq_conv1",
         "seq_conv2",
         "merge_conv1",
-        "sig_bn1",
-        "sig_bn2",
-        "sig_bn3",
-        "seq_bn1",
-        "seq_bn2",
-        "merge_bn",
         "lstm1",
         "lstm2",
         "fc",
@@ -243,16 +260,6 @@ def export_model_dorado(ckpt, model, save_dir):
         "merge_conv2",
         "merge_conv3",
         "merge_conv4",
-        "sig_bn1",
-        "sig_bn2",
-        "sig_bn3",
-        "seq_bn1",
-        "seq_bn2",
-        "seq_bn3",
-        "merge_bn1",
-        "merge_bn2",
-        "merge_bn3",
-        "merge_bn4",
         "fc",
     }
 
@@ -269,9 +276,16 @@ def export_model_dorado(ckpt, model, save_dir):
     refinement["refine_do_rough_rescale"] = ckpt["refine_do_rough_rescale"]
     if refinement["refine_do_rough_rescale"]:
         refinement["refine_kmer_center_idx"] = ckpt["refine_kmer_center_idx"]
-        refine_kmer_levels = torch.Tensor(
-            ckpt["refine_kmer_levels"].astype(np.float32)
-        )
+        try:
+            refine_kmer_levels = torch.Tensor(
+                ckpt["refine_kmer_levels"].astype(np.float32)
+            )
+        except AttributeError:
+            refine_kmer_levels = torch.Tensor(
+                np.frombuffer(
+                    ckpt["refine_kmer_levels"].encode("cp437"), dtype=np.float32
+                )
+            )
         save_tensor("refine_kmer_levels", refine_kmer_levels)
 
     # add simple metadata
