@@ -1,0 +1,3 @@
+read_id	pair_read_id
+3cc54106-c79b-4a32-8abf-e102fc5e2cf3	9b1ea885-95cf-4818-b1b0-ea109d6a5c22
+5ed19b88-f9e2-40da-9296-931c81846371	3b770c2f-0ee0-4c74-adcd-3430f0f2dd5f

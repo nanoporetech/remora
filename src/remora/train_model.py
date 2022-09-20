@@ -129,7 +129,7 @@ def train_model(
 
     np.random.seed(seed)
     torch.manual_seed(seed)
-    if torch.cuda.is_available():
+    if torch.cuda.is_available() and device is not None:
         torch.cuda.manual_seed_all(seed)
         torch.cuda.set_device(device)
     elif device is not None:

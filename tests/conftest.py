@@ -1,6 +1,70 @@
 from pathlib import Path
-import pytest
 from subprocess import check_call
+
+import pysam
+import pytest
+
+from remora import io
+
+
+def load_pod5s(pod5_fn):
+    reads = [(str(r.read_id), r) for r in io.iter_pod5_reads(pod5_fp=pod5_fn)]
+    return dict(reads)
+
+
+def load_alignments(bam_fp, require_move_table: bool):
+    lut = dict()
+
+    with pysam.AlignmentFile(bam_fp, "rb", check_sq=False) as bam:
+        for alignment in bam:
+            if io.read_is_primary(alignment):
+                if require_move_table:
+                    _move_table = alignment.get_tag("mv")
+                assert alignment.query_name not in lut
+                lut[alignment.query_name] = alignment
+
+    return lut
+
+
+def make_template_and_complement_reads(
+    reads: dict,
+    duplex_read_alignment: "pysam.AlignedSegment",
+    read_pair_lut: dict,
+    simplex_bam_lut: dict,
+):
+    assert duplex_read_alignment.query_name in read_pair_lut.keys()
+
+    template_read_id = duplex_read_alignment.query_name
+    template_pod5_rec = reads[template_read_id]
+    template_basecall_bam = simplex_bam_lut[template_read_id]
+
+    complement_read_id = read_pair_lut[template_read_id]
+    complement_pod5_rec = reads[complement_read_id]
+    complement_basecall_bam = simplex_bam_lut[complement_read_id]
+
+    template_read = io.Read.from_pod5_and_alignment(
+        pod5_read_record=template_pod5_rec,
+        alignment_record=template_basecall_bam,
+    )
+    complement_read = io.Read.from_pod5_and_alignment(
+        pod5_read_record=complement_pod5_rec,
+        alignment_record=complement_basecall_bam,
+    )
+    return template_read, complement_read
+
+
+def make_pairs_lut(pairs_fn):
+    lut = dict()
+    with open(pairs_fn, "r") as fh:
+        seen_header = False
+        for line in fh:
+            if not seen_header:
+                seen_header = True
+                continue
+            template, complement = line.split()
+            assert template not in lut.keys()
+            lut[template] = complement
+    return lut
 
 
 def pytest_collection_modifyitems(session, config, items):
@@ -49,6 +113,29 @@ def mod_mappings():
 
 
 @pytest.fixture(scope="session")
+def simplex_alignments():
+    p = Path(__file__).absolute().parent / "data" / "simplex_reads_mapped.bam"
+    assert p.exists()
+    return p
+
+
+@pytest.fixture(scope="session")
+def duplex_mapped_alignments():
+    p = Path(__file__).absolute().parent / "data" / "duplex_reads_mapped.bam"
+    assert p.exists()
+    return p
+
+
+@pytest.fixture(scope="session")
+def duplex_reads_and_pairs_pod5():  # todo rename
+    p = Path(__file__).absolute().parent / "data" / "duplex_reads.pod5"
+    assert p.exists()
+    q = Path(__file__).absolute().parent / "data" / "duplex_pairs.txt"
+    assert q.exists()
+    return p, q
+
+
+@pytest.fixture(scope="session")
 def pretrain_model_args():
     """Arguments to select model matched to above data"""
     return (
@@ -65,6 +152,50 @@ def pretrain_model_args():
         "--modified-bases",
         "5mC",
     )
+
+
+@pytest.fixture(scope="session")
+def duplex_reads(
+    simplex_alignments, duplex_mapped_alignments, duplex_reads_and_pairs_pod5
+):
+    pod5_fn, pairs_fn = duplex_reads_and_pairs_pod5
+    raw_reads = load_pod5s(pod5_fn)
+    simplex_bam_lut = load_alignments(
+        simplex_alignments, require_move_table=True
+    )
+    pairs_lut = make_pairs_lut(pairs_fn)
+    duplex_alignments = load_alignments(
+        duplex_mapped_alignments, require_move_table=False
+    )
+    duplex_reads = []
+
+    for template_read_id, complement_read_id in pairs_lut.items():
+        duplex_alignment = duplex_alignments[template_read_id]
+        reads = make_template_and_complement_reads(
+            raw_reads, duplex_alignment, pairs_lut, simplex_bam_lut
+        )
+        for read in reads:
+            assert read.ref_seq is not None
+            assert read.seq is not None
+            assert read.query_to_signal is not None
+            assert read.query_to_signal.shape[0] == (len(read.seq) + 1)
+
+        template_read, complement_read = reads
+        duplex_read = io.DuplexRead.from_reads_and_alignment(
+            template_read=template_read,
+            complement_read=complement_read,
+            duplex_alignment=duplex_alignment,
+        )
+        assert duplex_read.template_read.seq != template_read.seq
+        assert duplex_read.template_read.ref_seq is None
+        assert duplex_read.template_read.ref_to_signal is None
+        assert duplex_read.template_read.ref_pos is None
+        assert duplex_read.complement_read.seq != complement_read.seq
+        assert duplex_read.complement_read.ref_seq is None
+        assert duplex_read.complement_read.ref_to_signal is None
+        assert duplex_read.complement_read.ref_pos is None
+        duplex_reads.append(duplex_read)
+    return duplex_reads
 
 
 #############################

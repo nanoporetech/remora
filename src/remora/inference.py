@@ -1,22 +1,31 @@
+import array as pyarray
 import os
+from collections import defaultdict
 from copy import copy
 from pathlib import Path
-from collections import defaultdict
+from typing import Tuple
 
+import numpy as np
 import pysam
 import torch
-import numpy as np
-from tqdm import tqdm
 from pod5_format import CombinedReader
 from torch.jit._script import RecursiveScriptModule
+from tqdm import tqdm
 
 from remora import constants, log, RemoraError, encoded_kmers
-from remora.data_chunks import RemoraDataset, RemoraRead, compute_ref_to_signal
+from remora.data_chunks import (
+    RemoraDataset,
+    RemoraRead,
+    compute_ref_to_signal,
+)
 from remora.io import (
     index_bam,
     iter_signal,
     prep_extract_alignments,
     extract_alignments,
+    DuplexRead,
+    Read as IoRead,
+    DuplexPairsIter,
 )
 from remora.util import (
     MultitaskMap,
@@ -154,9 +163,9 @@ def call_read_mods(
     Returns:
         If return_mm_ml_tags, MM string tag and ML array tag
         Else if return_mod_probs, 3-tuple containing:
-          1. Modified base probabilties (dim: num_calls, num_mods)
+          1. Modified base probabilities (dim: num_calls, num_mods)
           2. Labels for each base (-1 if labels not provided)
-          3. List of positions within the read
+          3. List of positions within the `read.seq`.
        Else, return value from call_read_mods_core
     """
     nn_out, labels, pos = call_read_mods_core(
@@ -169,13 +178,103 @@ def call_read_mods(
     probs = softmax_axis1(nn_out)[:, 1:].astype(np.float64)
     if return_mm_ml_tags:
         return format_mm_ml_tags(
-            read.str_seq,
-            pos,
-            probs,
-            model_metadata["mod_bases"],
-            model_metadata["can_base"],
+            seq=read.str_seq,
+            poss=pos,
+            probs=probs,
+            mod_bases=model_metadata["mod_bases"],
+            can_base=model_metadata["can_base"],
         )
     return probs, labels, pos
+
+
+class DuplexReadModCaller:
+    def __init__(self, model, model_metadata):
+        self.model = model
+        self.model_metadata = model_metadata
+
+    def call_duplex_read_mod_probs(
+        self,
+        duplex_read: DuplexRead,
+    ):
+        LOGGER.debug(
+            f"calling mods on duplex read {duplex_read.duplex_read_id}"
+        )
+        template_read = duplex_read.template_read.into_remora_read(False)
+        complement_read = duplex_read.complement_read.into_remora_read(False)
+
+        template_probs, _, template_positions = call_read_mods(
+            read=template_read,
+            model=self.model,
+            model_metadata=self.model_metadata,
+            return_mod_probs=True,
+        )
+        template_positions = template_positions + duplex_read.template_ref_start
+
+        complement_probs, _, complement_positions = call_read_mods(
+            read=complement_read,
+            model=self.model,
+            model_metadata=self.model_metadata,
+            return_mod_probs=True,
+        )
+        complement_positions = (
+            complement_positions + duplex_read.complement_ref_start
+        )
+
+        read_sequence = (
+            duplex_read.duplex_basecalled_sequence
+            if not duplex_read.is_reverse_mapped
+            else revcomp(duplex_read.duplex_basecalled_sequence)
+        )
+
+        if duplex_read.is_reverse_mapped:
+            (template_positions, template_probs), (
+                complement_positions,
+                complement_probs,
+            ) = (complement_positions, complement_probs), (
+                template_positions,
+                template_probs,
+            )
+
+        complement_positions_duplex_orientation = (
+            len(read_sequence) - complement_positions - 1
+        )
+
+        return {
+            "template_probs": template_probs,
+            "template_positions": template_positions,
+            "complement_probs": complement_probs,
+            "complement_positions": complement_positions_duplex_orientation,
+            "read_sequence": read_sequence,
+        }
+
+    def call_duplex_read_mods(
+        self,
+        duplex_read: DuplexRead,
+    ) -> (str, pyarray.array):
+        duplex_read_probs = self.call_duplex_read_mod_probs(duplex_read)
+
+        template_mm, template_ml = format_mm_ml_tags(
+            seq=duplex_read_probs["read_sequence"],
+            poss=duplex_read_probs["template_positions"],
+            probs=duplex_read_probs["template_probs"],
+            mod_bases=self.model_metadata["mod_bases"],
+            can_base=self.model_metadata["can_base"],
+            strand="+",
+        )
+        complement_mm, complement_ml = format_mm_ml_tags(
+            seq=duplex_read_probs["read_sequence"],
+            poss=duplex_read_probs["complement_positions"],
+            probs=duplex_read_probs["complement_probs"],
+            mod_bases=self.model_metadata["mod_bases"],
+            can_base=revcomp(self.model_metadata["can_base"]),
+            strand="-",
+        )
+        mm_tag = f"MM:Z:{template_mm + complement_mm}"
+        ml_tag_values = template_ml + complement_ml
+        ml_tag_stringed = ",".join([str(x) for x in ml_tag_values])
+        ml_tag = f"ML:B:C,{ml_tag_stringed}"
+
+        return mm_tag, ml_tag
 
 
 ################
@@ -186,7 +285,7 @@ def call_read_mods(
 def mods_tags_to_str(mods_tags):
     return [
         f"MM:Z:{mods_tags[0]}",
-        f"ML:B:C,{','.join(map(str, mods_tags[1]))}",
+        f"ML:B:C,{','.join(map(str, mods_tags[1]))}",  # todo: these operations are often quite slow...
     ]
 
 
@@ -202,8 +301,14 @@ def infer_mods(
     ]
     shift_q_to_sig = read.query_to_signal - read.query_to_signal[0]
     if ref_anchored:
+        assert (
+            read.ref_seq is not None
+        ), "cannot do ref_anchored when ref_seq is None"
         read.ref_to_signal = compute_ref_to_signal(
-            read.query_to_signal, read.cigar, len(read.ref_seq)
+            read.query_to_signal,
+            read.cigar,
+            query_seq=read.seq,
+            ref_seq=read.ref_seq,
         )
         trim_signal = read.signal[
             read.ref_to_signal[0] : read.ref_to_signal[-1]
@@ -230,7 +335,11 @@ def infer_mods(
         if check_read:
             remora_read.check()
     except RemoraError as e:
+        # TODO figure out what exactly is going on here... hopefully what will happen is err will end up being
+        #   carried along when mapping is None below.
         err = f"Remora read prep error: {e}"
+        LOGGER.debug(err)
+
     mod_tags = mods_tags_to_str(
         call_read_mods(
             remora_read,
@@ -319,6 +428,7 @@ def infer_from_pod5_and_bam(
     use_process = True
     if isinstance(model, RecursiveScriptModule):
         use_process = next(model.parameters()).device.type == "cpu"
+
     mod_reads_mappings = MultitaskMap(
         infer_mods,
         reads,
@@ -330,38 +440,168 @@ def infer_from_pod5_and_bam(
 
     errs = defaultdict(int)
     pysam_save = pysam.set_verbosity(0)
-    in_bam = pysam.AlignmentFile(bam_fn, "rb")
-    out_bam = pysam.AlignmentFile(out_fn, "wb", template=in_bam)
-    sig_called = 0
-    bar = tqdm(
-        smoothing=0,
-        total=num_reads,
-        unit=" Reads",
-        desc="Inferring mods",
-    )
-    for mod_read_mappings in mod_reads_mappings:
-        bar.update()
-        if len(mod_read_mappings) == 0:
-            errs["No valid mappings"] += 1
-            continue
-        if mod_read_mappings[0][0] is not None:
-            sig_called += mod_read_mappings[0][0].signal.size
-            msps = sig_called / 1_000_000 / bar.format_dict["elapsed"]
-            bar.set_postfix_str(f"{msps:.2f} Msamps/s", refresh=False)
-        for mod_mapping, err in mod_read_mappings:
-            if mod_mapping is None:
-                errs[err] += 1
-                continue
-            out_bam.write(
-                pysam.AlignedSegment.from_dict(
-                    mod_mapping.full_align, out_bam.header
-                )
+    with pysam.AlignmentFile(bam_fn, "rb") as in_bam:
+        with pysam.AlignmentFile(out_fn, "wb", template=in_bam) as out_bam:
+            sig_called = 0
+            progress_bar = tqdm(
+                smoothing=0,
+                total=num_reads,
+                unit=" Reads",
+                desc="Inferring mods",
             )
-    bar.close()
-    pysam.set_verbosity(pysam_save)
+            for mod_read_mappings in mod_reads_mappings:
+                progress_bar.update()
+                if len(mod_read_mappings) == 0:
+                    errs["No valid mappings"] += 1
+                    continue
+
+                if mod_read_mappings[0][0] is not None:
+                    sig_called += mod_read_mappings[0][0].signal.size
+                    msps = (
+                        sig_called
+                        / 1_000_000
+                        / progress_bar.format_dict["elapsed"]
+                    )
+                    progress_bar.set_postfix_str(
+                        f"{msps:.2f} Msamps/s", refresh=False
+                    )
+
+                for mod_mapping, err in mod_read_mappings:
+                    if mod_mapping is None:
+                        errs[err] += 1
+                        continue
+                    out_bam.write(
+                        pysam.AlignedSegment.from_dict(
+                            mod_mapping.full_align, out_bam.header
+                        )
+                    )
+            progress_bar.close()
+            pysam.set_verbosity(pysam_save)
+
     if len(errs) > 0:
         err_types = sorted([(num, err) for err, num in errs.items()])[::-1]
         err_str = "\n".join(f"{num:>7} : {err:<80}" for num, err in err_types)
+        LOGGER.info(f"Unsuccessful read reasons:\n{err_str}")
+
+
+def infer_duplex(
+    *,
+    simplex_pod5_fp: str,
+    simplex_bam_fp: str,
+    duplex_bam_fp: str,
+    pairs_fp: str,
+    model,
+    model_metadata,
+    out_fn,
+    num_extract_alignment_threads,
+    num_infer_threads,
+    skip_non_primary=True,
+):
+    duplex_bam_index, _ = index_bam(
+        duplex_bam_fp, skip_non_primary=skip_non_primary, req_tags=set()
+    )
+
+    def iterate_duplex_pairs(pairs, pod5, simplex):
+        duplex_pairs_iter = DuplexPairsIter(
+            pairs_fp=pairs,
+            pod5_fp=pod5,
+            simplex_bam_fp=simplex,
+        )
+        for read_pair in duplex_pairs_iter:
+            yield read_pair
+
+    read_pairs = BackgroundIter(
+        iterate_duplex_pairs,
+        args=(pairs_fp, simplex_pod5_fp, simplex_bam_fp),
+        name="DuplexPairsIter",
+        use_process=True,
+    )
+
+    def make_duplex_reads(
+        read_pair: Tuple[IoRead, IoRead], duplex_index, bam_file_handle
+    ):
+        template, complement = read_pair
+        if template.read_id not in duplex_index:
+            return None, "duplex BAM record not found for read_id"
+        for pointer in duplex_index[template.read_id]:
+            bam_file_handle.seek(pointer)
+            bam_record = next(bam_file_handle)
+            duplex_read = DuplexRead.from_reads_and_alignment(
+                template_read=template,
+                complement_read=complement,
+                duplex_alignment=bam_record,
+            )
+
+            return duplex_read, None
+
+    # not sure if this really needs to be another step, could just make duplex read assembly part of the
+    # first step since it will likely be the slow part
+    duplex_aln = pysam.AlignmentFile(duplex_bam_fp, "rb", check_sq=False)
+    duplex_reads = MultitaskMap(
+        make_duplex_reads,
+        read_pairs,
+        num_workers=num_extract_alignment_threads,
+        args=(duplex_bam_index, duplex_aln),
+        name="MakeDuplexReads",
+        use_process=True,
+    )
+
+    def add_mod_mappings_to_alignment(
+        duplex_read_result: Tuple[DuplexRead, Exception],
+        caller: DuplexReadModCaller,
+    ):
+        duplex_read, exc = duplex_read_result
+        if exc is not None:
+            return None, exc
+        mod_tags = caller.call_duplex_read_mods(duplex_read)
+        mod_tags = list(mod_tags)
+        assert len(mod_tags) == 2
+        record = duplex_read.duplex_alignment
+        record = copy(record)
+        record["tags"] = [
+            tag
+            for tag in record["tags"]
+            if not (tag.startswith("MM") or tag.startswith("ML"))
+        ]
+        record["tags"].extend(mod_tags)
+        return record, None
+
+    duplex_caller = DuplexReadModCaller(model, model_metadata)
+    use_process = True
+    if isinstance(model, RecursiveScriptModule):
+        use_process = next(model.parameters()).device.type == "cpu"
+    alignment_records_with_mod_tags = MultitaskMap(
+        add_mod_mappings_to_alignment,
+        duplex_reads,
+        num_workers=num_infer_threads,
+        args=(duplex_caller,),
+        name="InferMods",
+        use_process=use_process,
+    )
+
+    errs = defaultdict(int)
+    pysam_save = pysam.set_verbosity(0)
+    with pysam.AlignmentFile(duplex_bam_fp, "rb", check_sq=False) as in_bam:
+        with pysam.AlignmentFile(out_fn, "wb", template=in_bam) as out_bam:
+            for mod_read_mapping, err in tqdm(alignment_records_with_mod_tags):
+                if err is not None:
+                    errs[err] += 1
+                    continue
+                out_bam.write(
+                    pysam.AlignedSegment.from_dict(
+                        mod_read_mapping, out_bam.header
+                    )
+                )
+
+            pysam.set_verbosity(pysam_save)
+
+    duplex_aln.close()
+
+    if len(errs) > 0:
+        err_types = sorted([(num, err) for err, num in errs.items()])[::-1]
+        err_str = "\n".join(f"{num:>7} : {err:<80}" for num, err in err_types)
+        # todo, make a proper run report that tabulates the errors by read_id to make
+        #   forensics easier
         LOGGER.info(f"Unsuccessful read reasons:\n{err_str}")
 
 
