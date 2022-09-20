@@ -34,7 +34,7 @@ SINGLE_LETTER_CODE = {
     "Y": "CT",
 }
 SEQ_MIN = np.array(["A"], dtype="S1").view(np.uint8)[0]
-SEQ_TO_INT_ARR = np.full(26, -1, dtype=np.int)
+SEQ_TO_INT_ARR = np.full(26, -1, dtype=int)
 SEQ_TO_INT_ARR[0] = 0
 SEQ_TO_INT_ARR[2] = 1
 SEQ_TO_INT_ARR[6] = 2
@@ -51,7 +51,7 @@ def comp(seq):
 
 
 def revcomp(seq):
-    return seq.translate(COMP_BASES)[::-1]
+    return seq.upper().translate(COMP_BASES)[::-1]
 
 
 def comp_np(np_seq):
@@ -227,7 +227,7 @@ def validate_mod_bases(
     return label_conv
 
 
-def format_mm_ml_tags(seq, poss, probs, mod_bases, can_base):
+def format_mm_ml_tags(seq, poss, probs, mod_bases, can_base, strand: str = "+"):
     """Format MM and ML tags for BAM output. See
     https://samtools.github.io/hts-specs/SAMtags.pdf for format details.
 
@@ -235,9 +235,10 @@ def format_mm_ml_tags(seq, poss, probs, mod_bases, can_base):
         seq (str): read-centric read sequence. For reference-anchored calls
             this should be the reverse complement sequence.
         poss (list): positions relative to seq
-        probs (np.array): probabilties for modified bases
+        probs (np.array): probabilities for modified bases
         mod_bases (str): modified base single letter codes
         can_base (str): canonical base
+        strand (bool): should be '+' for SEQ-oriented strand and '-' if complement strand
 
     Returns:
         MM string tag and ML array tag
@@ -247,12 +248,11 @@ def format_mm_ml_tags(seq, poss, probs, mod_bases, can_base):
     # shown in resulting tags
     per_mod_probs = dict((mod_base, []) for mod_base in mod_bases)
     for pos, mod_probs in sorted(zip(poss, probs)):
-        # mod_lps is set to None if invalid sequence is encountered or too
+        # mod_probs is set to None if invalid sequence is encountered or too
         # few events are found around a mod
         if mod_probs is None:
             continue
         for mod_prob, mod_base in zip(mod_probs, mod_bases):
-            mod_prob = mod_prob
             per_mod_probs[mod_base].append((pos, mod_prob))
 
     mm_tag, ml_tag = "", array.array("B")
@@ -271,7 +271,7 @@ def format_mm_ml_tags(seq, poss, probs, mod_bases, can_base):
         mod_gaps = ",".join(
             map(str, np.diff(np.insert(can_base_mod_poss, 0, -1)) - 1)
         )
-        mm_tag += f"{can_base}+{mod_base}?,{mod_gaps};"
+        mm_tag += f"{can_base}{strand}{mod_base}?,{mod_gaps};"
         # extract mod scores and scale to 0-255 range
         scaled_probs = np.floor(np.array(probs) * 256)
         # last interval includes prob=1
@@ -369,19 +369,19 @@ class MultitaskMap:
     """Map a function to an input queue using multitasking (multiprocessing or
     threading)
 
-    MtMap supports multiprocessing or threading backends via the
+    MultitaskMap supports multiprocessing or threading backends via the
     use_process argument.
 
     Elements of the input queue will be passed as the first argument to the
     func followed by args and kwargs provided.
 
-    MtMap also supports a prepare function to perform work on the input
+    MultitaskMap also supports a prepare function to perform work on the input
     arguments within the newly spawned task. The prep_func should take the args
-    and kwargs provided to MtMap and return a new set of args and kwargs to be
+    and kwargs provided to MultitaskMap and return a new set of args and kwargs to be
     passed to the worker function along with elements from the in_q. This
     can be useful for objects that need initialization within a task.
 
-    MtMap supports KeyboardInterrupt without flooding the output with stack
+    MultitaskMap supports KeyboardInterrupt without flooding the output with stack
     traces from each killed task to exit gracefully and avoid stalling.
     """
 
@@ -404,7 +404,7 @@ class MultitaskMap:
 
         mt_worker = mp.Process if use_process else Thread
         # TODO save workers to self and provide method to watch workers
-        # for failures to avoid deadlock
+        #   for failures to avoid deadlock
         mt_worker(
             target=_fill_q,
             args=(iterator, in_q, self.num_workers),

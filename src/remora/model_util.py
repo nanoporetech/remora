@@ -524,7 +524,7 @@ def load_onnx_model(model_filename, device=None, quiet=False):
 
 
 def load_torchscript_model(model_filename, device=None, quiet=False):
-    """Load onnx model. If device is specified load onto specified device.
+    """Load torchscript model. If device is specified load onto specified device.
 
     Args:
         model_filename (str): Model path
@@ -575,6 +575,7 @@ def load_model(
                 f"Remora model file ({model_filename}) not found."
             )
         try:
+            LOGGER.debug("using torchscript model")
             return load_torchscript_model(model_filename, device, quiet=quiet)
         except (AttributeError, RuntimeError):
             LOGGER.warning("Failed loading torchscript model. Trying onnx.")

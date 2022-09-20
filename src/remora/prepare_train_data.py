@@ -75,7 +75,10 @@ def extract_chunks(
             )
             continue
         read.ref_to_signal = compute_ref_to_signal(
-            read.query_to_signal, read.cigar, len(read.ref_seq)
+            read.query_to_signal,
+            read.cigar,
+            query_seq=read.seq,
+            ref_seq=read.ref_seq,
         )
         trim_signal = read.signal[
             read.ref_to_signal[0] : read.ref_to_signal[-1]
@@ -187,6 +190,8 @@ def extract_chunk_dataset(
         base_start_justify=base_start_justify,
         offset=offset,
     )
+
+    assert len(bam_idx.keys()) > 0
 
     LOGGER.info("Processing reads")
     if signal_first:

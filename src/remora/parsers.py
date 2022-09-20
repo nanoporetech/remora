@@ -765,13 +765,14 @@ def register_infer(parser):
     subparser.set_defaults(func=lambda x: subparser.print_help())
     # Register infer sub commands
     register_infer_from_pod5_and_bam(ssubparser)
+    register_infer_duplex_from_pod5_and_bam(ssubparser)
 
 
 def register_infer_from_pod5_and_bam(parser):
     subparser = parser.add_parser(
         "from_pod5_and_bam",
         description="Infer modified bases from pod5 and bam inputs",
-        help="Validate on Remora dataset",
+        help="Run inference on pod5s and alignments",
         formatter_class=SubcommandHelpFormatter,
     )
     subparser.add_argument(
@@ -782,7 +783,6 @@ def register_infer_from_pod5_and_bam(parser):
         "bam",
         help="BAM file containing mv tags.",
     )
-
     out_grp = subparser.add_argument_group("Output Arguments")
     out_grp.add_argument(
         "--out-file",
@@ -864,12 +864,108 @@ def register_infer_from_pod5_and_bam(parser):
     subparser.set_defaults(func=run_infer_from_pod5_and_bam)
 
 
-def run_infer_from_pod5_and_bam(args):
-    from remora.model_util import load_model
-    from remora.inference import infer_from_pod5_and_bam
+def register_infer_duplex_from_pod5_and_bam(parser):
+    subparser = parser.add_parser(
+        "duplex_from_pod5_and_bam",
+        description="Infer modified bases on duplex reads from pod5 and bam inputs",
+        help="Run inference on pod5s simplex reads and duplex alignments with duplex pairs",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    subparser.add_argument(
+        "pod5",
+        help="POD5 file corresponding to bam file.",
+    )
+    subparser.add_argument(
+        "bam",
+        help="BAM file containing mv tags.",
+    )
+    subparser.add_argument(
+        "--duplex_bam",
+        help="BAM file containing duplex base called sequences (and optional reference mappings)",
+        required=False,
+        default=None,
+    )
+    subparser.add_argument(
+        "--duplex_read_pairs",
+        help="Whitespace separated plain text file containing read ID pairs",
+        required=False,
+        default=None,
+    )
+    out_grp = subparser.add_argument_group("Output Arguments")
+    out_grp.add_argument(
+        "--out-file",
+        help="Output path for the validation result file.",
+    )
+    out_grp.add_argument(
+        "--log-filename",
+        help="Log filename. Default: Don't output log file.",
+    )
 
-    if args.log_filename is not None:
-        log.init_logger(args.log_filename)
+    mdl_grp = subparser.add_argument_group("Model Arguments")
+    mdl_grp.add_argument(
+        "--model",
+        help="Path to a pretrained model in onnx or torchscript format.",
+    )
+    mdl_grp.add_argument(
+        "--pore",
+        help="Choose the type of pore the Remora model has been trained on "
+        "(e.g. dna_r10.4_e8.1)",
+    )
+    mdl_grp.add_argument(
+        "--basecall-model-type",
+        help="Choose the basecaller model type (choose from fast, hac or sup)",
+    )
+    mdl_grp.add_argument(
+        "--basecall-model-version",
+        help="Choose a specific basecaller version",
+    )
+    mdl_grp.add_argument(
+        "--modified-bases",
+        nargs="+",
+        help="Long name of the modified bases to call (e.g., 5mc, 5hmc).",
+    )
+    mdl_grp.add_argument(
+        "--remora-model-type",
+        help="Choose the specific motif of the model you want to load. "
+        "If None, load CG model.",
+    )
+    mdl_grp.add_argument(
+        "--remora-model-version",
+        type=int,
+        help="Choose the remora model version. If None, use latest.",
+    )
+
+    data_grp = subparser.add_argument_group("Data Arguments")
+    data_grp.add_argument(
+        "--num-reads",
+        default=None,
+        type=int,
+        help="Number of reads.",
+    )
+    comp_grp = subparser.add_argument_group("Compute Arguments")
+    comp_grp.add_argument(
+        "--device",
+        type=int,
+        help="ID of GPU that is used for inference. Default: CPU only",
+    )
+    comp_grp.add_argument(
+        "--num-extract-alignment-workers",
+        type=int,
+        default=1,
+        help="Number of signal extraction workers. Default: %(default)d",
+    )
+    comp_grp.add_argument(
+        "--num-infer-workers",
+        type=int,
+        default=1,
+        help="Number of chunk extraction workers. If performing signal "
+        "refinement this should be increased. Default: %(default)d",
+    )
+
+    subparser.set_defaults(func=run_infer_from_pod5_and_bam_duplex)
+
+
+def _unpack_model_kw_args(args) -> dict:
     model_kwargs = {
         "model_filename": args.model,
         "pore": args.pore,
@@ -880,7 +976,17 @@ def run_infer_from_pod5_and_bam(args):
         "remora_model_version": args.remora_model_version,
         "device": args.device,
     }
+    return model_kwargs
+
+
+def run_infer_from_pod5_and_bam(args):
+    from remora.model_util import load_model
+    from remora.inference import infer_from_pod5_and_bam
+
+    if args.log_filename is not None:
+        log.init_logger(args.log_filename)
     # test that model can be loaded in parent process
+    model_kwargs = _unpack_model_kw_args(args)
     model, model_metadata = load_model(**model_kwargs, quiet=False)
     infer_from_pod5_and_bam(
         args.pod5,
@@ -892,6 +998,27 @@ def run_infer_from_pod5_and_bam(args):
         args.num_extract_alignment_workers,
         args.num_infer_workers,
         ref_anchored=args.reference_anchored,
+    )
+
+
+def run_infer_from_pod5_and_bam_duplex(args):
+    from remora.model_util import load_model
+    from remora.inference import infer_duplex
+
+    if args.log_filename is not None:
+        log.init_logger(args.log_filename)
+    model_kwargs = _unpack_model_kw_args(args)
+    model, model_metadata = load_model(**model_kwargs, quiet=False)
+    infer_duplex(
+        simplex_pod5_fp=args.pod5,
+        simplex_bam_fp=args.bam,
+        duplex_bam_fp=args.duplex_bam,
+        pairs_fp=args.duplex_read_pairs,
+        model=model,
+        model_metadata=model_metadata,
+        out_fn=args.out_file,
+        num_extract_alignment_threads=args.num_extract_alignment_workers,
+        num_infer_threads=args.num_infer_workers,
     )
 
 
