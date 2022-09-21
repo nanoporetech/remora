@@ -1,23 +1,21 @@
-import itertools
 import os
-from collections import defaultdict
 from copy import copy
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict
+from dataclasses import dataclass
+from collections import defaultdict
 from typing import Iterator, Optional
 
-import numpy as np
-import pod5_format as p5
 import pysam
-from pod5_format import CombinedReader
-from pysam import AlignedSegment
+import numpy as np
 from tqdm import tqdm
+import pod5_format as p5
+from pysam import AlignedSegment
+from pod5_format import CombinedReader
 
-from remora import data_chunks as DC, duplex_utils as DU
 from remora import log
-from remora.constants import PA_TO_NORM_SCALING_FACTOR
 from remora.util import revcomp
+from remora.constants import PA_TO_NORM_SCALING_FACTOR
+from remora import data_chunks as DC, duplex_utils as DU, RemoraError
 
 LOGGER = log.get_logger()
 
@@ -73,7 +71,7 @@ def index_bam(
             tags = set(tg[0] for tg in read.tags)
             if len(req_tags.intersection(tags)) != len(req_tags):
                 if careful:
-                    raise ValueError("missing tags")
+                    raise RemoraError("missing tags")
                 continue
             if skip_non_primary:
                 if not read_is_primary(read) or read.query_name in bam_idx:
@@ -166,15 +164,15 @@ class Read:
             else revcomp(duplex_read_alignment.query_sequence)
         )
 
-        # we don't have a mapping of each base in the simplex sequence to each base
-        # in the duplex sequence, so we infer it by alignment. Using the simplex sequence
-        # as the query sequence is somewhat arbitrary, but it makes the downstream coordinate
-        # mappings more convenient
+        # we don't have a mapping of each base in the simplex sequence to each
+        # base in the duplex sequence, so we infer it by alignment. Using the
+        # simplex sequence as the query sequence is somewhat arbitrary, but it
+        # makes the downstream coordinate mappings more convenient
         simplex_duplex_mapping = DU.map_simplex_to_duplex(
             simplex_seq=read.seq, duplex_seq=duplex_read_sequence
         )
-        # duplex_read_to_signal is a mapping of each position in the duplex sequence
-        # to a signal datum from the read
+        # duplex_read_to_signal is a mapping of each position in the duplex
+        # sequence to a signal datum from the read
         query_to_signal = read.query_to_signal
         duplex_to_read_signal = DC.map_ref_to_signal(
             query_to_signal=query_to_signal,
@@ -210,8 +208,8 @@ class Read:
             ref_seq=ref_seq,
         )
         assert ref_to_signal.shape[0] == len(ref_seq) + 1
-        # remember, pysam reverse-complements the mapped query_sequence on reverse mapped
-        # records
+        # remember, pysam reverse-complements the mapped query_sequence on
+        # reverse mapped records
         seq = (
             revcomp(alignment_record.query_sequence)
             if reverse_mapped
@@ -238,8 +236,8 @@ class Read:
         try:
             alignment_record.get_tag("mv")
         except KeyError as e:
-            raise ValueError(
-                f"aligned segment must have move table ('mv') tag"
+            raise RemoraError(
+                "aligned segment must have move table ('mv') tag"
             ) from e
 
         try:
@@ -257,9 +255,9 @@ class Read:
         query_to_signal = np.r_[query_to_signal, signal.shape[0]]
 
         if mv_table.shape[0] != signal.shape[0] // stride:
-            raise ValueError("move table is discordant with signal")
+            raise RemoraError("move table is discordant with signal")
         if query_to_signal.shape[0] - 1 != alignment_record.query_length:
-            raise ValueError(
+            raise RemoraError(
                 "move table is discordant with base called sequence"
             )
 
@@ -483,9 +481,10 @@ class DuplexPairsIter:
 
     def _make_read(self, p5_read: p5.ReadRecord):
         alns = self.simplex_index[str(p5_read.read_id)]
-        assert (
-            len(alns) == 1
-        ), "should not have multiple BAM records for simplex reads, make sure the index only has primary alignments"
+        assert len(alns) == 1, (
+            "should not have multiple BAM records for simplex reads, make "
+            "sure the index only has primary alignments"
+        )
         self.simplex_alignments.seek(alns[0])
         alignment_record = next(self.simplex_alignments)
         io_read = Read.from_pod5_and_alignment(
@@ -502,9 +501,7 @@ class DuplexPairsIter:
                 read for read in pod5_reads if str(read.read_id) in read_id_pair
             ]
             if len(pod5_reads_filtered) < 2:
-                LOGGER.debug(
-                    f"read pair {read_id_pair} was not found in pod5, got {' '.join([str(r.read_id) for r in pod5_reads])}"
-                )
+                LOGGER.debug(f"read pair {read_id_pair} was not found in pod5")
                 continue
             io_reads = {
                 str(p5_read.read_id): self._make_read(p5_read)

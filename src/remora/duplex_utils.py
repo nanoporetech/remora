@@ -1,12 +1,10 @@
 import re
 from collections import deque
 from typing import List, Tuple
-
-import numpy as np
-from numpy import typing as npt
+from dataclasses import dataclass
 
 import parasail
-from dataclasses import dataclass
+from numpy import typing as npt
 
 import remora.data_chunks as DC
 
@@ -77,7 +75,9 @@ def trim_parasail_alignment(alignment_result):
 
 def parasail_align(*, query, ref) -> PairwiseAlignment:
     """
-    Semi-global alignment allowing for gaps at the start and end of the query sequence.
+    Semi-global alignment allowing for gaps at the start and end of the query
+    sequence.
+
     :param query: str
     :param ref: str
     :return: PairwiseAlignment

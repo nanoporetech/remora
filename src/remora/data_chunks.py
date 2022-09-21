@@ -63,7 +63,8 @@ def make_sequence_coordinate_mapping(
     cigar: list, *, read_seq: str, ref_seq: str
 ) -> np.ndarray:
     """
-    Maps an element in `read_seq` to every element in `ref_seq` using alignment in `cigar`.
+    Maps an element in `read_seq` to every element in `ref_seq` using alignment
+    in `cigar`.
 
     :param cigar: "cigartuples" representing alignment
     :param read_seq: a.k.a. query sequence
@@ -91,9 +92,8 @@ def make_sequence_coordinate_mapping(
         int
     )
 
-    assert (
-        knots.shape[0] == ref_len + 1
-    ), "knots should be len(ref_seq) + 1"  # +1 because knots include the end position of the last base
+    # +1 because knots include the end position of the last base
+    assert knots.shape[0] == ref_len + 1, "knots should be len(ref_seq) + 1"
     assert (
         np.max(knots[:-1]) < read_len
     ), "knots map to position not contained in read"

@@ -11,7 +11,8 @@ from remora import io
 
 pytestmark = pytest.mark.main
 
-# These may look like they are copied from remora.constants, but they're slightly different
+# These may look like they are copied from remora.constants, but they're
+# slightly different
 FINAL_MODEL_FILENAME = "model_final.pt"
 # SAVE_DATASET_FILENAME = "remora_train_data.npz"
 
@@ -132,9 +133,7 @@ def test_mod_infer_duplex(
             "duplex_from_pod5_and_bam",
             reads_pod5_fp,
             simplex_alignments,
-            "--duplex_bam",
             duplex_mapped_alignments,
-            "--duplex_read_pairs",
             pairs_fp,
             "--model",
             str(fw_mod_model_dir / FINAL_MODEL_FILENAME),

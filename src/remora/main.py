@@ -1,5 +1,5 @@
-import argparse
 import os
+import argparse
 import warnings
 
 from remora import __version__
