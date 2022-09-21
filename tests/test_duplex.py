@@ -1,6 +1,6 @@
-import numpy as np
 import pysam
 import pytest
+import numpy as np
 
 from remora import (
     model_util,
@@ -16,19 +16,19 @@ from remora import (
 def test_fuzz_parasail():
     nucs = ["A", "C", "G", "T"]
 
-    def random_sequence(l):
-        return "".join(np.random.choice(nucs, size=l))
+    def random_sequence(seq_len):
+        return "".join(np.random.choice(nucs, size=seq_len))
 
     def mutate_sequence(seq, p_err, p_indel):
         mutated_seq = []
         for idx in range(len(seq)):
             base = seq[idx]
             if uniform() <= p_err:
-                base = random_nuc()
+                base = random_state.choice(nucs)
             if uniform() <= p_indel:
                 if np.random.uniform() > 0.5:
                     mutated_seq.append(base)
-                    mutated_seq.append(random_nuc())
+                    mutated_seq.append(random_state.choice(nucs))
                 continue
 
             mutated_seq.append(base)
@@ -37,10 +37,9 @@ def test_fuzz_parasail():
 
     random_state = np.random.RandomState(42)
     uniform = random_state.uniform
-    random_nuc = lambda: random_state.choice(nucs)
 
     for test_case in range(75):
-        duplex = random_sequence(l=5_000)
+        duplex = random_sequence(seq_len=5_000)
         simplex = mutate_sequence(duplex, p_err=0.05, p_indel=0.1)
         DU.map_simplex_to_duplex(simplex_seq=simplex, duplex_seq=duplex)
 
@@ -112,7 +111,8 @@ def test_duplex_alignment_to_signal_mapping_at_5prime_end():
         duplex_to_signal == np.array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10])
     )
 
-    # Case 3: Simplex is missing sequence at 5' end and starts with unpaired sequence
+    # Case 3: Simplex is missing sequence at 5' end and starts with unpaired
+    #   sequence
     # vv these bases are soft-clipped and their signal should not be used
     # GG-------GTACGTACG
     #          |||||||||
@@ -169,7 +169,8 @@ def test_duplex_alignment_to_signal_mapping_at_3prime_end():
         duplex_to_signal == np.array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10])
     )
 
-    # Case 5: Simplex is missing sequence at the end, but also has unaligned sequence
+    # Case 5: Simplex is missing sequence at the end, but also has unaligned
+    #   sequence
     #                  vv signal for these bases should not be used
     # ACGTACGTACG------AA
     # |||||||||||
@@ -202,7 +203,8 @@ def test_duplex_alignment_to_signal_mapping_ragged_ends():
     # TTTTTACGTACGTACGTTTTTT [simplex]
     #      |||||||||||
     # -----ACGTACGTACG------ [duplex]
-    # Test to make sure that duplex to simplex signal starts at position 5 and ends at 15
+    # Test to make sure that duplex to simplex signal starts at position 5 and
+    #   ends at 15
 
     simplex = "TTTTTACGTACGTACGTTTTTT"
     duplex = "ACGTACGTACG"
@@ -326,7 +328,8 @@ def test_duplex_mod_infer_simple(duplex_reads, fw_mod_model_dir):
 @pytest.mark.unit
 @pytest.mark.duplex
 @pytest.mark.skip(
-    reason="causes deadlock with test_mod_infer_duplex in test_main.py which tests the same functionality"
+    reason="causes deadlock with test_mod_infer_duplex in test_main.py which "
+    "tests the same functionality"
 )
 def test_duplex_mod_infer_streaming(
     simplex_alignments,

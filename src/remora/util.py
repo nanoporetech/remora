@@ -238,7 +238,8 @@ def format_mm_ml_tags(seq, poss, probs, mod_bases, can_base, strand: str = "+"):
         probs (np.array): probabilities for modified bases
         mod_bases (str): modified base single letter codes
         can_base (str): canonical base
-        strand (bool): should be '+' for SEQ-oriented strand and '-' if complement strand
+        strand (bool): should be '+' for SEQ-oriented strand and '-' if
+            complement strand
 
     Returns:
         MM string tag and ML array tag
@@ -377,12 +378,12 @@ class MultitaskMap:
 
     MultitaskMap also supports a prepare function to perform work on the input
     arguments within the newly spawned task. The prep_func should take the args
-    and kwargs provided to MultitaskMap and return a new set of args and kwargs to be
-    passed to the worker function along with elements from the in_q. This
+    and kwargs provided to MultitaskMap and return a new set of args and kwargs
+    to be passed to the worker function along with elements from the in_q. This
     can be useful for objects that need initialization within a task.
 
-    MultitaskMap supports KeyboardInterrupt without flooding the output with stack
-    traces from each killed task to exit gracefully and avoid stalling.
+    MultitaskMap supports KeyboardInterrupt without flooding the output with
+    stack traces from each killed task to exit gracefully and avoid stalling.
     """
 
     def __init__(

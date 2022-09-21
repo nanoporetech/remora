@@ -9,10 +9,13 @@ class CustomFormatter(logging.Formatter):
     levels.
     """
 
-    err_fmt = "ERROR:[%(asctime)s:%(processName)s:%(threadName)s:%(module)s.py:%(lineno)d] %(msg)s"
-    warn_fmt = "WARNING:[%(asctime)s:%(processName)s:%(threadName)s:%(module)s.py:%(lineno)d] %(msg)s"
+    err_str = (
+        "[%(asctime)s:%(processName)s:%(threadName)s:%(module)s.py:%(lineno)d]"
+    )
+    err_fmt = "*" * 100 + f"\n\tERROR {err_str}:\n%(msg)s\n" + "*" * 100
+    warn_fmt = "*" * 20 + f" WARNING {err_str}: %(msg)s " + "*" * 20
     info_fmt = "[%(asctime)s] %(message)s"
-    dbg_fmt = "DEBUG:[%(asctime)s:%(processName)s:%(threadName)s:%(module)s.py:%(lineno)d] %(msg)s"
+    dbg_fmt = f"DEBUG {err_str} %(msg)s"
 
     def __init__(self, fmt="[%(asctime)s] %(message)s"):
         super().__init__(fmt=fmt, datefmt="%H:%M:%S", style="%")

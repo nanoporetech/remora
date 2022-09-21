@@ -11,11 +11,11 @@ from os.path import isfile
 
 import onnx
 import torch
-from torch.nn.utils.fusion import fuse_conv_bn_eval
 import numpy as np
 import pandas as pd
 from torch import nn
 import onnxruntime as ort
+from torch.nn.utils.fusion import fuse_conv_bn_eval
 
 from remora import log, RemoraError, constants
 from remora.refine_signal_map import SigMapRefiner
@@ -524,7 +524,8 @@ def load_onnx_model(model_filename, device=None, quiet=False):
 
 
 def load_torchscript_model(model_filename, device=None, quiet=False):
-    """Load torchscript model. If device is specified load onto specified device.
+    """Load torchscript model. If device is specified load onto specified
+    device.
 
     Args:
         model_filename (str): Model path

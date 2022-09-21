@@ -1,16 +1,16 @@
-import array as pyarray
 import os
-from collections import defaultdict
 from copy import copy
+import array as pyarray
 from pathlib import Path
 from typing import Tuple
+from collections import defaultdict
 
-import numpy as np
 import pysam
 import torch
+import numpy as np
+from tqdm import tqdm
 from pod5_format import CombinedReader
 from torch.jit._script import RecursiveScriptModule
-from tqdm import tqdm
 
 from remora import constants, log, RemoraError, encoded_kmers
 from remora.data_chunks import (
@@ -283,9 +283,10 @@ class DuplexReadModCaller:
 
 
 def mods_tags_to_str(mods_tags):
+    # TODO these operations are often quite slow
     return [
         f"MM:Z:{mods_tags[0]}",
-        f"ML:B:C,{','.join(map(str, mods_tags[1]))}",  # todo: these operations are often quite slow...
+        f"ML:B:C,{','.join(map(str, mods_tags[1]))}",
     ]
 
 
@@ -335,7 +336,8 @@ def infer_mods(
         if check_read:
             remora_read.check()
     except RemoraError as e:
-        # TODO figure out what exactly is going on here... hopefully what will happen is err will end up being
+        # TODO figure out what exactly is going on here.
+        #   hopefully what will happen is err will end up being
         #   carried along when mapping is None below.
         err = f"Remora read prep error: {e}"
         LOGGER.debug(err)
@@ -534,8 +536,8 @@ def infer_duplex(
 
             return duplex_read, None
 
-    # not sure if this really needs to be another step, could just make duplex read assembly part of the
-    # first step since it will likely be the slow part
+    # not sure if this really needs to be another step, could just make duplex
+    # read assembly part of the first step since it will likely be the slow part
     duplex_aln = pysam.AlignmentFile(duplex_bam_fp, "rb", check_sq=False)
     duplex_reads = MultitaskMap(
         make_duplex_reads,
@@ -600,8 +602,8 @@ def infer_duplex(
     if len(errs) > 0:
         err_types = sorted([(num, err) for err, num in errs.items()])[::-1]
         err_str = "\n".join(f"{num:>7} : {err:<80}" for num, err in err_types)
-        # todo, make a proper run report that tabulates the errors by read_id to make
-        #   forensics easier
+        # TODO make a proper run report that tabulates the errors by read_id
+        # to make forensics easier
         LOGGER.info(f"Unsuccessful read reasons:\n{err_str}")
 
 

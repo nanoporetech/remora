@@ -19,7 +19,7 @@ def load_alignments(bam_fp, require_move_table: bool):
         for alignment in bam:
             if io.read_is_primary(alignment):
                 if require_move_table:
-                    _move_table = alignment.get_tag("mv")
+                    _ = alignment.get_tag("mv")
                 assert alignment.query_name not in lut
                 lut[alignment.query_name] = alignment
 
@@ -386,7 +386,6 @@ def can_modbam(tmpdir_factory, can_pod5, can_mappings, pretrain_model_args):
     out_dir = tmpdir_factory.mktemp("remora_tests")
     print(f"\nPretrained infer results output: {out_dir}")
     out_file = out_dir / "can_infer_pretrain.bam"
-    full_file = out_dir / "can_infer_pretrain_full.txt"
     check_call(
         [
             "remora",
@@ -407,7 +406,6 @@ def mod_modbam(tmpdir_factory, mod_pod5, mod_mappings, pretrain_model_args):
     out_dir = tmpdir_factory.mktemp("remora_tests")
     print(f"\nPretrained infer results output: {out_dir}")
     out_file = out_dir / "mod_infer_pretrain.bam"
-    full_file = out_dir / "mod_infer_pretrain_full.txt"
     check_call(
         [
             "remora",

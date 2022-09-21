@@ -15,5 +15,14 @@ def test_black():
         raise RuntimeError("black coding standards failed.")
 
 
+@pytest.mark.format
+def test_flake8():
+    """Test that code meets flak8 coding standards"""
+    p = Popen(["flake8", "."], stderr=STDOUT)
+    p.communicate()
+    if p.returncode:
+        raise RuntimeError("flake8 coding standards failed.")
+
+
 if __name__ == "__main__":
     pytest.main(["-m", "format", "--no-cov", "-s"])

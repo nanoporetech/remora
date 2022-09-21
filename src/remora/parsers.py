@@ -867,8 +867,10 @@ def register_infer_from_pod5_and_bam(parser):
 def register_infer_duplex_from_pod5_and_bam(parser):
     subparser = parser.add_parser(
         "duplex_from_pod5_and_bam",
-        description="Infer modified bases on duplex reads from pod5 and bam inputs",
-        help="Run inference on pod5s simplex reads and duplex alignments with duplex pairs",
+        description="Infer modified bases on duplex reads from pod5 and bam "
+        "inputs",
+        help="Run inference on pod5s simplex reads and duplex alignments with "
+        "duplex pairs",
         formatter_class=SubcommandHelpFormatter,
     )
     subparser.add_argument(
@@ -876,21 +878,19 @@ def register_infer_duplex_from_pod5_and_bam(parser):
         help="POD5 file corresponding to bam file.",
     )
     subparser.add_argument(
-        "bam",
+        "simplex_bam",
         help="BAM file containing mv tags.",
     )
     subparser.add_argument(
-        "--duplex_bam",
-        help="BAM file containing duplex base called sequences (and optional reference mappings)",
-        required=False,
-        default=None,
+        "duplex_bam",
+        help="BAM file containing duplex base called sequences (and optional "
+        "reference mappings)",
     )
     subparser.add_argument(
-        "--duplex_read_pairs",
+        "duplex_read_pairs",
         help="Whitespace separated plain text file containing read ID pairs",
-        required=False,
-        default=None,
     )
+
     out_grp = subparser.add_argument_group("Output Arguments")
     out_grp.add_argument(
         "--out-file",
@@ -1011,7 +1011,7 @@ def run_infer_from_pod5_and_bam_duplex(args):
     model, model_metadata = load_model(**model_kwargs, quiet=False)
     infer_duplex(
         simplex_pod5_fp=args.pod5,
-        simplex_bam_fp=args.bam,
+        simplex_bam_fp=args.simplex_bam,
         duplex_bam_fp=args.duplex_bam,
         pairs_fp=args.duplex_read_pairs,
         model=model,
@@ -1240,7 +1240,7 @@ def run_validate_from_remora_dataset(args):
 
     LOGGER.info("Running validation")
     val_fp = ValidationLogger(out_fp, full_results_fp)
-    val_metrics = val_fp.validate_model(
+    val_fp.validate_model(
         model,
         model_metadata["mod_bases"],
         torch.nn.CrossEntropyLoss(),
