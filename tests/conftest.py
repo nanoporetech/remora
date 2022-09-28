@@ -140,7 +140,7 @@ def pretrain_model_args():
     """Arguments to select model matched to above data"""
     return (
         "--pore",
-        "dna_r10.4.1_e8.2",
+        "dna_r10.4.1_e8.2_400bps",
         "--basecall-model-type",
         "hac",
         "--basecall-model-version",

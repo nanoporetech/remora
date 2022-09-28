@@ -65,8 +65,6 @@ def save_model(
     epoch,
     opt,
     model_name=constants.BEST_MODEL_FILENAME,
-    as_onnx=False,
-    model_name_onnx=constants.BEST_ONNX_MODEL_FILENAME,
     as_torchscript=True,
     model_name_torchscript=constants.BEST_TORCHSCRIPT_MODEL_FILENAME,
 ):
@@ -82,12 +80,6 @@ def save_model(
         ckpt_save_data,
         os.path.join(out_path, model_name),
     )
-    if as_onnx:
-        model_util.export_model_onnx(
-            ckpt_save_data,
-            model,
-            os.path.join(out_path, model_name_onnx),
-        )
     if as_torchscript:
         model_util.export_model_torchscript(
             ckpt_save_data,

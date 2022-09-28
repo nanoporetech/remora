@@ -74,7 +74,7 @@ The Remora API can be applied to make modified base calls given a basecalled rea
   from remora.data_chunks import RemoraRead
   from remora.inference import call_read_mods
 
-  model, model_metadata = load_model("remora_train_results/model_best.onnx")
+  model, model_metadata = load_model("remora_train_results/model_best.pt")
   read = RemoraRead(dacs, shift, scale, seq_to_sig_map, str_seq=seq)
   mod_probs, _, pos = call_read_mods(
     read,

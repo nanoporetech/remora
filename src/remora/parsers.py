@@ -441,6 +441,7 @@ def register_model(parser):
     register_model_train(ssubparser)
     register_model_export(ssubparser)
     register_model_list_pretrained(ssubparser)
+    register_model_download(ssubparser)
 
 
 def register_model_train(parser):
@@ -641,8 +642,8 @@ def run_model_train(args):
 def register_model_export(parser):
     subparser = parser.add_parser(
         "export",
-        description="Export a model to ONNX/TorchScript format for inference.",
-        help="Export a model to ONNX or TorchScript format for inference.",
+        description="Export a model to TorchScript format for inference.",
+        help="Export a model to TorchScript format for inference.",
         formatter_class=SubcommandHelpFormatter,
     )
     subparser.add_argument(
@@ -651,7 +652,7 @@ def register_model_export(parser):
     )
     subparser.add_argument(
         "output_path",
-        help="Path to save the onnx model file, or the directory in which to "
+        help="Path to save the model file, or the directory in which to "
         "save the dorado tensor files if '--format dorado' has been specified.",
     )
     subparser.add_argument(
@@ -660,9 +661,9 @@ def register_model_export(parser):
     )
     subparser.add_argument(
         "--format",
-        default="onnx",
-        choices=["onnx", "dorado", "torchscript"],
-        help="Export format. Default: onnx",
+        default="torchscript",
+        choices=["dorado", "torchscript"],
+        help="Export format. Default: torchscript",
     )
 
     subparser.set_defaults(func=run_model_export)
@@ -672,7 +673,6 @@ def run_model_export(args):
     from remora.model_util import (
         continue_from_checkpoint,
         load_torchscript_model,
-        export_model_onnx,
         export_model_dorado,
         export_model_torchscript,
     )
@@ -686,10 +686,7 @@ def run_model_export(args):
     except NotImplementedError:
         model, ckpt = load_torchscript_model(args.checkpoint_path)
         LOGGER.info("Loaded a torchscript model")
-    if args.format == "onnx":
-        LOGGER.info("Exporting model to ONNX format")
-        export_model_onnx(ckpt, model, args.output_path)
-    elif args.format == "dorado":
+    if args.format == "dorado":
         LOGGER.info("Exporting model to dorado format")
         export_model_dorado(ckpt, model, args.output_path)
     elif args.format == "torchscript":
@@ -748,6 +745,62 @@ def run_list_pretrained(args):
     )
 
 
+def register_model_download(parser):
+    subparser = parser.add_parser(
+        "download",
+        description="Download pre-trained modified base models.",
+        help="Download pre-trained modified base models.",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    subparser.add_argument("--pore", help="specify pore type")
+    subparser.add_argument(
+        "--basecall-model-type",
+        help="specify the basecaller model type (e.g., fast, hac or sup)",
+    )
+    subparser.add_argument(
+        "--basecall-model-version", help="specify the version of the basecaller"
+    )
+    subparser.add_argument(
+        "--modified-bases",
+        nargs="+",
+        help="specify the modified base models you are interested in",
+    )
+    subparser.add_argument(
+        "--remora-model-type",
+        help="specify the motif or context that the remora model has been "
+        "trained on",
+    )
+    subparser.add_argument(
+        "--remora-model-version", help="specify the remora model version"
+    )
+    subparser.set_defaults(func=run_download)
+
+
+def run_download(args):
+    from remora.model_util import get_pretrained_models
+    from remora.download import ModelDownload
+    import pkg_resources
+
+    models, header = get_pretrained_models(
+        args.pore,
+        args.basecall_model_type,
+        args.basecall_model_version,
+        args.modified_bases,
+        args.remora_model_type,
+        args.remora_model_version,
+    )
+    path = pkg_resources.resource_filename(
+        "remora",
+        constants.MODEL_DATA_DIR_NAME,
+    )
+    out_path = Path(path)
+    out_path.mkdir(parents=True, exist_ok=True)
+    model_dl = ModelDownload(out_path)
+    for model_url in models["Remora_Model_URL"]:
+        if model_url != "":
+            model_dl.download(model_url)
+
+
 ################
 # remora infer #
 ################
@@ -796,7 +849,7 @@ def register_infer_from_pod5_and_bam(parser):
     mdl_grp = subparser.add_argument_group("Model Arguments")
     mdl_grp.add_argument(
         "--model",
-        help="Path to a pretrained model in onnx or torchscript format.",
+        help="Path to a pretrained model in torchscript format.",
     )
     mdl_grp.add_argument(
         "--pore",
@@ -904,7 +957,7 @@ def register_infer_duplex_from_pod5_and_bam(parser):
     mdl_grp = subparser.add_argument_group("Model Arguments")
     mdl_grp.add_argument(
         "--model",
-        help="Path to a pretrained model in onnx or torchscript format.",
+        help="Path to a pretrained model in torchscript format.",
     )
     mdl_grp.add_argument(
         "--pore",
