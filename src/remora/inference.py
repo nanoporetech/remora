@@ -56,9 +56,9 @@ def call_read_mods_core(
 
     Args:
         read (RemoraRead): Read to be called
-        model (ort.InferenceSession): Inference model
-            (see remora.model_util.load_onnx_model)
-        model_metadata (ort.InferenceSession): Inference model metadata
+        model: Compiled inference model
+            (see remora.model_util.load_torchscript_model)
+        model_metadata: Inference model metadata
         batch_size (int): Number of chunks to call per-batch
         focus_offset (int): Specific base to call within read
             Default: Use motif from model
@@ -69,9 +69,7 @@ def call_read_mods_core(
           2. Labels for each base (-1 if labels not provided)
           3. List of positions within the read
     """
-    is_torch_model = isinstance(model, RecursiveScriptModule)
-    if is_torch_model:
-        device = next(model.parameters()).device
+    device = next(model.parameters()).device
     read.refine_signal_mapping(model_metadata["sig_map_refiner"])
     motifs = [Motif(*mot) for mot in model_metadata["motifs"]]
     bb, ab = model_metadata["kmer_context_bases"]
@@ -115,20 +113,15 @@ def call_read_mods_core(
         enc_kmers = encoded_kmers.compute_encoded_kmer_batch(
             bb, ab, seqs, seq_maps, seq_lens
         )
-        if is_torch_model:
-            read_outputs.append(
-                model.forward(
-                    sigs=torch.from_numpy(sigs).to(device),
-                    seqs=torch.from_numpy(enc_kmers).to(device),
-                )
-                .detach()
-                .cpu()
-                .numpy()
+        read_outputs.append(
+            model.forward(
+                sigs=torch.from_numpy(sigs).to(device),
+                seqs=torch.from_numpy(enc_kmers).to(device),
             )
-        else:
-            read_outputs.append(
-                model.run([], {"sig": sigs, "seq": enc_kmers})[0]
-            )
+            .detach()
+            .cpu()
+            .numpy()
+        )
         read_labels.append(labels)
         read_poss.append(read_pos)
     read_outputs = np.concatenate(read_outputs, axis=0)
@@ -150,9 +143,9 @@ def call_read_mods(
 
     Args:
         read (RemoraRead): Read to be called
-        model (ort.InferenceSession): Inference model
-            (see remora.model_util.load_onnx_model)
-        model_metadata (ort.InferenceSession): Inference model metadata
+        model: Compiled inference model
+            (see remora.model_util.load_torchscript_model)
+        model_metadata: Inference model metadata
         batch_size (int): Number of chunks to call per-batch
         focus_offset (int): Specific base to call within read
             Default: Use motif from model

@@ -1,1 +1,1 @@
-include src/remora/trained_models/*/*/*/*/*/*/*.onnx
+include src/remora/trained_models/readme.rst

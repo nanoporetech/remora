@@ -1,131 +1,28 @@
 import os
 import sys
-import copy
 import json
 import toml
 import datetime
-import warnings
 import importlib
 import pkg_resources
+from pathlib import Path
 from os.path import isfile
 
-import onnx
 import torch
 import numpy as np
 import pandas as pd
 from torch import nn
-import onnxruntime as ort
 from torch.nn.utils.fusion import fuse_conv_bn_eval
 
 from remora import log, RemoraError, constants
 from remora.refine_signal_map import SigMapRefiner
+from remora.download import ModelDownload
 
 LOGGER = log.get_logger()
-MODEL_DATA_DIR_NAME = "trained_models"
-ONNX_NUM_THREADS = 1
-
 
 #############
 # Exporting #
 #############
-
-
-def export_model_onnx(ckpt, model, save_filename):
-    kmer_len = sum(ckpt["kmer_context_bases"]) + 1
-    sig_len = sum(ckpt["chunk_context"])
-    sig = torch.from_numpy(np.zeros((1, 1, sig_len), dtype=np.float32))
-    seq = torch.from_numpy(
-        np.zeros((1, kmer_len * 4, sig_len), dtype=np.float32)
-    )
-    model.eval()
-    if next(model.parameters()).is_cuda:
-        model_to_save = copy.deepcopy(model).cpu()
-    else:
-        model_to_save = model
-    with torch.no_grad(), warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        torch.onnx.export(
-            model_to_save,
-            (sig, seq),
-            save_filename,
-            export_params=True,
-            opset_version=10,
-            do_constant_folding=True,
-            input_names=["sig", "seq"],
-            output_names=["output"],
-            dynamic_axes={
-                "sig": {0: "batch_size"},
-                "seq": {0: "batch_size"},
-                "output": {0: "batch_size"},
-            },
-        )
-    onnx_model = onnx.load(save_filename)
-    meta = onnx_model.metadata_props.add()
-    meta.key = "creation_date"
-    meta.value = datetime.datetime.now().strftime("%m/%d/%Y, %H:%M:%S")
-    # add simple metadata
-    for ckpt_key in (
-        "base_pred",
-        "mod_bases",
-        "refine_kmer_center_idx",
-        "refine_do_rough_rescale",
-        "refine_scale_iters",
-        "refine_algo",
-        "refine_half_bandwidth",
-        "base_start_justify",
-        "offset",
-    ):
-        meta = onnx_model.metadata_props.add()
-        meta.key = ckpt_key
-        meta.value = str(ckpt[ckpt_key])
-
-    if ckpt["mod_bases"] is not None:
-        for mod_idx in range(len(ckpt["mod_bases"])):
-            meta = onnx_model.metadata_props.add()
-            meta.key = f"mod_long_names_{mod_idx}"
-            meta.value = str(ckpt["mod_long_names"][mod_idx])
-    for key in ("chunk_context", "kmer_context_bases"):
-        for idx in range(2):
-            meta = onnx_model.metadata_props.add()
-            meta.key = f"{key}_{idx}"
-            meta.value = str(ckpt[key][idx])
-
-    meta = onnx_model.metadata_props.add()
-    meta.key = "num_motifs"
-    meta.value = str(ckpt["num_motifs"])
-    for idx, (motif, motif_offset) in enumerate(ckpt["motifs"]):
-        m_key = f"motif_{idx}"
-        mo_key = f"motif_offset_{idx}"
-        meta = onnx_model.metadata_props.add()
-        meta.key = m_key
-        meta.value = str(motif)
-        meta = onnx_model.metadata_props.add()
-        meta.key = mo_key
-        meta.value = str(motif_offset)
-
-    meta = onnx_model.metadata_props.add()
-    meta.key = "num_motifs"
-    meta.value = str(len(ckpt["motifs"]))
-
-    # store refine arrays as bytes
-    meta = onnx_model.metadata_props.add()
-    meta.key = "refine_kmer_levels"
-    meta.value = (
-        ckpt["refine_kmer_levels"].astype(np.float32).tobytes().decode("cp437")
-    )
-    meta = onnx_model.metadata_props.add()
-    meta.key = "refine_sd_arr"
-    meta.value = (
-        ckpt["refine_sd_arr"].astype(np.float32).tobytes().decode("cp437")
-    )
-
-    onnx_model.doc_string = "Nanopore Remora model"
-    try:
-        onnx_model.model_version = ckpt["model_version"]
-    except KeyError:
-        LOGGER.warning("Model version not found in checkpoint. Setting to 0.")
-        onnx_model.model_version = 0
-    onnx.save(onnx_model, save_filename)
 
 
 def export_model_torchscript(ckpt, model, save_filename):
@@ -469,60 +366,6 @@ def repr_model_metadata(metadata):
     )
 
 
-def load_onnx_model(model_filename, device=None, quiet=False):
-    """Load onnx model. If device is specified load onto specified device.
-
-    Args:
-        model_filename (str): Model path
-        device (int): GPU device ID
-        quiet (bool): Don't log full model loading info
-
-    Returns:
-        2-tuple containing:
-          1. ort.InferenceSession object for calling mods
-          2. Model metadata dictionary with information concerning data prep
-    """
-    providers = ["CPUExecutionProvider"]
-    provider_options = None
-    if device is not None:
-        if quiet:
-            LOGGER.debug("Loading Remora model onto GPU")
-        else:
-            LOGGER.info("Loading Remora model onto GPU")
-        if ort.get_device() != "GPU":
-            raise RemoraError(
-                "onnxruntime not compatible with GPU execution. Install "
-                "compatible package via `pip install onnxruntime-gpu`"
-            )
-        providers = ["CUDAExecutionProvider"]
-        provider_options = [{"device_id": str(device)}]
-    # set severity to error so CPU fallback messages are masked
-    ort.set_default_logger_severity(3)
-    LOGGER.debug(f"Using {ONNX_NUM_THREADS} thread(s) for ONNX")
-    so = ort.SessionOptions()
-    so.inter_op_num_threads = ONNX_NUM_THREADS
-    so.intra_op_num_threads = ONNX_NUM_THREADS
-    model_sess = ort.InferenceSession(
-        model_filename,
-        providers=providers,
-        provider_options=provider_options,
-        sess_options=so,
-    )
-    LOGGER.debug(f"Remora model ONNX providers: {model_sess.get_providers()}")
-    if device is not None and model_sess.get_providers()[0].startswith("CPU"):
-        raise RemoraError(
-            "Model not loaded on GPU. Check install settings. See "
-            "requirements here https://onnxruntime.ai/docs"
-            "/execution-providers/CUDA-ExecutionProvider.html#requirements"
-        )
-    model_metadata = dict(model_sess.get_modelmeta().custom_metadata_map)
-    add_derived_metadata(model_metadata)
-    if not quiet:
-        md_str = repr_model_metadata(model_metadata)
-        LOGGER.debug(f"Loaded Remora model attrs\n{md_str}\n")
-    return model_sess, model_metadata
-
-
 def load_torchscript_model(model_filename, device=None, quiet=False):
     """Load torchscript model. If device is specified load onto specified
     device.
@@ -576,11 +419,10 @@ def load_model(
                 f"Remora model file ({model_filename}) not found."
             )
         try:
-            LOGGER.debug("using torchscript model")
+            LOGGER.debug("Using torchscript model")
             return load_torchscript_model(model_filename, device, quiet=quiet)
         except (AttributeError, RuntimeError):
-            LOGGER.warning("Failed loading torchscript model. Trying onnx.")
-            return load_onnx_model(model_filename, device, quiet=quiet)
+            raise RemoraError("Failed loading torchscript model.")
 
     if pore is None:
         raise RemoraError("Must specify a pore.")
@@ -593,24 +435,56 @@ def load_model(
             f"No trained Remora models for {pore}. Options: {pores}"
         )
 
+    if modified_bases is None:
+        raise RemoraError("Must specify a modified base.")
+    try:
+        modified_bases = "_".join(sorted(x.lower() for x in modified_bases))
+        submodels = submodels[modified_bases]
+    except (AttributeError, KeyError):
+        raise RemoraError(
+            f"Remora model for modified bases {modified_bases} not found "
+            f"for {pore}"
+        )
+
+    if remora_model_type is None:
+        remora_model_type = next(iter(submodels.items()))[0]
+        LOGGER.info(
+            "Modified bases model type not supplied. Using default "
+            f"{remora_model_type}."
+        )
+    try:
+        submodels = submodels[remora_model_type]
+    except (AttributeError, KeyError):
+        LOGGER.warning(
+            f"Remora model type {remora_model_type} not found "
+            f"for {pore} {modified_bases}. Using default Remora model."
+        )
+        remora_model_type = next(iter(submodels.items()))[0]
+        submodels = submodels[remora_model_type]
+
     if basecall_model_type is None:
-        raise RemoraError("Must specify a basecall model type.")
+        basecall_model_type = next(iter(submodels.items()))[0]
+        LOGGER.info(
+            "Basecaller model type not supplied. Using default "
+            f"{basecall_model_type}."
+        )
     try:
         basecall_model_type = basecall_model_type.lower()
         submodels = submodels[basecall_model_type]
     except (AttributeError, KeyError):
-        model_types = ", ".join(submodels.keys())
-        raise RemoraError(
+        LOGGER.warning(
             f"No trained Remora models for {basecall_model_type} "
-            f"(with {pore}). Options: {model_types}"
+            f"(with {pore}). Using default Remora model."
         )
+        basecall_model_type = next(iter(submodels.items()))[0]
+        submodels = submodels[basecall_model_type]
 
     if basecall_model_version is None:
+        basecall_model_version = next(iter(submodels.items()))[0]
         LOGGER.info(
             "Basecall model version not supplied. Using default Remora model "
             f"for {pore}_{basecall_model_type}."
         )
-        basecall_model_version = constants.DEFAULT_BASECALL_MODEL_VERSION
     try:
         submodels = submodels[basecall_model_version]
     except KeyError:
@@ -619,74 +493,59 @@ def load_model(
             f"({basecall_model_version}) not found. Using default Remora "
             f"model for {pore}_{basecall_model_type}."
         )
-        basecall_model_version = constants.DEFAULT_BASECALL_MODEL_VERSION
+        basecall_model_version = next(iter(submodels.items()))[0]
         submodels = submodels[basecall_model_version]
-
-    if modified_bases is None:
-        LOGGER.info(
-            "Modified bases not supplied. Using default "
-            f"{constants.DEFAULT_MOD_BASE}."
-        )
-        modified_bases = constants.DEFAULT_MOD_BASE
-    try:
-        modified_bases = "_".join(sorted(x.lower() for x in modified_bases))
-        submodels = submodels[modified_bases]
-    except (AttributeError, KeyError):
-        LOGGER.error(
-            f"Remora model for modified bases {modified_bases} not found "
-            f"for {pore}_{basecall_model_type}@{basecall_model_version}."
-        )
-        sys.exit(1)
-
-    if remora_model_type is None:
-        LOGGER.info(
-            "Modified bases model type not supplied. Using default "
-            f"{constants.DEFAULT_MODEL_TYPE}."
-        )
-        remora_model_type = constants.DEFAULT_MODEL_TYPE
-    try:
-        submodels = submodels[remora_model_type]
-    except (AttributeError, KeyError):
-        LOGGER.error(
-            "Remora model type {remora_model_type} not found "
-            f"for {pore}_{basecall_model_type}@{basecall_model_version} "
-            f"{modified_bases}."
-        )
-        sys.exit(1)
 
     if remora_model_version is None:
         LOGGER.info("Remora model version not specified. Using latest.")
-        remora_model_version = submodels[-1]
+        remora_model_version = next(iter(submodels.items()))[0]
     if remora_model_version not in submodels:
         LOGGER.warning(
             f"Remora model version {remora_model_version} not found. "
             "Using latest."
         )
-        remora_model_version = submodels[-1]
-    remora_model_version = f"v{remora_model_version}"
+        remora_model_version = next(iter(submodels.items()))[0]
 
+    try:
+        url = submodels[remora_model_version]
+    except (AttributeError, KeyError):
+        raise RemoraError(
+            "Remora model url not found "
+            f"for {pore}_{basecall_model_type}@{basecall_model_version} "
+            f"{modified_bases}_{remora_model_type}_v{remora_model_version}."
+        )
+
+    remora_model_version = f"v{remora_model_version}"
     path = pkg_resources.resource_filename(
         "remora",
-        os.path.join(
-            MODEL_DATA_DIR_NAME,
+        constants.MODEL_DATA_DIR_NAME,
+    )
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    model_name = "_".join(
+        [
             pore,
             basecall_model_type,
             basecall_model_version,
             modified_bases,
             remora_model_type,
             remora_model_version,
-            constants.MODBASE_MODEL_NAME,
-        ),
+        ]
     )
-    if not os.path.exists(path):
-        raise RemoraError(
-            f"No pre-trained Remora model for this configuration {path}."
+    model_name = f"{model_name}.pt"
+    full_path = os.path.join(path, model_name)
+    if not os.path.exists(full_path):
+        LOGGER.info(
+            f"No pre-trained Remora model found for "
+            f"this configuration {model_name} at {path}.\n"
+            f"Attempting to download {model_name}"
         )
+        md = ModelDownload(path)
+        md.download(url)
     try:
-        return load_torchscript_model(path, device)
+        return load_torchscript_model(full_path, device)
     except (AttributeError, RuntimeError):
-        LOGGER.warning("Failed loading torchscript model. Trying onnx.")
-        return load_onnx_model(path, device, quiet=quiet)
+        raise RemoraError("Failed loading torchscript model.")
 
 
 def get_pretrained_models(
@@ -727,15 +586,16 @@ def get_pretrained_models(
         "Modified_Bases",
         "Remora_Model_Type",
         "Remora_Model_Version",
+        "Remora_Model_URL",
     ]
 
     models = []
-    for pore_type, bc_types in constants.MODEL_DICT.items():
-        for bc_type, bc_vers in bc_types.items():
-            for bc_ver, mod_bases in bc_vers.items():
-                for mod_base, remora_types in mod_bases.items():
-                    for remora_type, remora_vers in remora_types.items():
-                        for remora_ver in remora_vers:
+    for pore_type, mod_bases in constants.MODEL_DICT.items():
+        for mod_base, remora_types in mod_bases.items():
+            for remora_type, bc_types in remora_types.items():
+                for bc_type, bc_vers in bc_types.items():
+                    for bc_ver, remora_vers in bc_vers.items():
+                        for remora_ver, remora_url in remora_vers.items():
                             models.append(
                                 (
                                     pore_type,
@@ -744,6 +604,7 @@ def get_pretrained_models(
                                     mod_base,
                                     remora_type,
                                     remora_ver,
+                                    remora_url,
                                 )
                             )
     models = pd.DataFrame(models)

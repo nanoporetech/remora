@@ -21,119 +21,73 @@ ADAMW_OPT = "adamw"
 OPTIMIZERS = (ADAMW_OPT, SGD_OPT, ADAM_OPT)
 
 FINAL_MODEL_FILENAME = "model_final.checkpoint"
-FINAL_ONNX_MODEL_FILENAME = "model_final.onnx"
 FINAL_TORCHSCRIPT_MODEL_FILENAME = "model_final.pt"
 SAVE_DATASET_FILENAME = "remora_train_data.npz"
 
 BEST_MODEL_FILENAME = "model_best.checkpoint"
-BEST_ONNX_MODEL_FILENAME = "model_best.onnx"
 BEST_TORCHSCRIPT_MODEL_FILENAME = "model_best.pt"
 
-# should be an int to store in onnx
 MODEL_VERSION = 3
 
 DEFAULT_REFINE_SCALE_ITERS = -1
 DEFAULT_REFINE_HBW = 5
 DEFAULT_REFINE_BAND_MIN_STEP = 2
 
-DEFAULT_BASECALL_MODEL_VERSION = "0.0.0"
-DEFAULT_MOD_BASE = ["5mc"]
-DEFAULT_MODEL_TYPE = "CG"
-MODBASE_MODEL_NAME = "modbase_model.onnx"
+MODBASE_MODEL_NAME = "modbase_model.pt"
+MODEL_DATA_DIR_NAME = "trained_models"
+
+"""
+The default model is the first key at every level after the pore and mod.
+E.g. for "dna_r10.4.1_e8.2_400bps" and "5mc" the default model is
+CG_sup_v3.5.1_2.
+"""
 MODEL_DICT = {
-    "dna_r9.4.1_e8": {
-        "fast": {
-            DEFAULT_BASECALL_MODEL_VERSION: {
-                "5mc": {"CG": [0]},
-                "5hmc_5mc": {"CG": [0]},
+    "dna_r9.4.1_e8_400bps": {
+        "5mc": {
+            "CG": {
+                "sup": {"v3.5.1": {2: ""}},
+                "hac": {"v3.5.1": {2: ""}},
+                "fast": {"v3.5.1": {2: ""}},
             }
         },
-        "hac": {
-            DEFAULT_BASECALL_MODEL_VERSION: {
-                "5mc": {"CG": [0]},
-                "5hmc_5mc": {"CG": [0]},
-            }
-        },
-        "sup": {
-            DEFAULT_BASECALL_MODEL_VERSION: {
-                "5mc": {"CG": [0]},
-                "5hmc_5mc": {"CG": [0]},
+        "5hmc_5mc": {
+            "CG": {
+                "sup": {"v3.5.1": {2: ""}},
+                "hac": {"v3.5.1": {2: ""}},
+                "fast": {"v3.5.1": {2: ""}},
             }
         },
     },
-    "dna_r9.4.1_e8.1": {
-        "fast": {
-            DEFAULT_BASECALL_MODEL_VERSION: {
-                "5mc": {"CG": [0]},
+    "dna_r10.4.1_e8.2_400bps": {
+        "5mc": {
+            "CG": {
+                "sup": {
+                    "v3.5.1": {
+                        2: "6zo86p9z4me6hl4di12cimbqjd9n7p25",
+                    }
+                },
+                "hac": {
+                    "v3.5.1": {
+                        2: "aub3do2tzhgzrhu2o100lg80d8yv9t91",
+                    }
+                },
+                "fast": {
+                    "v3.5.1": {
+                        2: "e8zczcd15rhhs6eppuwmkehwubo848nu",
+                    }
+                },
             }
         },
-        "hac": {
-            DEFAULT_BASECALL_MODEL_VERSION: {
-                "5mc": {"CG": [0]},
+        "5hmc_5mc": {
+            "CG": {
+                "sup": {"v3.5.1": {2: ""}},
+                "hac": {"v3.5.1": {2: ""}},
+                "fast": {"v3.5.1": {2: ""}},
             }
-        },
-        "sup": {
-            DEFAULT_BASECALL_MODEL_VERSION: {
-                "5mc": {"CG": [0]},
-            }
-        },
-    },
-    "dna_r10.4_e8.1": {
-        "fast": {
-            DEFAULT_BASECALL_MODEL_VERSION: {
-                "5mc": {"CG": [0, 1]},
-                "5hmc_5mc": {"CG": [0]},
-            },
-            "v3.3": {
-                "5mc": {"CG": [0, 1]},
-            },
-        },
-        "hac": {
-            DEFAULT_BASECALL_MODEL_VERSION: {
-                "5mc": {"CG": [0, 1]},
-                "5hmc_5mc": {"CG": [0]},
-            },
-            "v3.3": {
-                "5mc": {"CG": [0, 1]},
-            },
-        },
-        "sup": {
-            DEFAULT_BASECALL_MODEL_VERSION: {
-                "5mc": {"CG": [0, 1]},
-                "5hmc_5mc": {"CG": [0]},
-            },
-            "v3.4": {
-                "5mc": {"CG": [0, 1]},
-            },
-        },
-    },
-    "dna_r10.4.1_e8.2": {
-        "fast": {
-            DEFAULT_BASECALL_MODEL_VERSION: {
-                "5mc": {"CG": [0, 1]},
-            },
-            "v3.5.1": {
-                "5mc": {"CG": [0, 1]},
-            },
-        },
-        "hac": {
-            DEFAULT_BASECALL_MODEL_VERSION: {
-                "5mc": {"CG": [0, 1]},
-            },
-            "v3.5.1": {
-                "5mc": {"CG": [0, 1]},
-            },
-        },
-        "sup": {
-            DEFAULT_BASECALL_MODEL_VERSION: {
-                "5mc": {"CG": [0, 1]},
-            },
-            "v3.5.1": {
-                "5mc": {"CG": [0, 1]},
-            },
         },
     },
 }
+
 
 DEFAULT_REFINE_SHORT_DWELL_PARAMS = (15, 5, 0.05)
 REFINE_ALGO_VIT_NAME = "Viterbi"

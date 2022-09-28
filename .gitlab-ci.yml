@@ -34,4 +34,3 @@ unit_test:py38:
     script:
         - pytest -m unit --durations 10
 
-## onnxruntime does not support python3.9 and 3.10 on internal gitlab runners
