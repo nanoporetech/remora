@@ -534,74 +534,109 @@ def prep_extract_alignments(bam_idx, bam_fp, req_tags=REQUIRED_TAGS):
     return [bam_idx, bam_fh], {"req_tags": req_tags}
 
 
+def parse_move_tag(mv_tag, sig_len, seq_len=None, check=True):
+    stride = mv_tag[0]
+    mv_table = np.array(mv_tag[1:])
+    query_to_signal = np.nonzero(mv_table)[0] * stride
+    query_to_signal = np.concatenate([query_to_signal, [sig_len]])
+    if check and seq_len is not None and query_to_signal.size - 1 != seq_len:
+        LOGGER.debug(
+            f"Move table (num moves: {query_to_signal.size - 1}) discordant "
+            f"with basecalls (seq len: {seq_len})"
+        )
+        raise RemoraError("Move table discordant with basecalls")
+    if check and mv_table.size != sig_len // stride:
+        LOGGER.debug(
+            f"Move table (len: {mv_table.size}) discordant with "
+            f"signal (sig len // stride: {sig_len // stride})"
+        )
+        raise RemoraError("Move table discordant with signal")
+    return query_to_signal, mv_table, stride
+
+
+def extract_align_read(
+    io_read, bam_read, req_tags=REQUIRED_TAGS, parse_ref_align=True
+):
+    tags = dict(bam_read.tags)
+    if len(req_tags.intersection(tags)) != len(req_tags):
+        return None
+    try:
+        io_read.num_trimmed = tags["ts"]
+        io_read.signal = io_read.signal[io_read.num_trimmed :]
+    except KeyError:
+        io_read.num_trimmed = 0
+
+    try:
+        query_to_signal, mv_table, stride = parse_move_tag(
+            tags["mv"],
+            sig_len=io_read.signal.size,
+            seq_len=len(bam_read.query_sequence),
+        )
+    except KeyError:
+        raise RemoraError("Missing move table tag")
+
+    try:
+        io_read.shift_pa_to_norm = tags["sm"]
+        io_read.scale_pa_to_norm = tags["sd"]
+    except KeyError:
+        io_read.set_pa_to_norm_scaling()
+
+    io_read.shift_dacs_to_norm = (
+        io_read.shift_pa_to_norm / io_read.scale_dacs_to_pa
+    ) - io_read.shift_dacs_to_pa
+    io_read.scale_dacs_to_norm = (
+        io_read.scale_pa_to_norm / io_read.scale_dacs_to_pa
+    )
+
+    align_read = copy(io_read)
+    align_read.seq = bam_read.query_sequence
+    align_read.stride = stride
+    align_read.mv_table = mv_table
+    align_read.query_to_signal = query_to_signal
+    align_read.full_align = bam_read.to_dict()
+    if not parse_ref_align:
+        return align_read
+
+    try:
+        ref_seq = bam_read.get_reference_sequence().upper()
+    except ValueError:
+        ref_seq = None
+    cigar = bam_read.cigartuples
+    if bam_read.is_reverse:
+        align_read.seq = revcomp(align_read.seq)
+        ref_seq = revcomp(ref_seq)
+        cigar = cigar[::-1]
+    ref_pos = RefPos(
+        ctg=bam_read.reference_name,
+        strand="-" if bam_read.is_reverse else "+",
+        start=bam_read.reference_start,
+    )
+    align_read.ref_seq = ref_seq
+    align_read.ref_pos = ref_pos
+    align_read.cigar = cigar
+    return align_read
+
+
 def extract_alignments(read_err, bam_idx, bam_fh, req_tags=REQUIRED_TAGS):
-    read, err = read_err
-    if read is None:
+    io_read, err = read_err
+    if io_read is None:
         return [read_err]
-    if read.read_id not in bam_idx:
+    if io_read.read_id not in bam_idx:
         return [tuple((None, "Read id not found in BAM file"))]
     read_alignments = []
-    for read_bam_ptr in bam_idx[read.read_id]:
+    for read_bam_ptr in bam_idx[io_read.read_id]:
         # jump to bam read pointer
         bam_fh.seek(read_bam_ptr)
         bam_read = next(bam_fh)
-        tags = dict(bam_read.tags)
-        if len(req_tags.intersection(tags)) != len(req_tags):
+        try:
+            align_read = extract_align_read(
+                io_read, bam_read, req_tags=req_tags
+            )
+            if align_read is None:
+                continue
+        except RemoraError as e:
+            read_alignments.append(tuple((None, str(e))))
             continue
-        mv_tag = tags["mv"]
-        stride = mv_tag[0]
-        mv_table = np.array(mv_tag[1:])
-        try:
-            read.num_trimmed = tags["ts"]
-            read.signal = read.signal[read.num_trimmed :]
-        except KeyError:
-            read.num_trimmed = 0
-        query_to_signal = np.nonzero(mv_table)[0] * stride
-        query_to_signal = np.concatenate([query_to_signal, [read.signal.size]])
-        if mv_table.size != read.signal.size // stride:
-            read_alignments.append(
-                tuple((None, "Move table discordant with signal"))
-            )
-        if query_to_signal.size - 1 != len(bam_read.query_sequence):
-            read_alignments.append(
-                tuple((None, "Move table discordant with basecalls"))
-            )
-        try:
-            read.shift_pa_to_norm = tags["sm"]
-            read.scale_pa_to_norm = tags["sd"]
-        except KeyError:
-            read.set_pa_to_norm_scaling()
-
-        read.shift_dacs_to_norm = (
-            read.shift_pa_to_norm / read.scale_dacs_to_pa
-        ) - read.shift_dacs_to_pa
-        read.scale_dacs_to_norm = read.scale_pa_to_norm / read.scale_dacs_to_pa
-
-        seq = bam_read.query_sequence
-        try:
-            ref_seq = bam_read.get_reference_sequence().upper()
-        except ValueError:
-            ref_seq = None
-        cigar = bam_read.cigartuples
-        if bam_read.is_reverse:
-            seq = revcomp(seq)
-            ref_seq = revcomp(ref_seq)
-            cigar = cigar[::-1]
-        ref_pos = RefPos(
-            ctg=bam_read.reference_name,
-            strand="-" if bam_read.is_reverse else "+",
-            start=bam_read.reference_start,
-        )
-
-        align_read = copy(read)
-        align_read.seq = seq
-        align_read.stride = stride
-        align_read.mv_table = mv_table
-        align_read.query_to_signal = query_to_signal
-        align_read.ref_seq = ref_seq
-        align_read.ref_pos = ref_pos
-        align_read.cigar = cigar
-        align_read.full_align = bam_read.to_dict()
         read_alignments.append(tuple((align_read, None)))
     return read_alignments
 

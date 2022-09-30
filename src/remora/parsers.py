@@ -953,7 +953,6 @@ def register_infer_duplex_from_pod5_and_bam(parser):
         "--log-filename",
         help="Log filename. Default: Don't output log file.",
     )
-
     mdl_grp = subparser.add_argument_group("Model Arguments")
     mdl_grp.add_argument(
         "--model",
@@ -1150,6 +1149,10 @@ def register_validate_from_modbams(parser):
         action="store_true",
         help="Allow classes to be unbalanced for metric computation.",
     )
+    subparser.add_argument(
+        "--log-filename",
+        help="Log filename. Default: Don't output log file.",
+    )
 
     subparser.set_defaults(func=run_validate_from_modbams)
 
@@ -1157,6 +1160,8 @@ def register_validate_from_modbams(parser):
 def run_validate_from_modbams(args):
     from remora.validate import validate_from_modbams
 
+    if args.log_filename is not None:
+        log.init_logger(args.log_filename)
     validate_from_modbams(
         bams=args.bams,
         mod_bams=args.mod_bams,
