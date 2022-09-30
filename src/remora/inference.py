@@ -542,12 +542,12 @@ def infer_duplex(
     )
 
     def add_mod_mappings_to_alignment(
-        duplex_read_result: Tuple[DuplexRead, Exception],
+        duplex_read_result: Tuple[DuplexRead, str],
         caller: DuplexReadModCaller,
     ):
-        duplex_read, exc = duplex_read_result
-        if exc is not None:
-            return None, exc
+        duplex_read, err = duplex_read_result
+        if err is not None:
+            return None, err
         mod_tags = caller.call_duplex_read_mods(duplex_read)
         mod_tags = list(mod_tags)
         assert len(mod_tags) == 2
@@ -587,9 +587,7 @@ def infer_duplex(
                         mod_read_mapping, out_bam.header
                     )
                 )
-
-            pysam.set_verbosity(pysam_save)
-
+    pysam.set_verbosity(pysam_save)
     duplex_aln.close()
 
     if len(errs) > 0:

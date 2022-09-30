@@ -12,9 +12,10 @@ from sklearn.metrics import confusion_matrix
 
 from remora.io import parse_bed
 from remora.util import softmax_axis1
-from remora import RemoraError, constants, encoded_kmers
+from remora import RemoraError, constants, encoded_kmers, log
 
 
+LOGGER = log.get_logger()
 VAL_METRICS = namedtuple(
     "VAL_METRICS",
     (
@@ -373,7 +374,11 @@ def validate_from_modbams(
         mod_probs = parse_mods(mod_bams, regs, mod_base, True, full_fp)
 
     if can_probs.size == 0:
-        raise RemoraError("No valid modification calls from canonical set.")
+        raise RemoraError(
+            "No valid modification calls from canonical set. May need to "
+            "revert to originial MM-tag style. Try "
+            "`s/MM:Z:C+m?,/MM:Z:C+m,/g`"
+        )
     if mod_probs.size == 0:
         raise RemoraError("No valid modification calls from modified set.")
     if not allow_unbalanced:
@@ -402,10 +407,11 @@ def validate_from_modbams(
         filt_acc=filt_acc,
         filt_conf_mat=filt_conf_mat,
     )
-    print(ValidationLogger.HEADER + "\n")
-    print(
+    val_output = (
+        f"\n{ValidationLogger.HEADER}\n"
         f"{name}\t0\t0\t"
         f"{ms.acc:.6f}\t{mat_to_str(ms.conf_mat)}\t"
         f"NAN\t{ms.num_calls}\t{ms.filt_frac:.4f}\t"
         f"{ms.filt_acc:.6f}\t{mat_to_str(ms.filt_conf_mat)}\n"
     )
+    LOGGER.info(val_output)

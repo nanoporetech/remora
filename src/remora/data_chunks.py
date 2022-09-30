@@ -1071,8 +1071,9 @@ class RemoraDataset:
     def add_fake_base(self, new_mod_long_names, new_mod_bases):
         if not set(self.mod_long_names).issubset(new_mod_long_names):
             raise RemoraError(
-                "There are no mods in common between the model being traind "
-                "and the external validation set."
+                "There are no mods in common between the model being trained "
+                f"({new_mod_long_names}) and the external validation set "
+                f"({self.mod_long_names})."
             )
         for mod in self.mod_long_names:
             new_index = new_mod_long_names.index(mod) + 1
