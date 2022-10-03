@@ -131,7 +131,7 @@ class Read:
 
     def set_pa_to_norm_scaling(self, factor=PA_TO_NORM_SCALING_FACTOR):
         assert self.scale_dacs_to_pa is not None
-        assert self.shift_dacs_to_norm is not None
+        assert self.shift_dacs_to_pa is not None
         pa_signal = Read.convert_signal_to_pA(
             self.signal,
             scale_dacs_to_pa=self.scale_dacs_to_pa,
