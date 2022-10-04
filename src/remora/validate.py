@@ -327,7 +327,7 @@ def parse_mod_bam(bam_path, gt_sites, alphabet, full_fh):
                     ninvalid += 1
                     if not been_warned_mod:
                         LOGGER.warning(
-                            f"BAM mod ({mod_name}) not found in groung truth"
+                            f"BAM mod ({mod_name}) not found in ground truth"
                         )
                         been_warned_mod = True
                     continue
@@ -400,7 +400,7 @@ def validate_modbams(
         atexit.register(full_fh.close)
         full_fh.write(
             "query_name\tquery_pos\tref_name\tref_pos\tstrand\t"
-            "mod_probs\tgt_mod_idx\n"
+            "gt_mod_idx\tmod_probs\n"
         )
     bams, beds = zip(*bams_and_beds)
     all_gt_sites = []
