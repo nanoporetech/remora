@@ -38,7 +38,7 @@ Remora models are trained to perform binary or categorical prediction of modifie
 Models may also be trained to perform canonical base prediction, but this feature may be removed at a later time.
 The rest of the documentation will focus on the modified base detection task.
 
-The Remora training/prediction input unit (refered to as a chunk) consists of:
+The Remora training/prediction input unit (referred to as a chunk) consists of:
 
 1. Section of normalized signal
 2. Canonical bases attributed to the section of signal
@@ -51,22 +51,24 @@ By default, this position is the center of the "focus base" being interrogated b
 Pre-trained Models
 ------------------
 
-Pre-trained models are included in the Remora repository.
-To see the selection of models included in the current installation run ``remora model list_pretrained``.
+See the selection of current released models with ``remora model list_pretrained``.
+Pre-trained models are stored remotely and can be downloaded using the ``remora model download`` command or will be downloaded on demand when needed.
 
-Models my be run from `Bonito <https://github.com/nanoporetech/bonito>`_.
+Models may be run from `Bonito <https://github.com/nanoporetech/bonito>`_.
 See Bonito documentation to apply Remora models.
 
 More advanced research models may be supplied via `Rerio <https://github.com/nanoporetech/rerio>`_.
+Note that older ONNX format models require Remora version < 2.0.
 
 Python API
 ----------
 
 The Remora API can be applied to make modified base calls given a basecalled read via a ``RemoraRead`` object.
-``dacs`` (Data acquisition values) should be an int16 numpy array.
-``shift`` and ``scale`` are float values to convert dacs to mean=0 SD=1 scaling (or similar) for input to the Remora neural network.
-``str_seq`` is a string derived from ``sig`` (can be either basecalls or other downstream derived sequence; e.g. mapped reference positions).
-``seq_to_sig_map`` should be an int32 numpy array of length ``len(seq) + 1`` and elements should be indices within ``sig`` array assigned to each base in ``seq``.
+
+* ``dacs`` (Data acquisition values) should be an int16 numpy array.
+* ``shift`` and ``scale`` are float values to convert dacs to mean=0 SD=1 scaling (or similar) for input to the Remora neural network.
+* ``str_seq`` is a string derived from ``sig`` (can be either basecalls or other downstream derived sequence; e.g. mapped reference positions).
+* ``seq_to_sig_map`` should be an int32 numpy array of length ``len(seq) + 1`` and elements should be indices within ``sig`` array assigned to each base in ``seq``.
 
 .. code-block:: python
 
@@ -91,7 +93,7 @@ Data Preparation
 ----------------
 
 Remora data preparation begins from a POD5 file (containing signal data) and a BAM file containing basecalls from the POD5 file.
-Note that the BAM file much contain the move table (default in Bonito and ``--moves_out`` in Guppy).
+Note that the BAM file must contain the move table (default in Bonito and ``--moves_out`` in Guppy).
 
 The following example generates training data from canonical (PCR) and modified (M.SssI treatment) samples in the same fashion as the releasd 5mC CG-context models.
 
@@ -132,9 +134,6 @@ For example a model can be trained with the following command.
     chunks.npz \
     --model remora/models/ConvLSTM_w_ref.py \
     --device 0 \
-    --scheduler StepLR \
-    --lr-sched-kwargs step_size 10 int \
-    --lr-sched-kwargs gamma 0.5 float \
     --output-path train_results
 
 This command will produce a "best" model in torchscript format for use in Bonito, or ``remora infer`` commands.
@@ -162,15 +161,15 @@ For testing purposes inference within Remora is provided.
     --device 0
 
 Finally, ``Remora`` provides tools to validate these results.
+Ground truth BED files references positions where each read should be called as the modified or canonical base listed in the BED name field.
 
 .. code-block:: bash
 
   remora \
     validate from_modbams \
-    --bams can_infer.bam \
-    --mod-bams mod_infer.bam \
-    --full-output-filename validation_results.txt \
-    --mod-base m
+    --bam-and-bed can_infer.bam can_ground_truth.bed \
+    --bam-and-bed mod_infer.bam mod_ground_truth.bed \
+    --full-output-filename validation_results.txt
 
 Terms and Licence
 -----------------
