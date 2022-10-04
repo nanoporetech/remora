@@ -27,9 +27,9 @@ _SIG_PROF_FN = os.getenv("REMORA_EXTRACT_SIGNAL_PROFILE_FILE")
 _ALIGN_PROF_FN = os.getenv("REMORA_EXTRACT_ALIGN_PROFILE_FILE")
 
 
-def parse_bed(bed_fp):
+def parse_bed(bed_path):
     regs = defaultdict(set)
-    with open(bed_fp) as regs_fh:
+    with open(bed_path) as regs_fh:
         for line in regs_fh:
             fields = line.split()
             ctg, st, en = fields[:3]
@@ -39,6 +39,24 @@ def parse_bed(bed_fp):
             else:
                 regs[(ctg, fields[5])].update(range(int(st), int(en)))
     return regs
+
+
+def parse_mods_bed(bed_path):
+    regs = defaultdict(dict)
+    all_mods = set()
+    with open(bed_path) as regs_fh:
+        for line in regs_fh:
+            fields = line.split()
+            ctg, st, en, mod = fields[:4]
+            all_mods.update(mod)
+            if len(fields) < 6 or fields[5] not in "+-":
+                for strand in "+-":
+                    for pos in range(int(st), int(en)):
+                        regs[(ctg, strand)][pos] = mod
+            else:
+                for pos in range(int(st), int(en)):
+                    regs[(ctg, fields[5])][pos] = mod
+    return regs, all_mods
 
 
 def read_is_primary(read):

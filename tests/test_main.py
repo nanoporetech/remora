@@ -185,27 +185,38 @@ def test_mod_validate_from_dataset(tmpdir_factory, chunks, fw_mod_model_dir):
     )
 
 
-@pytest.mark.skip(
-    reason="pysam MM bug https://github.com/pysam-developers/pysam/issues/1123"
-)
 @pytest.mark.unit
-def test_mod_validate_from_modbams(tmpdir_factory, can_modbam, mod_modbam):
+def test_mod_validate_from_modbams(
+    tmpdir_factory,
+    can_modbam_old_tags,
+    can_gt_bed,
+    mod_modbam_old_tags,
+    mod_gt_bed,
+):
     out_dir = tmpdir_factory.mktemp("remora_tests")
     print(f"Pretrained validate results output: {out_dir}")
     full_file = out_dir / "mod_validate_full.txt"
+    log_file = out_dir / "mod_validate.log"
     check_call(
         [
             "remora",
             "validate",
             "from_modbams",
-            "--bams",
-            can_modbam,
-            "--mod-bams",
-            mod_modbam,
+            "--bam-and-bed",
+            can_modbam_old_tags,
+            can_gt_bed,
+            "--bam-and-bed",
+            mod_modbam_old_tags,
+            mod_gt_bed,
             "--full-results-filename",
             full_file,
+            "--log-filename",
+            log_file,
         ],
     )
+
+    assert full_file.exists()
+    assert log_file.exists()
 
 
 ###################
