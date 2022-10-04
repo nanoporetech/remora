@@ -113,6 +113,18 @@ def mod_mappings():
 
 
 @pytest.fixture(scope="session")
+def can_gt_bed():
+    """Canonical ground truth BED file"""
+    return Path(__file__).absolute().parent / "data" / "can_gt.bed"
+
+
+@pytest.fixture(scope="session")
+def mod_gt_bed():
+    """Modified ground truth BED file"""
+    return Path(__file__).absolute().parent / "data" / "mod_gt.bed"
+
+
+@pytest.fixture(scope="session")
 def simplex_alignments():
     p = Path(__file__).absolute().parent / "data" / "simplex_reads_mapped.bam"
     assert p.exists()
@@ -401,6 +413,26 @@ def can_modbam(tmpdir_factory, can_pod5, can_mappings, pretrain_model_args):
     return out_file
 
 
+def revert_tags(old_bam, new_bam):
+    with pysam.AlignmentFile(old_bam, "rb") as in_bam:
+        with pysam.AlignmentFile(new_bam, "wb", template=in_bam) as out_bam:
+            for read in in_bam:
+                read.tags = [
+                    tag if tag[0] != "MM" else (tag[0], tag[1].replace("?", ""))
+                    for tag in read.tags
+                ]
+                out_bam.write(read)
+
+
+@pytest.fixture(scope="session")
+def can_modbam_old_tags(tmpdir_factory, can_modbam):
+    out_dir = tmpdir_factory.mktemp("remora_tests")
+    print(f"\nRevert modbam tags to old version: {out_dir}")
+    out_file = out_dir / "can_old_tags.bam"
+    revert_tags(can_modbam, out_file)
+    return out_file
+
+
 @pytest.fixture(scope="session")
 def mod_modbam(tmpdir_factory, mod_pod5, mod_mappings, pretrain_model_args):
     out_dir = tmpdir_factory.mktemp("remora_tests")
@@ -418,4 +450,13 @@ def mod_modbam(tmpdir_factory, mod_pod5, mod_mappings, pretrain_model_args):
             *pretrain_model_args,
         ],
     )
+    return out_file
+
+
+@pytest.fixture(scope="session")
+def mod_modbam_old_tags(tmpdir_factory, mod_modbam):
+    out_dir = tmpdir_factory.mktemp("remora_tests")
+    print(f"\nRevert modbam tags to old version: {out_dir}")
+    out_file = out_dir / "mod_old_tags.bam"
+    revert_tags(mod_modbam, out_file)
     return out_file

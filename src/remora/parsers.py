@@ -1097,30 +1097,22 @@ def register_validate(parser):
 def register_validate_from_modbams(parser):
     subparser = parser.add_parser(
         "from_modbams",
-        description="Run validation BAM files with modified base tags",
-        help="""Validate on modBAMs. Prints a single line
-        with 1) error rate, 2) false positive rate, 3) false negative rate,
-        4) fraction of calls filtered, 6) total number of calls,
-        7) thresholds (in modbam 0-255 scale), and 8) [--name]""",
+        description="Validation with ground truth samples",
+        help="Validation with ground truth samples",
         formatter_class=SubcommandHelpFormatter,
     )
     subparser.add_argument(
-        "--bams",
-        nargs="+",
+        "--bam-and-bed",
         required=True,
-        help="BAM files. If `--ground-truth-positions` is not provided these "
-        "should be control (unmodified) reads.",
-    )
-    subparser.add_argument(
-        "--mod-bams",
-        nargs="+",
-        help="BAM file containing reads with modified bases at each "
-        "`--regions-bed` position.",
-    )
-    subparser.add_argument(
-        "--ground-truth-positions",
-        help="CVS file containing fields: contig, strand, position, is_mod. "
-        "Where is_mod must be either `True` or `False`.",
+        nargs=2,
+        metavar=("BAM", "GROUND_TRUTH_BED"),
+        action="append",
+        help="""Argument accepts 2 values. The first value is the BAM file path
+        with modified base tags. The second is a bed file with ground truth
+        reference positions. The name field in the ground truth bed file should
+        be the single letter code for a modified base or the corresponding
+        canonical base. This argument can be provided more than once for
+        multiple samples.""",
     )
     subparser.add_argument(
         "--full-results-filename", help="Output per-read calls to TSV file."
@@ -1132,17 +1124,10 @@ def register_validate_from_modbams(parser):
         "several runs.",
     )
     subparser.add_argument(
-        "--regions-bed",
-        help="Only extract probabilities from specified reference locations",
-    )
-    subparser.add_argument(
         "--pct-filt",
         type=float,
         default=10.0,
         help="Filter a specified percentage (or less given ties) of calls.",
-    )
-    subparser.add_argument(
-        "--mod-base", default="m", help="Modified base single letter code."
     )
     subparser.add_argument(
         "--allow-unbalanced",
@@ -1150,28 +1135,31 @@ def register_validate_from_modbams(parser):
         help="Allow classes to be unbalanced for metric computation.",
     )
     subparser.add_argument(
+        "--seed",
+        default=None,
+        type=int,
+        help="Seed value. Default: Random seed",
+    )
+    subparser.add_argument(
         "--log-filename",
-        help="Log filename. Default: Don't output log file.",
+        help="Log filename. (default: Don't output log file)",
     )
 
-    subparser.set_defaults(func=run_validate_from_modbams)
+    subparser.set_defaults(func=run_validate_modbams)
 
 
-def run_validate_from_modbams(args):
-    from remora.validate import validate_from_modbams
+def run_validate_modbams(args):
+    from remora.validate import validate_modbams
 
     if args.log_filename is not None:
         log.init_logger(args.log_filename)
-    validate_from_modbams(
-        bams=args.bams,
-        mod_bams=args.mod_bams,
-        gt_pos_fn=args.ground_truth_positions,
-        regs_bed=args.regions_bed,
-        full_results_fn=args.full_results_filename,
-        mod_base=args.mod_base,
+    validate_modbams(
+        bams_and_beds=args.bam_and_bed,
+        full_results_path=args.full_results_filename,
         name=args.name,
         pct_filt=args.pct_filt,
         allow_unbalanced=args.allow_unbalanced,
+        seed=args.seed,
     )
 
 
