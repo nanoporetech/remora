@@ -316,7 +316,13 @@ def parse_mod_bam(bam_path, gt_sites, alphabet, full_fh):
                 mod_strand,
                 mod_name,
             ), mod_values in read.modified_bases.items():
-                if mod_strand != 0:
+                if (mod_strand == 0 and read.is_reverse) or (
+                    mod_strand == 1 and not read.is_reverse
+                ):
+                    LOGGER.debug(
+                        f"Invalid mod strand {mod_strand} {read.query_name} "
+                        f"{bam_path}"
+                    )
                     if not been_warned_strand:
                         LOGGER.warning(
                             "Reverse strand (duplex) mods not supported"
@@ -363,11 +369,6 @@ def parse_mod_bam(bam_path, gt_sites, alphabet, full_fh):
                     )
                 probs.append(pos_probs_full)
     pysam.set_verbosity(pysam_save)
-    if len(probs) < 1:
-        raise RemoraError(
-            f"No valid modification calls from {bam_path}. May need to revert "
-            "to originial MM-tag style. Try `s/MM:Z:C+m?,/MM:Z:C+m,/g`"
-        )
     LOGGER.debug(f"Skipped {nnocalls} reads without mod tags from {bam_path}")
     LOGGER.debug(
         f"Skipped {nnomods} reads without valid mod calls from {bam_path}"
@@ -375,6 +376,12 @@ def parse_mod_bam(bam_path, gt_sites, alphabet, full_fh):
     LOGGER.debug(f"Skipped {ninvalid} invalid base calls from {bam_path}")
     LOGGER.debug(f"Skipped {nnoref} calls without valid ref from {bam_path}")
     LOGGER.debug(f"Parsed {len(labels)} valid sites from {bam_path}")
+    if len(probs) < 1:
+        raise RemoraError(
+            f"No valid modification calls from {bam_path}. May need to revert "
+            "to original MM-tag style. Try `sed s/C+m?,/C+m,/g`and see "
+            "https://github.com/pysam-developers/pysam/issues/1123"
+        )
     return np.array(probs), np.array(labels)
 
 
