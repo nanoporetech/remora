@@ -1136,9 +1136,16 @@ def register_validate_from_modbams(parser):
     )
     subparser.add_argument(
         "--seed",
-        default=None,
         type=int,
         help="Seed value. Default: Random seed",
+    )
+    subparser.add_argument(
+        "--extra-bases",
+        help="Extra canoncial or modified base single letter codes not in "
+        "the ground truth bed files which should be added to the accepted "
+        "alphabet. For example, to run a sample with canonical ground truth "
+        "(C) and 5mC and 5hmC calls (m and h) modified base calls this "
+        "argument would be `--extra-bases mh`",
     )
     subparser.add_argument(
         "--log-filename",
@@ -1160,6 +1167,7 @@ def run_validate_modbams(args):
         pct_filt=args.pct_filt,
         allow_unbalanced=args.allow_unbalanced,
         seed=args.seed,
+        extra_bases=args.extra_bases,
     )
 
 

@@ -11,7 +11,7 @@ from tqdm import tqdm
 from sklearn.metrics import confusion_matrix
 
 from remora.io import parse_mods_bed
-from remora.util import softmax_axis1
+from remora.util import softmax_axis1, revcomp
 from remora import RemoraError, constants, encoded_kmers, log
 
 
@@ -272,7 +272,145 @@ class ValidationLogger:
 ##################
 
 
-def parse_mod_bam(bam_path, gt_sites, alphabet, full_fh):
+def parse_mod_read(read, gt_sites, gt_ranges, alphabet, full_fh, nctx):
+    strand = "-" if read.is_reverse else "+"
+    ctg_gt = gt_sites.get((read.reference_name, strand))
+    ctg_gt_range = gt_ranges.get((read.reference_name, strand))
+
+    aligned_pairs = read.get_aligned_pairs(with_seq=True)
+    r_align = "".join([b.upper() if b else "-" for _, _, b in aligned_pairs])
+    q_align = "".join(
+        [
+            read.query_sequence[q_pos] if q_pos else "-"
+            for q_pos, _, _ in aligned_pairs
+        ]
+    )
+
+    # note read.modified_bases stores positions in forward reference strand
+    # query sequence coordinates
+    # TODO handle duplex mods on opposite strand
+    q_mod_probs = defaultdict(dict)
+    for (_, mod_strand, mod_name), mod_values in read.modified_bases.items():
+        if (
+            (mod_strand == 0 and read.is_reverse)
+            or (mod_strand == 1 and not read.is_reverse)
+            or mod_name not in alphabet
+        ):
+            continue
+        for pos, prob in mod_values:
+            q_mod_probs[pos][mod_name] = (prob + 0.5) / 256
+    q_mod_probs_full = {}
+    for q_pos, pos_probs in q_mod_probs.items():
+        # TODO handle case with invalid probs and set can_prob to 0
+        # and mod probs to softmax values
+        # create array of probs in fixed order and fill 0 probs
+        q_mod_probs_full[q_pos] = np.array(
+            [1 - sum(pos_probs.values())]
+            + [pos_probs.get(mod_name, 0) for mod_name in alphabet[1:]]
+        )
+
+    # loop over aligned pairs extracting ground truth and/or read modified bases
+    # only store sites with ground truth value and modified base stats, but
+    # record sites with either in full output.
+    probs, labels = [], []
+    prev_q_pos = prev_r_pos = None
+    for a_idx, (q_pos, r_pos, _) in enumerate(aligned_pairs):
+        # record last valid positions when determining "within" values over
+        # indels for extended output
+        if q_pos is not None:
+            prev_q_pos = q_pos
+        if r_pos is not None:
+            prev_r_pos = r_pos
+        r_pos_mod = None if ctg_gt is None else ctg_gt.get(r_pos)
+        q_pos_mod_probs = q_mod_probs_full.get(q_pos)
+        # if neither the basecalls contain modified base probabilities nor the
+        # ground truth contains modified base information, skip this position.
+        if r_pos_mod is None and q_pos_mod_probs is None:
+            continue
+        r_pos_mod_idx = None if r_pos_mod is None else alphabet.index(r_pos_mod)
+        if full_fh is not None:
+            q_pos_mod_probs_str = (
+                None
+                if q_pos_mod_probs is None
+                else ",".join(map(str, q_pos_mod_probs))
+            )
+
+            if a_idx < nctx:
+                r_pos_align = "-" * (a_idx - nctx) + r_align[: a_idx + nctx + 1]
+                q_pos_align = "-" * (a_idx - nctx) + q_align[: a_idx + nctx + 1]
+            else:
+                r_pos_align = r_align[a_idx - nctx : a_idx + nctx + 1]
+                q_pos_align = q_align[a_idx - nctx : a_idx + nctx + 1]
+            r_pos_align = r_pos_align.rjust(nctx * 2 + 1, "-")
+            q_pos_align = q_pos_align.rjust(nctx * 2 + 1, "-")
+            if read.is_reverse:
+                r_pos_align = revcomp(r_pos_align)
+                q_pos_align = revcomp(q_pos_align)
+            within_align = within_gt = False
+            if prev_q_pos is not None:
+                within_align = (
+                    read.query_alignment_start
+                    <= prev_q_pos
+                    < read.query_alignment_end
+                )
+            if ctg_gt_range is not None and prev_r_pos is not None:
+                within_gt = within_align and (
+                    ctg_gt_range[0] <= prev_r_pos <= ctg_gt_range[1]
+                )
+            full_fh.write(
+                f"{read.query_name}\t{q_pos}\t{read.reference_name}\t{r_pos}\t"
+                f"{strand}\t{r_pos_mod_idx}\t{q_pos_mod_probs_str}\t"
+                f"{r_pos_align}\t{q_pos_align}\t{within_align}\t{within_gt}\n"
+            )
+
+        if r_pos_mod is not None and q_pos_mod_probs is not None:
+            labels.append(r_pos_mod_idx)
+            probs.append(q_pos_mod_probs)
+    return probs, labels
+
+
+def check_mod_strand(read, bam_path, alphabet, do_warn_mod, do_warn_strand):
+    if read.modified_bases is None:
+        LOGGER.debug(f"Not modified bases found in {read.query_name}")
+        return do_warn_mod, do_warn_strand, False
+
+    valid_mods = False
+    for _, mod_strand, mod_name in read.modified_bases.keys():
+        if (mod_strand == 0 and read.is_reverse) or (
+            mod_strand == 1 and not read.is_reverse
+        ):
+            LOGGER.debug(
+                f"Invalid mod strand {mod_strand} {read.query_name} {bam_path}"
+            )
+            if do_warn_strand:
+                LOGGER.warning("Reverse strand (duplex) mods not supported ")
+                do_warn_strand = False
+            continue
+        if mod_name not in alphabet:
+            LOGGER.debug(
+                f"Modified base found in BAM ({mod_name}) not found in "
+                f"ground truth {read.query_name}"
+            )
+            if do_warn_mod:
+                LOGGER.warning(
+                    f"Modified base found in BAM ({mod_name}) not found in "
+                    "ground truth. If this should be included in validation, "
+                    "add with --extra-bases."
+                )
+                do_warn_mod = False
+            continue
+        valid_mods = True
+    return do_warn_mod, do_warn_strand, valid_mods
+
+
+def parse_mod_bam(
+    bam_path,
+    gt_sites,
+    gt_ranges,
+    alphabet,
+    full_fh,
+    context_bases=5,
+):
     """Parse modified base tags from BAM file recording probability of canonical
     and each mod at each site in ground truth sites.
 
@@ -281,9 +419,11 @@ def parse_mod_bam(bam_path, gt_sites, alphabet, full_fh):
         gt_sites (dict): First level keys are chromosome and strand 2-tuples,
             second level keys are reference positions pointing to a ground truth
             modified base single letter code.
+        gt_ranges (dict): Min and max values from gt_sites dict values
         alphabet (str): Canonical base followed by modified bases found in
             ground truth data. Other modified bases in BAM file will be ignored.
         full_fh (File): File handle to write full results.
+        context_bases (int): Number of context bases to include in full output
 
     Returns:
         2-tuple containing
@@ -291,91 +431,28 @@ def parse_mod_bam(bam_path, gt_sites, alphabet, full_fh):
                 probabilities at each valid site
             - Numpy array with shape (num_calls) containing ground truth labels
     """
-    been_warned_strand = been_warned_mod = False
-    nnocalls = nnomods = ninvalid = nnoref = 0
     probs, labels = [], []
     # hid warnings for no index when using unmapped or unsorted files
     pysam_save = pysam.set_verbosity(0)
+    do_warn_mod = do_warn_strand = True
     with pysam.AlignmentFile(bam_path, check_sq=False) as bam_fh:
         for read in tqdm(bam_fh, smoothing=0):
-            if read.modified_bases is None:
-                nnocalls += 1
+            do_warn_mod, do_warn_strand, valid_mods = check_mod_strand(
+                read, bam_path, alphabet, do_warn_mod, do_warn_strand
+            )
+            if not valid_mods:
                 continue
-            strand = "-" if read.is_reverse else "+"
-            try:
-                ctg_gt = gt_sites[(read.reference_name, strand)]
-            except KeyError:
-                nnomods += 1
-                continue
-            # note read.modified_bases stores positions in forward strand
-            # query sequence coordinates
-            # TODO handle duplex mods on opposite strand
-            mod_pos_probs = defaultdict(dict)
-            for (
-                can_base,
-                mod_strand,
-                mod_name,
-            ), mod_values in read.modified_bases.items():
-                if (mod_strand == 0 and read.is_reverse) or (
-                    mod_strand == 1 and not read.is_reverse
-                ):
-                    LOGGER.debug(
-                        f"Invalid mod strand {mod_strand} {read.query_name} "
-                        f"{bam_path}"
-                    )
-                    if not been_warned_strand:
-                        LOGGER.warning(
-                            "Reverse strand (duplex) mods not supported"
-                        )
-                        been_warned_strand = True
-                    continue
-                if mod_name not in alphabet:
-                    ninvalid += 1
-                    if not been_warned_mod:
-                        LOGGER.warning(
-                            f"BAM mod ({mod_name}) not found in ground truth"
-                        )
-                        been_warned_mod = True
-                    continue
-                for pos, prob in mod_values:
-                    mod_pos_probs[pos][mod_name] = (prob + 0.5) / 256
-            if len(mod_pos_probs) == 0:
-                nnomods += 1
-                continue
-
-            q_to_r = dict(read.get_aligned_pairs(matches_only=True))
-            for q_pos, pos_probs in mod_pos_probs.items():
-                try:
-                    r_pos = q_to_r[q_pos]
-                    gt_mod = ctg_gt[r_pos]
-                except KeyError:
-                    # skip modified base calls not mapped to ref pos
-                    nnoref += 1
-                    continue
-                gt_mod_idx = alphabet.index(gt_mod)
-                labels.append(gt_mod_idx)
-                # TODO handle case with invalid probs and set can_prob to 0
-                # and mod probs to softmax values
-                # create array of probs in fixed order and fill 0 probs
-                pos_probs_full = np.array(
-                    [1 - sum(pos_probs.values())]
-                    + [pos_probs.get(mod_name, 0) for mod_name in alphabet[1:]]
-                )
-                if full_fh is not None:
-                    full_fh.write(
-                        f"{read.query_name}\t{q_pos}\t{read.reference_name}\t"
-                        f"{r_pos}\t{strand}\t{gt_mod_idx}\t"
-                        f"{','.join(map(str, pos_probs_full))}\n"
-                    )
-                probs.append(pos_probs_full)
+            read_probs, read_labels = parse_mod_read(
+                read,
+                gt_sites,
+                gt_ranges,
+                alphabet,
+                full_fh,
+                context_bases,
+            )
+            probs.extend(read_probs)
+            labels.extend(read_labels)
     pysam.set_verbosity(pysam_save)
-    LOGGER.debug(f"Skipped {nnocalls} reads without mod tags from {bam_path}")
-    LOGGER.debug(
-        f"Skipped {nnomods} reads without valid mod calls from {bam_path}"
-    )
-    LOGGER.debug(f"Skipped {ninvalid} invalid base calls from {bam_path}")
-    LOGGER.debug(f"Skipped {nnoref} calls without valid ref from {bam_path}")
-    LOGGER.debug(f"Parsed {len(labels)} valid sites from {bam_path}")
     if len(probs) < 1:
         raise RemoraError(
             f"No valid modification calls from {bam_path}. May need to revert "
@@ -392,6 +469,7 @@ def validate_modbams(
     pct_filt,
     allow_unbalanced=False,
     seed=None,
+    extra_bases=None,
 ):
     # seed for random balancing
     seed = (
@@ -407,20 +485,27 @@ def validate_modbams(
         atexit.register(full_fh.close)
         full_fh.write(
             "query_name\tquery_pos\tref_name\tref_pos\tstrand\t"
-            "gt_mod_idx\tmod_probs\n"
+            "gt_mod_idx\tmod_probs\tref_align\tquery_align\t"
+            "within_align\twithin_gt\n"
         )
     bams, beds = zip(*bams_and_beds)
     all_gt_sites = []
+    all_gt_ranges = []
     all_mods = set()
     for bed_path in beds:
         gt_sites, samp_mods = parse_mods_bed(bed_path)
         all_gt_sites.append(gt_sites)
+        all_gt_ranges.append(
+            dict((cs, (min(poss), max(poss))) for cs, poss in gt_sites.items())
+        )
         all_mods.update(samp_mods)
         tot_sites = sum(len(cs_sites) for cs_sites in gt_sites.values())
-        LOGGER.debug(
+        LOGGER.info(
             f"Parsed {tot_sites} total sites with labels {samp_mods} "
             f"from {bed_path}"
         )
+    if extra_bases is not None:
+        all_mods.update(extra_bases)
     can_base = all_mods.intersection("ACGTU")
     if len(can_base) > 1:
         raise RemoraError("More than one canonical base found: {can_base}")
@@ -430,8 +515,10 @@ def validate_modbams(
     alphabet = "".join(can_base) + "".join(sorted(mod_bases))
 
     all_probs, all_labels = [], []
-    for bam_path, gt_sites in zip(bams, all_gt_sites):
-        probs, labels = parse_mod_bam(bam_path, gt_sites, alphabet, full_fh)
+    for bam_path, gt_sites, gt_ranges in zip(bams, all_gt_sites, all_gt_ranges):
+        probs, labels = parse_mod_bam(
+            bam_path, gt_sites, gt_ranges, alphabet, full_fh
+        )
         all_probs.append(probs)
         all_labels.append(labels)
 
