@@ -679,13 +679,14 @@ def run_model_export(args):
 
     LOGGER.info("Loading model")
     try:
+        model, ckpt = load_torchscript_model(args.checkpoint_path)
+        LOGGER.info("Loaded a torchscript model")
+    except RuntimeError:
         ckpt, model = continue_from_checkpoint(
             args.checkpoint_path, args.model_path
         )
         LOGGER.info("Loaded model from checkpoint")
-    except NotImplementedError:
-        model, ckpt = load_torchscript_model(args.checkpoint_path)
-        LOGGER.info("Loaded a torchscript model")
+
     if args.format == "dorado":
         LOGGER.info("Exporting model to dorado format")
         export_model_dorado(ckpt, model, args.output_path)
