@@ -178,10 +178,11 @@ def export_model_dorado(ckpt, model, save_dir):
                 ckpt["refine_kmer_levels"].astype(np.float32)
             )
         except AttributeError:
-            refine_kmer_levels = torch.Tensor(
+            refine_kmer_levels = torch.from_numpy(
                 np.frombuffer(
-                    ckpt["refine_kmer_levels"].encode("cp437"), dtype=np.float32
-                )
+                    ckpt["refine_kmer_levels"].encode("cp437"),
+                    dtype=np.float32,
+                ).copy()
             )
         save_tensor("refine_kmer_levels", refine_kmer_levels)
 
@@ -235,8 +236,7 @@ def continue_from_checkpoint(ckp_path, model_path=None):
     """Load a checkpoint in order to continue training."""
     if not isfile(ckp_path):
         raise RemoraError(f"Checkpoint path is not a file ({ckp_path})")
-    LOGGER.info(f"Loading trained model from {ckp_path}")
-    ckpt = torch.load(ckp_path)
+    ckpt = torch.load(ckp_path, map_location="cpu")
     if ckpt["state_dict"] is None:
         raise RemoraError("Model state not saved in checkpoint.")
 
