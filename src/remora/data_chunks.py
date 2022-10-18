@@ -1354,15 +1354,23 @@ def merge_datasets(input_datasets, balance=False, quiet=False):
         # TODO add checks for refine attributes
 
     all_mod_bases = ""
-    if base_pred:
-        all_mod_long_names = None
-    else:
-        all_mod_long_names = []
+    all_mod_long_names = None
+    if not base_pred:
+        # extract modified base definitions from all datasets
+        raw_mod_long_names = []
+        raw_mod_bases = []
         for ds, _ in datasets:
             for mod_base, mln in zip(ds.mod_bases, ds.mod_long_names):
-                if mod_base not in all_mod_bases:
-                    all_mod_bases += mod_base
-                    all_mod_long_names.append(mln)
+                if mod_base not in raw_mod_bases:
+                    raw_mod_bases.append(mod_base)
+                    raw_mod_long_names.append(mln)
+        # sort modified bases alphabetically
+        all_mod_long_names = []
+        for idx in sorted(
+            range(len(raw_mod_bases)), key=raw_mod_bases.__getitem__
+        ):
+            all_mod_bases += raw_mod_bases[idx]
+            all_mod_long_names.append(raw_mod_long_names[idx])
 
     total_chunks = sum(ds[1] for ds in datasets)
     output_dataset = RemoraDataset.allocate_empty_chunks(
@@ -1378,6 +1386,7 @@ def merge_datasets(input_datasets, balance=False, quiet=False):
         base_start_justify=base_start_justify,
         offset=offset,
     )
+    LOGGER.info(f"Output dataset summary:\n{output_dataset.summary}")
     for input_dataset, num_chunks in datasets:
         if base_pred:
             label_conv = np.arange(4, dtype=np.long)
