@@ -51,6 +51,10 @@ def compute_metrics(probs, labels, filt_frac):
         probs, np.expand_dims(pred_labels, -1), -1
     ).squeeze(-1)
     conf_thr = np.quantile(pred_probs, filt_frac)
+    # if all values would be filtered make filter threshold slightly smaller
+    if conf_thr == pred_probs.max():
+        conf_thr *= 0.999999
+    LOGGER.debug(f"Confidence threshold: {conf_thr}")
     conf_chunks = pred_probs > conf_thr
     filt_labels = labels[conf_chunks]
     filt_acc = correctly_labeled[conf_chunks].sum() / filt_labels.size
@@ -522,7 +526,7 @@ def validate_modbams(
         all_probs.append(probs)
         all_labels.append(labels)
 
-    LOGGER.info(f"Alphabet used (and order of reported metrics: {alphabet}")
+    LOGGER.info(f"Alphabet used (and order of reported metrics): {alphabet}")
     process_mods_probs(
         np.vstack(all_probs),
         np.concatenate(all_labels),

@@ -68,13 +68,13 @@ def read_is_primary(read):
 
 
 def index_bam(
-    bam_fp, skip_non_primary, req_tags=REQUIRED_TAGS, careful=False
+    bam_path, skip_non_primary, req_tags=REQUIRED_TAGS, careful=False
 ) -> (dict, int):
     bam_idx = {} if skip_non_primary else defaultdict(list)
     num_reads = 0
     # hid warnings for no index when using unmapped or unsorted files
     pysam_save = pysam.set_verbosity(0)
-    with pysam.AlignmentFile(bam_fp, mode="rb", check_sq=False) as bam_fh:
+    with pysam.AlignmentFile(bam_path, mode="rb", check_sq=False) as bam_fh:
         pbar = tqdm(
             smoothing=0,
             unit=" Reads",
@@ -335,32 +335,27 @@ class Read:
 
     def into_remora_read(self, use_reference_anchor: bool) -> DC.RemoraRead:
         if use_reference_anchor:
-            assert self.ref_to_signal is not None, "need to have ref-to-signal"
+            if self.ref_to_signal is None:
+                raise RemoraError("need to have ref-to-signal")
             trim_signal = self.signal[
                 self.ref_to_signal[0] : self.ref_to_signal[-1]
             ]
-            shift_ref_to_sig = self.ref_to_signal - self.ref_to_signal[0]
-            remora_read = DC.RemoraRead(
-                dacs=trim_signal,
-                shift=self.shift_dacs_to_norm,
-                scale=self.scale_dacs_to_norm,
-                seq_to_sig_map=shift_ref_to_sig,
-                str_seq=self.ref_seq,
-                read_id=self.read_id,
-            )
+            shift_seq_to_sig = self.ref_to_signal - self.ref_to_signal[0]
+            seq = self.ref_seq
         else:
             trim_signal = self.signal[
                 self.query_to_signal[0] : self.query_to_signal[-1]
             ]
-            shift_query_to_sig = self.query_to_signal - self.query_to_signal[0]
-            remora_read = DC.RemoraRead(
-                dacs=trim_signal,
-                shift=self.shift_dacs_to_norm,
-                scale=self.scale_dacs_to_norm,
-                seq_to_sig_map=shift_query_to_sig,
-                str_seq=self.seq,
-                read_id=self.read_id,
-            )
+            shift_seq_to_sig = self.query_to_signal - self.query_to_signal[0]
+            seq = self.seq
+        remora_read = DC.RemoraRead(
+            dacs=trim_signal,
+            shift=self.shift_dacs_to_norm,
+            scale=self.scale_dacs_to_norm,
+            seq_to_sig_map=shift_seq_to_sig,
+            str_seq=seq,
+            read_id=self.read_id,
+        )
         remora_read.check()
         return remora_read
 
@@ -428,10 +423,10 @@ class DuplexRead:
 
 
 def iter_pod5_reads(
-    pod5_fp: str, num_reads: int = None, read_ids: Iterator = None
+    pod5_path: str, num_reads: int = None, read_ids: Iterator = None
 ):
-    LOGGER.debug(f"Reading from POD5 at {pod5_fp}")
-    with CombinedReader(Path(pod5_fp)) as pod5_fh:  # todo change to pod5_fh
+    LOGGER.debug(f"Reading from POD5 at {pod5_path}")
+    with CombinedReader(Path(pod5_path)) as pod5_fh:  # todo change to pod5_fh
         for i, read in enumerate(
             pod5_fh.reads(selection=read_ids, preload=["samples"])
         ):
@@ -447,9 +442,9 @@ def iter_pod5_reads(
     LOGGER.debug("Completed pod5 signal worker")
 
 
-def iter_signal(pod5_fp, num_reads=None, read_ids=None):
+def iter_signal(pod5_path, num_reads=None, read_ids=None):
     for pod5_read in iter_pod5_reads(
-        pod5_fp=pod5_fp, num_reads=num_reads, read_ids=read_ids
+        pod5_path=pod5_path, num_reads=num_reads, read_ids=read_ids
     ):
         read = Read(
             read_id=str(pod5_read.read_id),
@@ -463,19 +458,21 @@ def iter_signal(pod5_fp, num_reads=None, read_ids=None):
 
 
 class DuplexPairsIter:
-    def __init__(self, *, pairs_fp: str, pod5_fp: str, simplex_bam_fp: str):
-        self.pairs = iter(DuplexPairsIter.parse_pairs(pairs_fp))
-        self.pod5_fp = pod5_fp
-        self.reader = CombinedReader(Path(pod5_fp))
-        self.alignments_fp = simplex_bam_fp
+    def __init__(
+        self, *, pairs_path: str, pod5_path: str, simplex_bam_path: str
+    ):
+        self.pairs = iter(DuplexPairsIter.parse_pairs(pairs_path))
+        self.pod5_path = pod5_path
+        self.reader = CombinedReader(Path(pod5_path))
+        self.alignments_path = simplex_bam_path
         self.simplex_index = None
         self.simplex_alignments = None
         self.p5_reads = None
 
     @staticmethod
-    def parse_pairs(pairs_fp):
+    def parse_pairs(pairs_path):
         pairs = []
-        with open(pairs_fp, "r") as fh:
+        with open(pairs_path, "r") as fh:
             seen_header = False
             for line in fh:
                 if not seen_header:
@@ -487,13 +484,13 @@ class DuplexPairsIter:
 
     def __iter__(self):
         self.simplex_index, _ = index_bam(
-            self.alignments_fp,
+            self.alignments_path,
             skip_non_primary=True,
             req_tags={"mv"},
             careful=False,
         )
         self.simplex_alignments = pysam.AlignmentFile(
-            self.alignments_fp, "rb", check_sq=False
+            self.alignments_path, "rb", check_sq=False
         )
         return self
 
@@ -545,9 +542,9 @@ if _SIG_PROF_FN:
         return retval
 
 
-def prep_extract_alignments(bam_idx, bam_fp, req_tags=REQUIRED_TAGS):
+def prep_extract_alignments(bam_idx, bam_path, req_tags=REQUIRED_TAGS):
     pysam_save = pysam.set_verbosity(0)
-    bam_fh = pysam.AlignmentFile(bam_fp, mode="rb", check_sq=False)
+    bam_fh = pysam.AlignmentFile(bam_path, mode="rb", check_sq=False)
     pysam.set_verbosity(pysam_save)
     return [bam_idx, bam_fh], {"req_tags": req_tags}
 
@@ -677,10 +674,10 @@ if _ALIGN_PROF_FN:
 
 
 def iter_alignments(
-    bam_fp, num_reads, skip_non_primary, req_tags=REQUIRED_TAGS
+    bam_path, num_reads, skip_non_primary, req_tags=REQUIRED_TAGS
 ):
     pysam_save = pysam.set_verbosity(0)
-    with pysam.AlignmentFile(bam_fp, mode="rb", check_sq=False) as bam_fh:
+    with pysam.AlignmentFile(bam_path, mode="rb", check_sq=False) as bam_fh:
         for read_num, read in enumerate(bam_fh.fetch(until_eof=True)):
             if num_reads is not None and read_num > num_reads:
                 return
@@ -729,18 +726,18 @@ def iter_alignments(
     pysam.set_verbosity(pysam_save)
 
 
-def prep_extract_signal(pod5_fp):
-    pod5_fp = CombinedReader(Path(pod5_fp))
+def prep_extract_signal(pod5_path):
+    pod5_fh = CombinedReader(Path(pod5_path))
     return [
-        pod5_fp,
+        pod5_fh,
     ], {}
 
 
-def extract_signal(read_err, pod5_fp):
+def extract_signal(read_err, pod5_fh):
     read, err = read_err
     if read is None:
         return [read_err]
-    pod5_read = next(pod5_fp.reads([read.read_id]))
+    pod5_read = next(pod5_fh.reads([read.read_id]))
     read.signal = pod5_read.signal[read.num_trimmed :]
     read.query_to_signal = np.concatenate(
         [read.query_to_signal, [read.signal.size]]

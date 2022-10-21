@@ -834,13 +834,14 @@ def register_infer_from_pod5_and_bam(parser):
         help="POD5 file corresponding to bam file.",
     )
     subparser.add_argument(
-        "bam",
+        "in_bam",
         help="BAM file containing mv tags.",
     )
+
     out_grp = subparser.add_argument_group("Output Arguments")
     out_grp.add_argument(
-        "--out-file",
-        help="Output path for the validation result file.",
+        "--out-bam",
+        help="Output BAM path.",
     )
     out_grp.add_argument(
         "--log-filename",
@@ -908,11 +909,23 @@ def register_infer_from_pod5_and_bam(parser):
         help="Number of signal extraction workers. Default: %(default)d",
     )
     comp_grp.add_argument(
+        "--num-prepare-batch-workers",
+        type=int,
+        default=1,
+        help="Number of batch preparation workers. Default: %(default)d",
+    )
+    comp_grp.add_argument(
         "--num-infer-workers",
         type=int,
         default=1,
         help="Number of chunk extraction workers. If performing signal "
         "refinement this should be increased. Default: %(default)d",
+    )
+    comp_grp.add_argument(
+        "--batch-size",
+        default=constants.DEFAULT_BATCH_SIZE,
+        type=int,
+        help="Number of input units per batch. Default: %(default)d",
     )
 
     subparser.set_defaults(func=run_infer_from_pod5_and_bam)
@@ -947,13 +960,14 @@ def register_infer_duplex_from_pod5_and_bam(parser):
 
     out_grp = subparser.add_argument_group("Output Arguments")
     out_grp.add_argument(
-        "--out-file",
-        help="Output path for the validation result file.",
+        "--out-bam",
+        help="Output BAM path.",
     )
     out_grp.add_argument(
         "--log-filename",
         help="Log filename. Default: Don't output log file.",
     )
+
     mdl_grp = subparser.add_argument_group("Model Arguments")
     mdl_grp.add_argument(
         "--model",
@@ -995,6 +1009,7 @@ def register_infer_duplex_from_pod5_and_bam(parser):
         type=int,
         help="Number of reads.",
     )
+
     comp_grp = subparser.add_argument_group("Compute Arguments")
     comp_grp.add_argument(
         "--device",
@@ -1042,14 +1057,16 @@ def run_infer_from_pod5_and_bam(args):
     model_kwargs = _unpack_model_kw_args(args)
     model, model_metadata = load_model(**model_kwargs, quiet=False)
     infer_from_pod5_and_bam(
-        args.pod5,
-        args.bam,
-        model,
-        model_metadata,
-        args.out_file,
-        args.num_reads,
-        args.num_extract_alignment_workers,
-        args.num_infer_workers,
+        pod5_path=args.pod5,
+        in_bam_path=args.in_bam,
+        model=model,
+        model_metadata=model_metadata,
+        out_bam_path=args.out_bam,
+        num_reads=args.num_reads,
+        num_extract_alignment_workers=args.num_extract_alignment_workers,
+        num_prep_batch_workers=args.num_prepare_batch_workers,
+        num_infer_workers=args.num_infer_workers,
+        batch_size=args.batch_size,
         ref_anchored=args.reference_anchored,
     )
 
@@ -1063,13 +1080,13 @@ def run_infer_from_pod5_and_bam_duplex(args):
     model_kwargs = _unpack_model_kw_args(args)
     model, model_metadata = load_model(**model_kwargs, quiet=False)
     infer_duplex(
-        simplex_pod5_fp=args.pod5,
-        simplex_bam_fp=args.simplex_bam,
-        duplex_bam_fp=args.duplex_bam,
-        pairs_fp=args.duplex_read_pairs,
+        simplex_pod5_path=args.pod5,
+        simplex_bam_path=args.simplex_bam,
+        duplex_bam_path=args.duplex_bam,
+        pairs_path=args.duplex_read_pairs,
         model=model,
         model_metadata=model_metadata,
-        out_fn=args.out_file,
+        out_bam=args.out_bam,
         num_extract_alignment_threads=args.num_extract_alignment_workers,
         num_infer_threads=args.num_infer_workers,
     )

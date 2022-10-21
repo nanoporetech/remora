@@ -98,7 +98,10 @@ def test_train(model_path, tmpdir_factory, chunks, train_cli_args):
 
 @pytest.mark.unit
 def test_mod_infer(tmpdir_factory, can_pod5, can_mappings, fw_mod_model_dir):
-    out_file = tmpdir_factory.mktemp("remora_tests") / "mod_infer.txt"
+    out_dir = tmpdir_factory.mktemp("remora_tests")
+    print(f"Output dir: {out_dir}")
+    out_file = out_dir / "mod_infer.bam"
+    log_file = out_dir / "mod_infer.log"
     check_call(
         [
             "remora",
@@ -108,8 +111,10 @@ def test_mod_infer(tmpdir_factory, can_pod5, can_mappings, fw_mod_model_dir):
             can_mappings,
             "--model",
             str(fw_mod_model_dir / FINAL_MODEL_FILENAME),
-            "--out-file",
+            "--out-bam",
             out_file,
+            "--log-filename",
+            log_file,
         ],
     )
 
@@ -123,31 +128,36 @@ def test_mod_infer_duplex(
     duplex_reads_and_pairs_pod5,
     fw_mod_model_dir,
 ):
-    reads_pod5_fp, pairs_fp = duplex_reads_and_pairs_pod5
+    reads_pod5_path, pairs_path = duplex_reads_and_pairs_pod5
     FINAL_MODEL_FILENAME = "model_final.pt"
-    out_file_fp = tmpdir_factory.mktemp("remora_tests") / "mod_infer.txt"
+    out_dir = tmpdir_factory.mktemp("remora_tests")
+    print(f"Pretrained validate results output: {out_dir}")
+    out_path = out_dir / "mod_infer.bam"
+    log_path = out_dir / "mod_infer.log"
     check_call(
         [
             "remora",
             "infer",
             "duplex_from_pod5_and_bam",
-            reads_pod5_fp,
+            reads_pod5_path,
             simplex_alignments,
             duplex_mapped_alignments,
-            pairs_fp,
+            pairs_path,
             "--model",
             str(fw_mod_model_dir / FINAL_MODEL_FILENAME),
-            "--out-file",
-            out_file_fp,
+            "--out-bam",
+            out_path,
+            "--log-filename",
+            log_path,
         ],
     )
 
-    assert out_file_fp.exists()
+    assert out_path.exists()
 
-    n_expected_alignments = len(io.DuplexPairsIter.parse_pairs(pairs_fp))
+    n_expected_alignments = len(io.DuplexPairsIter.parse_pairs(pairs_path))
     n_observed_alignments = 0
-    with pysam.AlignmentFile(out_file_fp, "rb", check_sq=False) as out_bam:
-        for alignment in out_bam:
+    with pysam.AlignmentFile(out_path, "rb", check_sq=False) as out_bam_fh:
+        for alignment in out_bam_fh:
             # KeyError when not present
             alignment.get_tag("MM")
             alignment.get_tag("ML")

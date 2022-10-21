@@ -33,4 +33,3 @@ unit_test:py38:
     stage: test
     script:
         - pytest -m unit --durations 10
-
