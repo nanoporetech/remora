@@ -1,11 +1,12 @@
 from collections import Counter
 from dataclasses import dataclass
 
+import torch
 import numpy as np
 from tqdm import tqdm
 
-from remora import constants, log, RemoraError, util
 from remora.refine_signal_map import SigMapRefiner
+from remora import constants, log, RemoraError, util, encoded_kmers
 
 LOGGER = log.get_logger()
 
@@ -122,6 +123,7 @@ class RemoraRead:
         read_id (str): Read identifier
         labels (np.ndarray): Output label for each base in read
         focus_bases (np.ndarray): Sites from read to produce calls
+        batches (list): List of batches from RemoraDataset
 
     Note: Must provide either int_seq or str_seq. If str_seq is provided
     int_seq will be derived on init.
@@ -136,6 +138,7 @@ class RemoraRead:
     read_id: str = None
     labels: np.ndarray = None
     focus_bases: np.ndarray = None
+    batches: list = None
 
     def __post_init__(self):
         if self.int_seq is None:
@@ -163,7 +166,7 @@ class RemoraRead:
             np.arange(nbases * signal_per_base + 1, step=signal_per_base),
             np.arange(nbases) % 4,
             "test_read",
-            np.zeros(nbases, dtype=np.long),
+            np.zeros(nbases, dtype=np.int64),
         )
 
     @property
@@ -457,6 +460,80 @@ class RemoraRead:
             except Exception as e:
                 LOGGER.debug(f"FAILED_CHUNK_EXTRACT {e}")
 
+    def prepare_batches(self, model_metadata, batch_size):
+        """Prepare batches containing chunks from this read
+
+        Args:
+            model_metadata: Inference model metadata
+            batch_size (int): Number of chunks to call per-batch
+        """
+        self.refine_signal_mapping(model_metadata["sig_map_refiner"])
+        chunks = list(
+            self.iter_chunks(
+                model_metadata["chunk_context"],
+                model_metadata["kmer_context_bases"],
+                model_metadata["base_pred"],
+                model_metadata["base_start_justify"],
+                model_metadata["offset"],
+            )
+        )
+        if len(chunks) == 0:
+            return
+        dataset = RemoraDataset.allocate_empty_chunks(
+            num_chunks=len(chunks),
+            chunk_context=model_metadata["chunk_context"],
+            max_seq_len=max(c.seq_len for c in chunks),
+            kmer_context_bases=model_metadata["kmer_context_bases"],
+            base_pred=model_metadata["base_pred"],
+            mod_bases=model_metadata["mod_bases"],
+            mod_long_names=model_metadata["mod_long_names"],
+            batch_size=batch_size,
+            shuffle_on_iter=False,
+            drop_last=False,
+        )
+        for chunk in chunks:
+            dataset.add_chunk(chunk)
+        dataset.set_nbatches()
+
+        bb, ab = model_metadata["kmer_context_bases"]
+        self.batches = []
+        for (sigs, seqs, seq_maps, seq_lens), labels, (_, read_pos) in dataset:
+            enc_kmers = encoded_kmers.compute_encoded_kmer_batch(
+                bb, ab, seqs, seq_maps, seq_lens
+            )
+            self.batches.append((sigs, enc_kmers, labels, read_pos))
+
+    def run_model(self, model):
+        """Call modified bases on a read.
+
+        Args:
+            model: Compiled inference model (see remora.model_util.load_model)
+
+        Returns:
+            3-tuple containing:
+              1. Modified base predictions (dim: num_calls, num_mods + 1)
+              2. Labels for each base (-1 if labels not provided)
+              3. List of positions within the read
+        """
+        device = next(model.parameters()).device
+        read_outputs, read_poss, read_labels = [], [], []
+        for sigs, enc_kmers, labels, read_pos in self.batches:
+            read_outputs.append(
+                model.forward(
+                    sigs=torch.from_numpy(sigs).to(device),
+                    seqs=torch.from_numpy(enc_kmers).to(device),
+                )
+                .detach()
+                .cpu()
+                .numpy()
+            )
+            read_labels.append(labels)
+            read_poss.append(read_pos)
+        read_outputs = np.concatenate(read_outputs, axis=0)
+        read_labels = np.concatenate(read_labels)
+        read_poss = np.concatenate(read_poss)
+        return read_outputs, read_labels, read_poss
+
 
 @dataclass
 class Chunk:
@@ -570,7 +647,9 @@ class RemoraDataset:
         seq_lens (np.array): Length of sequences (without kmer context bases)
             dtype : np.short
             dims  : nchunks
-        labels: torch.LongTensor
+        labels: (np.array): Chunk labels
+            dtype : np.int64
+            dims  : nchunks
         read_ids (np.array): Read IDs
             dtype : "U36"
             dims  : nchunks
@@ -658,7 +737,8 @@ class RemoraDataset:
                 f"mod_long_names ({self.mod_long_names}) must be same length "
                 f"as mod_bases ({self.mod_bases})"
             )
-        self.motifs = sorted(set(self.motifs))
+        if self.motifs is not None:
+            self.motifs = sorted(set(self.motifs))
         self.set_nbatches()
         self.shuffled = False
 
@@ -1275,7 +1355,7 @@ class RemoraDataset:
             dtype=np.short,
         )
         seq_lens = np.empty(num_chunks, dtype=np.short)
-        labels = np.empty(num_chunks, dtype=np.long)
+        labels = np.empty(num_chunks, dtype=np.int64)
         read_ids = np.empty(num_chunks, dtype="U36")
         read_pos = np.empty(num_chunks, dtype=int)
         return cls(
@@ -1389,14 +1469,14 @@ def merge_datasets(input_datasets, balance=False, quiet=False):
     LOGGER.info(f"Output dataset summary:\n{output_dataset.summary}")
     for input_dataset, num_chunks in datasets:
         if base_pred:
-            label_conv = np.arange(4, dtype=np.long)
+            label_conv = np.arange(4, dtype=np.int64)
         elif input_dataset.mod_bases == output_dataset.mod_bases:
             label_conv = np.arange(
-                len(output_dataset.mod_bases) + 1, dtype=np.long
+                len(output_dataset.mod_bases) + 1, dtype=np.int64
             )
         else:
             label_conv = np.empty(
-                len(input_dataset.mod_bases) + 1, dtype=np.long
+                len(input_dataset.mod_bases) + 1, dtype=np.int64
             )
             label_conv[0] = 0
             for input_lab, mod_base in enumerate(input_dataset.mod_bases):

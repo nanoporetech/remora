@@ -8,15 +8,15 @@ from remora import io
 
 
 def load_pod5s(pod5_fn):
-    reads = [(str(r.read_id), r) for r in io.iter_pod5_reads(pod5_fp=pod5_fn)]
+    reads = [(str(r.read_id), r) for r in io.iter_pod5_reads(pod5_path=pod5_fn)]
     return dict(reads)
 
 
-def load_alignments(bam_fp, require_move_table: bool):
+def load_alignments(bam_path, require_move_table: bool):
     lut = dict()
 
-    with pysam.AlignmentFile(bam_fp, "rb", check_sq=False) as bam:
-        for alignment in bam:
+    with pysam.AlignmentFile(bam_path, "rb", check_sq=False) as bam_fh:
+        for alignment in bam_fh:
             if io.read_is_primary(alignment):
                 if require_move_table:
                     _ = alignment.get_tag("mv")
@@ -405,7 +405,7 @@ def can_modbam(tmpdir_factory, can_pod5, can_mappings, pretrain_model_args):
             "from_pod5_and_bam",
             can_pod5,
             can_mappings,
-            "--out-file",
+            "--out-bam",
             out_file,
             *pretrain_model_args,
         ],
@@ -445,7 +445,7 @@ def mod_modbam(tmpdir_factory, mod_pod5, mod_mappings, pretrain_model_args):
             "from_pod5_and_bam",
             mod_pod5,
             mod_mappings,
-            "--out-file",
+            "--out-bam",
             out_file,
             *pretrain_model_args,
         ],

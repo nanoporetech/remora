@@ -263,11 +263,13 @@ def test_duplex_reads_data_etl(duplex_reads):
 @pytest.mark.duplex
 @pytest.mark.etl
 def test_duplex_iterator(duplex_reads_and_pairs_pod5, simplex_alignments):
-    pod5_fn, pairs_fp = duplex_reads_and_pairs_pod5
+    pod5_path, pairs_path = duplex_reads_and_pairs_pod5
     duplex_iter = io.DuplexPairsIter(
-        pairs_fp=pairs_fp, pod5_fp=pod5_fn, simplex_bam_fp=simplex_alignments
+        pairs_path=pairs_path,
+        pod5_path=pod5_path,
+        simplex_bam_path=simplex_alignments,
     )
-    expected_pairs = io.DuplexPairsIter.parse_pairs(pairs_fp)
+    expected_pairs = io.DuplexPairsIter.parse_pairs(pairs_path)
     templates = set()
     complements = set()
 
@@ -289,8 +291,8 @@ def test_duplex_iterator(duplex_reads_and_pairs_pod5, simplex_alignments):
 @pytest.mark.duplex
 def test_duplex_mod_infer_simple(duplex_reads, fw_mod_model_dir):
     FINAL_MODEL_FILENAME = "model_final.pt"
-    model_fp = str(fw_mod_model_dir / FINAL_MODEL_FILENAME)
-    model, metadata = model_util.load_model(model_filename=model_fp)
+    model_path = str(fw_mod_model_dir / FINAL_MODEL_FILENAME)
+    model, metadata = model_util.load_model(model_filename=model_path)
     motifs = [x[0] for x in metadata["motifs"]]
     duplex_caller = infer.DuplexReadModCaller(
         model=model, model_metadata=metadata
@@ -340,23 +342,23 @@ def test_duplex_mod_infer_streaming(
 ):
     reads_pod5, pairs = duplex_reads_and_pairs_pod5
     FINAL_MODEL_FILENAME = "model_final.pt"
-    model_fp = str(fw_mod_model_dir / FINAL_MODEL_FILENAME)
-    model, metadata = model_util.load_model(model_filename=model_fp)
-    out_file = tmpdir_factory.mktemp("remora_tests") / "duplex_mod_infer.txt"
+    model_path = str(fw_mod_model_dir / FINAL_MODEL_FILENAME)
+    model, metadata = model_util.load_model(model_filename=model_path)
+    out_path = tmpdir_factory.mktemp("remora_tests") / "duplex_mod_infer.txt"
 
     infer.infer_duplex(
-        simplex_pod5_fp=reads_pod5,
-        simplex_bam_fp=simplex_alignments,
-        duplex_bam_fp=duplex_mapped_alignments,
-        pairs_fp=pairs,
+        simplex_pod5_path=reads_pod5,
+        simplex_bam_path=simplex_alignments,
+        duplex_bam_path=duplex_mapped_alignments,
+        pairs_path=pairs,
         model=model,
         model_metadata=metadata,
-        out_fn=str(out_file),
+        out_bam=str(out_path),
         num_extract_alignment_threads=1,
         num_infer_threads=1,
     )
 
-    assert out_file.exists()
+    assert out_path.exists()
     n_expected_alignments = 0
     with pysam.AlignmentFile(
         duplex_mapped_alignments, "rb", check_sq=False
@@ -365,7 +367,7 @@ def test_duplex_mod_infer_streaming(
             n_expected_alignments += 1
 
     n_observed_alignments = 0
-    with pysam.AlignmentFile(out_file, "rb", check_sq=False) as out_bam:
+    with pysam.AlignmentFile(out_path, "rb", check_sq=False) as out_bam:
         for alignment in out_bam:
             # KeyError when not present
             alignment.get_tag("MM")
