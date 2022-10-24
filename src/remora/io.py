@@ -13,7 +13,7 @@ from pysam import AlignedSegment
 from pod5_format import CombinedReader
 
 from remora import log
-from remora.util import revcomp
+from remora import util
 from remora.constants import PA_TO_NORM_SCALING_FACTOR
 from remora import data_chunks as DC, duplex_utils as DU, RemoraError
 
@@ -179,7 +179,7 @@ class Read:
         duplex_read_sequence = (
             duplex_read_alignment.query_sequence
             if duplex_orientation
-            else revcomp(duplex_read_alignment.query_sequence)
+            else util.revcomp(duplex_read_alignment.query_sequence)
         )
 
         # we don't have a mapping of each base in the simplex sequence to each
@@ -212,7 +212,7 @@ class Read:
         reverse_mapped = alignment_record.is_reverse
         ref_seq = ref_seq.upper()
         if reverse_mapped:
-            ref_seq = revcomp(ref_seq)
+            ref_seq = util.revcomp(ref_seq)
 
         cigar = (
             alignment_record.cigartuples[::-1]
@@ -229,7 +229,7 @@ class Read:
         # remember, pysam reverse-complements the mapped query_sequence on
         # reverse mapped records
         seq = (
-            revcomp(alignment_record.query_sequence)
+            util.revcomp(alignment_record.query_sequence)
             if reverse_mapped
             else alignment_record.query_sequence
         )
@@ -358,6 +358,75 @@ class Read:
         )
         remora_read.check()
         return remora_read
+
+    def get_filtered_focus_positions(self, select_focus_positions: dict):
+        """
+        Args:
+            select_focus_positions (dict): lookup table of (contig, strand)
+            tuples (both strings) to a set of positions to include.
+
+        Returns:
+            np.ndarray of positions covered by the read and within the
+            selected focus position
+        """
+        ref_pos = self.ref_pos
+        read_len = len(self.seq)
+        try:
+            cs_focus_pos = select_focus_positions[(ref_pos.ctg, ref_pos.strand)]
+        except KeyError:
+            # no focus positions on contig/strand
+            return np.array([])
+
+        read_focus_ref_pos = np.array(
+            sorted(
+                set(
+                    range(ref_pos.start, ref_pos.start + read_len)
+                ).intersection(cs_focus_pos)
+            )
+        )
+        return (
+            read_focus_ref_pos - ref_pos.start
+            if ref_pos.strand == "+"
+            else ref_pos.start + read_len - read_focus_ref_pos[::-1] - 1
+        )
+
+    def get_base_call_anchored_focus_bases(
+        self, motifs, select_focus_reference_positions: Optional
+    ):
+        # check, we can only make base call anchored if we have an alignment
+        cigar = self.full_align.get("cigar")
+        if cigar is None:
+            raise RemoraError("missing alignment")
+        cigar = DC.cigartuples_from_string(cigarstring=cigar)
+
+        basecall_int_seq = util.seq_to_int(self.seq)
+        reference_int_seq = util.seq_to_int(self.ref_seq)
+
+        all_base_call_focus_positions = util.find_focus_bases_in_int_sequence(
+            int_seq=basecall_int_seq, motifs=motifs
+        )
+        # mapping of reference sequence positions to base call sequence
+        # positions
+        mapping = DC.make_sequence_coordinate_mapping(
+            cigar=cigar, read_seq=self.seq, ref_seq=self.ref_seq
+        )
+
+        reference_motif_positions = (
+            util.find_focus_bases_in_int_sequence(reference_int_seq, motifs)
+            if select_focus_reference_positions is None
+            else self.get_filtered_focus_positions(
+                select_focus_positions=select_focus_reference_positions,
+            )
+        )
+        reference_supported_focus_bases = mapping[reference_motif_positions]
+        base_call_focus_bases = np.array(
+            [
+                focus_base
+                for focus_base in all_base_call_focus_positions
+                if focus_base in reference_supported_focus_bases
+            ]
+        )
+        return base_call_focus_bases
 
 
 @dataclass
@@ -618,8 +687,8 @@ def extract_align_read(
         ref_seq = None
     cigar = bam_read.cigartuples
     if bam_read.is_reverse:
-        align_read.seq = revcomp(align_read.seq)
-        ref_seq = revcomp(ref_seq)
+        align_read.seq = util.revcomp(align_read.seq)
+        ref_seq = util.revcomp(ref_seq)
         cigar = cigar[::-1]
     ref_pos = RefPos(
         ctg=bam_read.reference_name,
@@ -699,7 +768,7 @@ def iter_alignments(
             ref_seq = read.get_reference_sequence().upper()
             cigar = read.cigartuples
             if read.is_reverse:
-                ref_seq = revcomp(ref_seq)
+                ref_seq = util.revcomp(ref_seq)
                 cigar = cigar[::-1]
             ref_pos = RefPos(
                 ctg=read.reference_name,

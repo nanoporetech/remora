@@ -74,7 +74,7 @@ def call_read_mods(
     """
     if focus_offset is None:
         motifs = [Motif(*mot) for mot in model_metadata["motifs"]]
-        read.add_motif_focus_bases(motifs)
+        read.set_motif_focus_bases(motifs)
     else:
         read.focus_bases = np.array([focus_offset])
     read.prepare_batches(model_metadata, batch_size)
@@ -214,7 +214,7 @@ def prepare_batches(read_errs, model_metadata, batch_size, ref_anchored=False):
             out_read_errs.append((None, None, "Remora read prep error"))
             continue
         motifs = [Motif(*mot) for mot in model_metadata["motifs"]]
-        remora_read.add_motif_focus_bases(motifs)
+        remora_read.set_motif_focus_bases(motifs)
         remora_read.prepare_batches(model_metadata, batch_size)
         out_read_errs.append((copy(io_read), remora_read, None))
     return out_read_errs
