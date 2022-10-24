@@ -1,13 +1,11 @@
-import re
 from collections import deque
-from typing import List, Tuple
 from dataclasses import dataclass
+from typing import List, Tuple
 
 import parasail
 from numpy import typing as npt
 
-import remora.data_chunks as DC
-
+from remora import data_chunks as DC
 
 CigarTuples = List[Tuple[int, int]]
 
@@ -21,18 +19,6 @@ class PairwiseAlignment:
     cigar: CigarTuples
 
 
-def cigartuples_from_string(cigarstring: str) -> List[Tuple[int, int]]:
-    """
-    Returns pysam-style list of (op, count) tuples from a cigarstring.
-    """
-    # todo: move this pattern to a constant
-    pattern = re.compile(r"(\d+)" + f"([{''.join(DC.CIGAR_CODES)}])")
-    return [
-        (DC.CODE_TO_OP[m.group(2)], int(m.group(1)))
-        for m in re.finditer(pattern, cigarstring)
-    ]
-
-
 def trim_parasail_alignment(alignment_result):
     ref_start = 0
     ref_end = alignment_result.len_ref
@@ -42,7 +28,7 @@ def trim_parasail_alignment(alignment_result):
     fixed_end = False
 
     cigar_string = alignment_result.cigar.decode.decode()
-    cigar_tuples = deque(cigartuples_from_string(cigar_string))
+    cigar_tuples = deque(DC.cigartuples_from_string(cigar_string))
     while not (fixed_start and fixed_end):
         fist_op, first_length = cigar_tuples[0]
         if fist_op in (1, 4):  # insert, soft-clip, increment query start

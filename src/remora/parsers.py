@@ -153,6 +153,12 @@ def register_dataset_prepare(parser):
         type=int,
         help="Number of reads.",
     )
+    data_grp.add_argument(
+        "--base-call-anchor",
+        action="store_true",
+        help="makes dataset from base call sequence instead of aligned "
+        "reference sequence",
+    )
 
     refine_grp = subparser.add_argument_group("Signal Mapping Refine Arguments")
     refine_grp.add_argument(
@@ -207,7 +213,7 @@ def register_dataset_prepare(parser):
         nargs=2,
         metavar=("SINGLE_LETTER_CODE", "MOD_BASE"),
         default=None,
-        help="Modified base information. Exmaple: `--mod-base m 5mC`",
+        help="Modified base information. Example: `--mod-base m 5mC`",
     )
     label_grp.add_argument(
         "--mod-base-control",
@@ -285,6 +291,7 @@ def run_dataset_prepare(args):
         args.num_reads,
         args.num_extract_alignment_workers,
         args.num_extract_chunks_workers,
+        base_call_anchor=args.base_call_anchor,
     )
 
 

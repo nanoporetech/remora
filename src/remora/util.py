@@ -1,12 +1,12 @@
-import re
-import queue
 import array
-import platform
-import traceback
-from time import sleep
 import multiprocessing as mp
-from threading import Thread
+import platform
+import queue
+import re
+import traceback
 from os.path import realpath, expanduser
+from threading import Thread
+from time import sleep
 
 import numpy as np
 
@@ -44,6 +44,35 @@ NP_COMP_BASES = np.array([3, 2, 1, 0], dtype=np.uintp)
 U_TO_T_BASES = {ord("U"): ord("T")}
 
 DEFAULT_QUEUE_SIZE = 10_000
+
+
+def iter_motif_hits(int_seq, motif):
+    yield from np.where(
+        np.logical_and.reduce(
+            [
+                np.isin(
+                    int_seq[
+                        po : int_seq.size - len(motif.int_pattern) + po + 1
+                    ],
+                    pi,
+                )
+                for po, pi in enumerate(motif.int_pattern)
+            ]
+        )
+    )[0]
+
+
+def find_focus_bases_in_int_sequence(
+    int_seq: np.ndarray, motifs: list
+) -> np.ndarray:
+    return np.fromiter(
+        set(
+            mot_pos + mot.focus_pos
+            for mot in motifs
+            for mot_pos in iter_motif_hits(int_seq, mot)
+        ),
+        int,
+    )
 
 
 def comp(seq):

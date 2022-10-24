@@ -1,14 +1,17 @@
-from pathlib import Path
 from collections import defaultdict
+from pathlib import Path
 
-import pysam
-import pod5_format
 import numpy as np
+import pod5_format
+import pysam
 from tqdm import tqdm
 
 from remora import log, RemoraError
-from remora.util import MultitaskMap, BackgroundIter
-from remora.data_chunks import RemoraDataset, RemoraRead, compute_ref_to_signal
+from remora.data_chunks import (
+    RemoraDataset,
+    RemoraRead,
+    compute_ref_to_signal,
+)
 from remora.io import (
     index_bam,
     read_is_primary,
@@ -19,6 +22,10 @@ from remora.io import (
     prep_extract_signal,
     extract_signal,
 )
+from remora.util import (
+    MultitaskMap,
+    BackgroundIter,
+)
 
 LOGGER = log.get_logger()
 
@@ -26,29 +33,6 @@ LOGGER = log.get_logger()
 ####################
 # Chunk extraction #
 ####################
-
-
-def add_focus_ref_pos(read, focus_ref_pos, ref_pos):
-    try:
-        cs_focus_pos = focus_ref_pos[(ref_pos.ctg, ref_pos.strand)]
-    except KeyError:
-        # no focus positions on contig/strand
-        return
-    read_len = read.int_seq.size
-    read_focus_ref_pos = np.array(
-        sorted(
-            set(range(ref_pos.start, ref_pos.start + read_len)).intersection(
-                cs_focus_pos
-            )
-        )
-    )
-    if read_focus_ref_pos.size == 0:
-        return
-    read.focus_bases = (
-        read_focus_ref_pos - ref_pos.start
-        if ref_pos.strand == "+"
-        else ref_pos.start + read_len - read_focus_ref_pos[::-1] - 1
-    )
 
 
 def extract_chunks(
@@ -63,40 +47,55 @@ def extract_chunks(
     base_pred,
     base_start_justify,
     offset,
+    basecall_anchored,
 ):
     read_chunks = []
-    for read_idx, (read, err) in enumerate(read_errs):
-        if read is None:
-            read_chunks.append(tuple((read, err)))
+    for read_idx, (io_read, err) in enumerate(read_errs):
+        if io_read is None:
+            read_chunks.append(tuple((io_read, err)))
             continue
-        if read.ref_seq is None:
+        if io_read.ref_seq is None:
             read_chunks.append(
                 tuple((None, "No reference sequence (missing MD tag)"))
             )
             continue
-        read.ref_to_signal = compute_ref_to_signal(
-            read.query_to_signal,
-            read.cigar,
-            query_seq=read.seq,
-            ref_seq=read.ref_seq,
-        )
-        trim_signal = read.signal[
-            read.ref_to_signal[0] : read.ref_to_signal[-1]
-        ]
-        shift_ref_to_sig = read.ref_to_signal - read.ref_to_signal[0]
-        remora_read = RemoraRead(
-            dacs=trim_signal,
-            shift=read.shift_dacs_to_norm,
-            scale=read.scale_dacs_to_norm,
-            seq_to_sig_map=shift_ref_to_sig,
-            str_seq=read.ref_seq,
-            labels=np.full(len(read.ref_seq), int_label, dtype=int),
-            read_id=read.read_id,
-        )
-        if focus_ref_pos is not None:
-            add_focus_ref_pos(remora_read, focus_ref_pos, read.ref_pos)
+        if basecall_anchored:
+            remora_read = io_read.into_remora_read(use_reference_anchor=False)
+            remora_read.focus_bases = (
+                io_read.get_base_call_anchored_focus_bases(
+                    motifs=motifs,
+                    select_focus_reference_positions=focus_ref_pos,
+                )
+            )
+            remora_read.labels = np.full(len(io_read.seq), int_label, dtype=int)
         else:
-            remora_read.add_motif_focus_bases(motifs)
+            io_read.ref_to_signal = compute_ref_to_signal(
+                io_read.query_to_signal,
+                io_read.cigar,
+                query_seq=io_read.seq,
+                ref_seq=io_read.ref_seq,
+            )
+            trim_signal = io_read.signal[
+                io_read.ref_to_signal[0] : io_read.ref_to_signal[-1]
+            ]
+            shift_ref_to_sig = io_read.ref_to_signal - io_read.ref_to_signal[0]
+            remora_read = RemoraRead(
+                dacs=trim_signal,
+                shift=io_read.shift_dacs_to_norm,
+                scale=io_read.scale_dacs_to_norm,
+                seq_to_sig_map=shift_ref_to_sig,
+                str_seq=io_read.ref_seq,
+                labels=np.full(len(io_read.ref_seq), int_label, dtype=int),
+                read_id=io_read.read_id,
+            )
+            if focus_ref_pos is not None:
+                # todo(arand) make a test that exercises this code path
+                remora_read.focus_bases = io_read.get_filtered_focus_positions(
+                    focus_ref_pos
+                )
+            else:
+                remora_read.set_motif_focus_bases(motifs)
+
         remora_read.refine_signal_mapping(sig_map_refiner)
         remora_read.downsample_focus_bases(max_chunks_per_read)
         try:
@@ -115,10 +114,11 @@ def extract_chunks(
             )
         )
         LOGGER.debug(
-            f"extracted {len(read_align_chunks)} chunks from {read.read_id} "
+            f"extracted {len(read_align_chunks)} chunks from {io_read.read_id} "
             f"alignment {read_idx}"
         )
         read_chunks.append(tuple((read_align_chunks, None)))
+
     return read_chunks
 
 
@@ -148,6 +148,7 @@ def extract_chunk_dataset(
     num_extract_chunks_threads,
     signal_first=True,
     skip_non_primary=True,
+    base_call_anchor=False,
 ):
     if signal_first:
         bam_idx, num_bam_reads = index_bam(bam_fn, skip_non_primary)
@@ -175,6 +176,10 @@ def extract_chunk_dataset(
                 num_reads = min(num_reads, num_bam_reads)
         pysam.set_verbosity(pysam_save)
 
+    LOGGER.info(
+        f"Making {'base call' if base_call_anchor else 'reference'}-"
+        f"anchored training data"
+    )
     LOGGER.info("Allocating memory for output tensors")
     # initialize empty dataset with pre-allocated memory
     dataset = RemoraDataset.allocate_empty_chunks(
@@ -241,6 +246,7 @@ def extract_chunk_dataset(
             base_pred,
             base_start_justify,
             offset,
+            base_call_anchor,
         ],
         name="ExtractChunks",
         use_process=True,
@@ -266,6 +272,7 @@ def extract_chunk_dataset(
                     dataset.add_chunk(chunk)
                 except RemoraError as e:
                     errs[str(e)] += 1
+
     if len(errs) > 0:
         err_types = sorted([(num, err) for err, num in errs.items()])[::-1]
         err_str = "\n".join(f"{num:>7} : {err:<80}" for num, err in err_types)

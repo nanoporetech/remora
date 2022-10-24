@@ -1,5 +1,7 @@
+import re
 from collections import Counter
 from dataclasses import dataclass
+from typing import List, Tuple
 
 import torch
 import numpy as np
@@ -37,6 +39,17 @@ CODE_TO_OP = {
     "=": 7,
     "X": 8,
 }
+CIGAR_STRING_PATTERN = re.compile(r"(\d+)" + f"([{''.join(CIGAR_CODES)}])")
+
+
+def cigartuples_from_string(cigarstring: str) -> List[Tuple[int, int]]:
+    """
+    Returns pysam-style list of (op, count) tuples from a cigarstring.
+    """
+    return [
+        (CODE_TO_OP[m.group(2)], int(m.group(1)))
+        for m in re.finditer(CIGAR_STRING_PATTERN, cigarstring)
+    ]
 
 
 def map_ref_to_signal(
@@ -293,32 +306,13 @@ class RemoraRead:
         if check_read:
             self.check()
 
-    def iter_motif_hits(self, motif):
-        yield from np.where(
-            np.logical_and.reduce(
-                [
-                    np.isin(
-                        self.int_seq[
-                            po : self.int_seq.size
-                            - len(motif.int_pattern)
-                            + po
-                            + 1
-                        ],
-                        pi,
-                    )
-                    for po, pi in enumerate(motif.int_pattern)
-                ]
-            )
-        )[0]
-
-    def add_motif_focus_bases(self, motifs):
-        self.focus_bases = np.fromiter(
-            set(
-                mot_pos + mot.focus_pos
-                for mot in motifs
-                for mot_pos in self.iter_motif_hits(mot)
-            ),
-            int,
+    def set_motif_focus_bases(self, motifs):
+        """
+        Mutates self. Sets self.focus_bases to all hits within self.int_seq.
+        :param motifs: Iterable of util.Motifs
+        """
+        self.focus_bases = util.find_focus_bases_in_int_sequence(
+            self.int_seq, motifs
         )
 
     def downsample_focus_bases(self, max_sites):
