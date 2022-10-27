@@ -461,6 +461,7 @@ class RemoraRead:
             model_metadata: Inference model metadata
             batch_size (int): Number of chunks to call per-batch
         """
+        self.batches = []
         self.refine_signal_mapping(model_metadata["sig_map_refiner"])
         chunks = list(
             self.iter_chunks(
@@ -490,7 +491,6 @@ class RemoraRead:
         dataset.set_nbatches()
 
         bb, ab = model_metadata["kmer_context_bases"]
-        self.batches = []
         for (sigs, seqs, seq_maps, seq_lens), labels, (_, read_pos) in dataset:
             enc_kmers = encoded_kmers.compute_encoded_kmer_batch(
                 bb, ab, seqs, seq_maps, seq_lens
