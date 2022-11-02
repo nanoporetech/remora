@@ -369,8 +369,10 @@ class Read:
             np.ndarray of positions covered by the read and within the
             selected focus position
         """
+        if self.ref_pos is None or self.ref_seq is None:
+            raise RemoraError("Cannot extract focus positions without mapping")
         ref_pos = self.ref_pos
-        read_len = len(self.seq)
+        ref_len = len(self.ref_seq)
         try:
             cs_focus_pos = select_focus_positions[(ref_pos.ctg, ref_pos.strand)]
         except KeyError:
@@ -379,15 +381,15 @@ class Read:
 
         read_focus_ref_pos = np.array(
             sorted(
-                set(
-                    range(ref_pos.start, ref_pos.start + read_len)
-                ).intersection(cs_focus_pos)
+                set(range(ref_pos.start, ref_pos.start + ref_len)).intersection(
+                    cs_focus_pos
+                )
             )
         )
         return (
             read_focus_ref_pos - ref_pos.start
             if ref_pos.strand == "+"
-            else ref_pos.start + read_len - read_focus_ref_pos[::-1] - 1
+            else ref_pos.start + ref_len - read_focus_ref_pos[::-1] - 1
         )
 
     def get_base_call_anchored_focus_bases(
@@ -681,23 +683,20 @@ def extract_align_read(
     if not parse_ref_align:
         return align_read
 
-    try:
-        ref_seq = bam_read.get_reference_sequence().upper()
-    except ValueError:
-        ref_seq = None
-    cigar = bam_read.cigartuples
-    if bam_read.is_reverse:
-        align_read.seq = util.revcomp(align_read.seq)
-        ref_seq = util.revcomp(ref_seq)
-        cigar = cigar[::-1]
-    ref_pos = RefPos(
+    align_read.ref_pos = RefPos(
         ctg=bam_read.reference_name,
         strand="-" if bam_read.is_reverse else "+",
         start=bam_read.reference_start,
     )
-    align_read.ref_seq = ref_seq
-    align_read.ref_pos = ref_pos
-    align_read.cigar = cigar
+    try:
+        align_read.ref_seq = bam_read.get_reference_sequence().upper()
+    except ValueError:
+        align_read.ref_seq = None
+    align_read.cigar = bam_read.cigartuples
+    if bam_read.is_reverse:
+        align_read.seq = util.revcomp(align_read.seq)
+        align_read.ref_seq = util.revcomp(align_read.ref_seq)
+        align_read.cigar = align_read.cigar[::-1]
     return align_read
 
 
