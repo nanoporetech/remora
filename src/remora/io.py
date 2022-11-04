@@ -395,11 +395,8 @@ class Read:
     def get_base_call_anchored_focus_bases(
         self, motifs, select_focus_reference_positions: Optional
     ):
-        # check, we can only make base call anchored if we have an alignment
-        cigar = self.full_align.get("cigar")
-        if cigar is None:
+        if self.cigar is None:
             raise RemoraError("missing alignment")
-        cigar = DC.cigartuples_from_string(cigarstring=cigar)
 
         basecall_int_seq = util.seq_to_int(self.seq)
         reference_int_seq = util.seq_to_int(self.ref_seq)
@@ -410,7 +407,7 @@ class Read:
         # mapping of reference sequence positions to base call sequence
         # positions
         mapping = DC.make_sequence_coordinate_mapping(
-            cigar=cigar, read_seq=self.seq, ref_seq=self.ref_seq
+            cigar=self.cigar, read_seq=self.seq, ref_seq=self.ref_seq
         )
 
         reference_motif_positions = (
@@ -676,6 +673,8 @@ def extract_align_read(
 
     align_read = copy(io_read)
     align_read.seq = bam_read.query_sequence
+    if bam_read.is_reverse:
+        align_read.seq = util.revcomp(align_read.seq)
     align_read.stride = stride
     align_read.mv_table = mv_table
     align_read.query_to_signal = query_to_signal
@@ -694,7 +693,6 @@ def extract_align_read(
         align_read.ref_seq = None
     align_read.cigar = bam_read.cigartuples
     if bam_read.is_reverse:
-        align_read.seq = util.revcomp(align_read.seq)
         align_read.ref_seq = util.revcomp(align_read.ref_seq)
         align_read.cigar = align_read.cigar[::-1]
     return align_read
@@ -716,6 +714,7 @@ def extract_alignments(read_err, bam_idx, bam_fh, req_tags=REQUIRED_TAGS):
                 io_read, bam_read, req_tags=req_tags
             )
             if align_read is None:
+                # invalid tag errors should already be logged
                 continue
         except RemoraError as e:
             read_alignments.append(tuple((None, str(e))))
