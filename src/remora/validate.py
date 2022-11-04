@@ -276,7 +276,15 @@ class ValidationLogger:
 ##################
 
 
-def parse_mod_read(read, gt_sites, gt_ranges, alphabet, full_fh, nctx):
+def parse_mod_read(
+    read,
+    gt_sites,
+    gt_ranges,
+    alphabet,
+    full_fh,
+    nctx=5,
+    max_sites=None,
+):
     strand = "-" if read.is_reverse else "+"
     ctg_gt = gt_sites.get((read.reference_name, strand))
     ctg_gt_range = gt_ranges.get((read.reference_name, strand))
@@ -370,6 +378,14 @@ def parse_mod_read(read, gt_sites, gt_ranges, alphabet, full_fh, nctx):
         if r_pos_mod is not None and q_pos_mod_probs is not None:
             labels.append(r_pos_mod_idx)
             probs.append(q_pos_mod_probs)
+    if max_sites is not None and len(labels) > max_sites:
+        indices = np.random.choice(
+            len(labels),
+            size=max_sites,
+            replace=False,
+        )
+        labels = [labels[idx] for idx in indices]
+        probs = [probs[idx] for idx in indices]
     return probs, labels
 
 
@@ -414,6 +430,7 @@ def parse_mod_bam(
     alphabet,
     full_fh,
     context_bases=5,
+    max_sites=None,
 ):
     """Parse modified base tags from BAM file recording probability of canonical
     and each mod at each site in ground truth sites.
@@ -428,6 +445,7 @@ def parse_mod_bam(
             ground truth data. Other modified bases in BAM file will be ignored.
         full_fh (File): File handle to write full results.
         context_bases (int): Number of context bases to include in full output
+        max_sites (int): Max sites to extract per read
 
     Returns:
         2-tuple containing
@@ -452,7 +470,8 @@ def parse_mod_bam(
                 gt_ranges,
                 alphabet,
                 full_fh,
-                context_bases,
+                nctx=context_bases,
+                max_sites=max_sites,
             )
             probs.extend(read_probs)
             labels.extend(read_labels)
@@ -463,6 +482,9 @@ def parse_mod_bam(
             "to original MM-tag style. Try `sed s/C+m?,/C+m,/g`and see "
             "https://github.com/pysam-developers/pysam/issues/1123"
         )
+    LOGGER.debug(
+        f"Parsed {len(probs)} modified base calls from file: {bam_path}"
+    )
     return np.array(probs), np.array(labels)
 
 
@@ -474,6 +496,7 @@ def validate_modbams(
     allow_unbalanced=False,
     seed=None,
     extra_bases=None,
+    max_sites_per_read=None,
 ):
     # seed for random balancing
     seed = (
@@ -492,22 +515,29 @@ def validate_modbams(
             "gt_mod_idx\tmod_probs\tref_align\tquery_align\t"
             "within_align\twithin_gt\n"
         )
+
+    LOGGER.info("Parsing ground truth BED files")
     bams, beds = zip(*bams_and_beds)
+    parsed_gt_sites = {}
     all_gt_sites = []
     all_gt_ranges = []
     all_mods = set()
     for bed_path in beds:
-        gt_sites, samp_mods = parse_mods_bed(bed_path)
+        try:
+            gt_sites, samp_mods = parsed_gt_sites[bed_path]
+        except KeyError:
+            gt_sites, samp_mods = parse_mods_bed(bed_path)
+            parsed_gt_sites[bed_path] = (gt_sites, samp_mods)
+            tot_sites = sum(len(cs_sites) for cs_sites in gt_sites.values())
+            LOGGER.info(
+                f"Parsed {tot_sites} total sites with labels {samp_mods} "
+                f"from {bed_path}"
+            )
         all_gt_sites.append(gt_sites)
         all_gt_ranges.append(
             dict((cs, (min(poss), max(poss))) for cs, poss in gt_sites.items())
         )
         all_mods.update(samp_mods)
-        tot_sites = sum(len(cs_sites) for cs_sites in gt_sites.values())
-        LOGGER.info(
-            f"Parsed {tot_sites} total sites with labels {samp_mods} "
-            f"from {bed_path}"
-        )
     if extra_bases is not None:
         all_mods.update(extra_bases)
     can_base = all_mods.intersection("ACGTU")
@@ -518,10 +548,16 @@ def validate_modbams(
     mod_bases = all_mods.difference("ACGTU")
     alphabet = "".join(can_base) + "".join(sorted(mod_bases))
 
+    LOGGER.info("Parsing modBAM files")
     all_probs, all_labels = [], []
     for bam_path, gt_sites, gt_ranges in zip(bams, all_gt_sites, all_gt_ranges):
         probs, labels = parse_mod_bam(
-            bam_path, gt_sites, gt_ranges, alphabet, full_fh
+            bam_path,
+            gt_sites,
+            gt_ranges,
+            alphabet,
+            full_fh,
+            max_sites=max_sites_per_read,
         )
         all_probs.append(probs)
         all_labels.append(labels)

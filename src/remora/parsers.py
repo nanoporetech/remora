@@ -1160,6 +1160,12 @@ def register_validate_from_modbams(parser):
         help="Allow classes to be unbalanced for metric computation.",
     )
     subparser.add_argument(
+        "--max-sites-per-read",
+        type=int,
+        help="Maxiumum number of sites to extract from a single read. "
+        "Default: %(default)s",
+    )
+    subparser.add_argument(
         "--seed",
         type=int,
         help="Seed value. Default: Random seed",
@@ -1193,6 +1199,7 @@ def run_validate_modbams(args):
         allow_unbalanced=args.allow_unbalanced,
         seed=args.seed,
         extra_bases=args.extra_bases,
+        max_sites_per_read=args.max_sites_per_read,
     )
 
 
