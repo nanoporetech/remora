@@ -377,14 +377,15 @@ class Read:
             cs_focus_pos = select_focus_positions[(ref_pos.ctg, ref_pos.strand)]
         except KeyError:
             # no focus positions on contig/strand
-            return np.array([])
+            return np.array([], dtype=int)
 
         read_focus_ref_pos = np.array(
             sorted(
                 set(range(ref_pos.start, ref_pos.start + ref_len)).intersection(
                     cs_focus_pos
                 )
-            )
+            ),
+            dtype=int,
         )
         return (
             read_focus_ref_pos - ref_pos.start
