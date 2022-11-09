@@ -1,30 +1,27 @@
-from collections import defaultdict
 from pathlib import Path
+from collections import defaultdict
 
-import numpy as np
-import pod5_format
 import pysam
+import numpy as np
 from tqdm import tqdm
+from pod5_format import Reader as Pod5Reader
 
 from remora import log, RemoraError
+from remora.util import MultitaskMap, BackgroundIter
 from remora.data_chunks import (
-    RemoraDataset,
     RemoraRead,
+    RemoraDataset,
     compute_ref_to_signal,
 )
 from remora.io import (
     index_bam,
-    read_is_primary,
     iter_signal,
-    prep_extract_alignments,
-    extract_alignments,
-    iter_alignments,
-    prep_extract_signal,
     extract_signal,
-)
-from remora.util import (
-    MultitaskMap,
-    BackgroundIter,
+    iter_alignments,
+    read_is_primary,
+    extract_alignments,
+    prep_extract_signal,
+    prep_extract_alignments,
 )
 
 LOGGER = log.get_logger()
@@ -152,7 +149,7 @@ def extract_chunk_dataset(
 ):
     if signal_first:
         bam_idx, num_bam_reads = index_bam(bam_fn, skip_non_primary)
-        with pod5_format.CombinedReader(Path(pod5_fn)) as pod5_fp:
+        with Pod5Reader(Path(pod5_fn)) as pod5_fp:
             num_pod5_reads = sum(1 for _ in pod5_fp.reads())
             LOGGER.info(
                 f"Found {num_bam_reads} BAM records and "
