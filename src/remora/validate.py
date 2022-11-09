@@ -154,6 +154,11 @@ def process_mods_probs(probs, labels, allow_unbalanced, pct_filt, name):
         # split probs
         label_probs = [probs[labels == mod_idx] for mod_idx in range(nlabs)]
         lab_sizes = [lp.shape[0] for lp in label_probs]
+        if len(lab_sizes) == 1:
+            raise RemoraError(
+                "Cannot balance dataset with 1 label. "
+                "Consider running with `--allow-unbalanced`"
+            )
         LOGGER.debug(f"Balancing labels. Starting from: {lab_sizes}")
         min_size = min(lab_sizes)
         probs = np.empty((min_size * nlabs, nlabs), dtype=probs.dtype)
