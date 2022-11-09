@@ -8,9 +8,8 @@ from typing import Iterator, Optional
 import pysam
 import numpy as np
 from tqdm import tqdm
-import pod5_format as p5
 from pysam import AlignedSegment
-from pod5_format import CombinedReader
+from pod5_format import Reader as Pod5Reader
 
 from remora import log
 from remora import util
@@ -248,9 +247,13 @@ class Read:
         }
 
     @classmethod
-    def from_pod5_and_alignment(
-        cls, pod5_read_record: p5.ReadRecord, alignment_record: AlignedSegment
-    ):
+    def from_pod5_and_alignment(cls, pod5_read_record, alignment_record):
+        """Initialize read from pod5 and pysam records
+
+        Args:
+            pod5_read_record (pod5_format.ReadRecord)
+            alignment_record (pysam.AlignedSegment)
+        """
         try:
             alignment_record.get_tag("mv")
         except KeyError as e:
@@ -495,7 +498,7 @@ def iter_pod5_reads(
     pod5_path: str, num_reads: int = None, read_ids: Iterator = None
 ):
     LOGGER.debug(f"Reading from POD5 at {pod5_path}")
-    with CombinedReader(Path(pod5_path)) as pod5_fh:  # todo change to pod5_fh
+    with Pod5Reader(Path(pod5_path)) as pod5_fh:  # todo change to pod5_fh
         for i, read in enumerate(
             pod5_fh.reads(selection=read_ids, preload=["samples"])
         ):
@@ -532,7 +535,7 @@ class DuplexPairsIter:
     ):
         self.pairs = iter(DuplexPairsIter.parse_pairs(pairs_path))
         self.pod5_path = pod5_path
-        self.reader = CombinedReader(Path(pod5_path))
+        self.reader = Pod5Reader(Path(pod5_path))
         self.alignments_path = simplex_bam_path
         self.simplex_index = None
         self.simplex_alignments = None
@@ -563,7 +566,12 @@ class DuplexPairsIter:
         )
         return self
 
-    def _make_read(self, p5_read: p5.ReadRecord):
+    def _make_read(self, p5_read):
+        """Initialize io.Read from pod5 read object
+
+        Args:
+            p5_read (pod5_format.ReadRecord)
+        """
         alns = self.simplex_index[str(p5_read.read_id)]
         assert len(alns) == 1, (
             "should not have multiple BAM records for simplex reads, make "
@@ -795,7 +803,7 @@ def iter_alignments(
 
 
 def prep_extract_signal(pod5_path):
-    pod5_fh = CombinedReader(Path(pod5_path))
+    pod5_fh = Pod5Reader(Path(pod5_path))
     return [
         pod5_fh,
     ], {}

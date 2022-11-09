@@ -8,7 +8,7 @@ from collections import defaultdict
 import pysam
 import numpy as np
 from tqdm import tqdm
-from pod5_format import CombinedReader
+from pod5_format import Reader as Pod5Reader
 from torch.jit._script import RecursiveScriptModule
 
 from remora import constants, log, RemoraError
@@ -300,7 +300,7 @@ def infer_from_pod5_and_bam(
     ref_anchored=False,
 ):
     bam_idx, num_bam_reads = index_bam(in_bam_path, skip_non_primary)
-    with CombinedReader(Path(pod5_path)) as pod5_fh:
+    with Pod5Reader(Path(pod5_path)) as pod5_fh:
         num_pod5_reads = sum(1 for _ in pod5_fh.reads())
         LOGGER.info(
             f"Found {num_bam_reads} BAM records and "
