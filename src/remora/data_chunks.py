@@ -1,3 +1,4 @@
+import gc
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -1385,59 +1386,55 @@ def merge_datasets(input_datasets, balance=False, quiet=False):
     log_fp = LOGGER.debug if quiet else LOGGER.info
 
     # load first file to determine base_pred or mod_bases
-    datasets = [load_dataset(*input_datasets[0])]
-    base_pred = datasets[0][0].base_pred
-    chunk_context = datasets[0][0].chunk_context
-    max_seq_len = datasets[0][0].max_seq_len
-    kmer_context_bases = datasets[0][0].kmer_context_bases
-    motifs = datasets[0][0].motifs
-    sig_map_refiner = datasets[0][0].sig_map_refiner
-    base_start_justify = datasets[0][0].base_start_justify
-    offset = datasets[0][0].offset
+    dataset, num_chunks = load_dataset(*input_datasets[0])
+    base_pred = dataset.base_pred
+    chunk_context = dataset.chunk_context
+    max_seq_len = dataset.max_seq_len
+    kmer_context_bases = dataset.kmer_context_bases
+    motifs = set(dataset.motifs)
+    sig_map_refiner = dataset.sig_map_refiner
+    base_start_justify = dataset.base_start_justify
+    offset = dataset.offset
+    del dataset
+    gc.collect()
+
+    all_num_chunks = [num_chunks]
+    raw_mod_long_names = []
+    raw_mod_bases = []
     for ds_path, num_chunks in input_datasets[1:]:
-        datasets.append(load_dataset(ds_path, num_chunks))
-        if datasets[-1][0].base_pred != base_pred:
-            raise RemoraError("All datasets must be base-pred or modbase")
-        if datasets[-1][0].chunk_context != chunk_context:
-            raise RemoraError(
-                "All datasets must have the same chunk_context "
-                f"({datasets[-1][0].chunk_context} != {chunk_context})"
-            )
-        if datasets[-1][0].max_seq_len != max_seq_len:
-            raise RemoraError(
-                "All datasets must have the same max_seq_len "
-                f"({datasets[-1][0].max_seq_len} != {max_seq_len})"
-            )
-        if datasets[-1][0].kmer_context_bases != kmer_context_bases:
-            raise RemoraError(
-                "All datasets must have the same kmer_context_bases "
-                f"({datasets[-1][0].kmer_context_bases} != "
-                f"{kmer_context_bases})"
-            )
-        if datasets[-1][0].motifs != motifs:
+        dataset, num_chunks = load_dataset(ds_path, num_chunks)
+        for attr_name, attr_val in (
+            ("base_pred", base_pred),
+            ("chunk_context", chunk_context),
+            ("max_seq_len", max_seq_len),
+            ("kmer_context_bases", kmer_context_bases),
+            ("base_start_justify", base_start_justify),
+            ("offset", offset),
+        ):
+            if getattr(dataset, attr_name) != attr_val:
+                raise RemoraError(
+                    f"All datasets must have same {attr_name} "
+                    f"{getattr(dataset, attr_name)} != {attr_val}"
+                )
+        if dataset.motifs != motifs:
             log_fp(
                 "WARNING: Datasets have different motifs. Merging motifs "
-                f"{motifs} with motifs {datasets[-1][0].motifs}"
+                f"{motifs} with motifs {dataset.motifs}"
             )
-
-            motifs = list(
-                set(
-                    motif for dataset in datasets for motif in dataset[0].motifs
-                )
-            )
+            motifs.update(dataset.motifs)
+        if not base_pred:
+            for mod_base, mln in zip(dataset.mod_bases, dataset.mod_long_names):
+                if mod_base not in raw_mod_bases:
+                    raw_mod_bases.append(mod_base)
+                    raw_mod_long_names.append(mln)
+        all_num_chunks.append(num_chunks)
         # TODO add checks for refine attributes
+        del dataset
+        gc.collect()
 
     all_mod_bases = ""
     all_mod_long_names = None
     if not base_pred:
-        # extract modified base definitions from all datasets
-        raw_mod_long_names = []
-        raw_mod_bases = []
-        for ds, _ in datasets:
-            for mod_base, mln in zip(ds.mod_bases, ds.mod_long_names):
-                if mod_base not in raw_mod_bases:
-                    raw_mod_bases.append(mod_base)
-                    raw_mod_long_names.append(mln)
         # sort modified bases alphabetically
         all_mod_long_names = []
         for idx in sorted(
@@ -1446,9 +1443,8 @@ def merge_datasets(input_datasets, balance=False, quiet=False):
             all_mod_bases += raw_mod_bases[idx]
             all_mod_long_names.append(raw_mod_long_names[idx])
 
-    total_chunks = sum(ds[1] for ds in datasets)
     output_dataset = RemoraDataset.allocate_empty_chunks(
-        num_chunks=total_chunks,
+        num_chunks=sum(all_num_chunks),
         chunk_context=chunk_context,
         max_seq_len=max_seq_len,
         kmer_context_bases=kmer_context_bases,
@@ -1461,13 +1457,10 @@ def merge_datasets(input_datasets, balance=False, quiet=False):
         offset=offset,
     )
     LOGGER.info(f"Output dataset summary:\n{output_dataset.summary}")
-    for input_dataset, num_chunks in datasets:
+    for ds_path, num_chunks in input_datasets:
+        input_dataset, num_chunks = load_dataset(ds_path, num_chunks)
         if base_pred:
             label_conv = np.arange(4, dtype=np.int64)
-        elif input_dataset.mod_bases == output_dataset.mod_bases:
-            label_conv = np.arange(
-                len(output_dataset.mod_bases) + 1, dtype=np.int64
-            )
         else:
             label_conv = np.empty(
                 len(input_dataset.mod_bases) + 1, dtype=np.int64
@@ -1505,6 +1498,8 @@ def merge_datasets(input_datasets, balance=False, quiet=False):
             f"Copied {added_chunks} chunks. New label distribution: "
             f"{output_dataset.get_label_counts()}"
         )
+        del input_dataset
+        gc.collect()
 
     output_dataset.clip_chunks()
     if balance:
