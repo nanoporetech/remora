@@ -64,15 +64,37 @@ def compute_metrics(probs, labels, filt_frac):
     return acc, conf_mat, filt_frac, filt_acc, filt_conf_mat
 
 
-def get_label_coverter(from_labels, to_labels, base_pred):
-    if base_pred:
-        return np.arange(4)
-    if not set(from_labels).issubset(to_labels):
-        raise RemoraError(
-            f"Cannot convert from superset of labels ({from_labels}) "
-            f"to a subset ({to_labels})."
-        )
-    return np.array([0] + [to_labels.find(mb) + 1 for mb in from_labels])
+def add_unmodeled_labels(output, unmodeled_labels):
+    """Add unmodeled labels into the neural network output for validation.
+
+    Args:
+        output (np.array): Output from a Remora neural network.
+            Shape: (batch, modeled_labels)
+        unmodeled_labels (np.array): Indices of unmodled labels in desired
+            output
+
+    For example, with a dataset containing C, 5hmC and 5mC labels (Chm), but
+    validated using a model only predicting C vs 5mC (Cm), unmodeled_labels
+    would be `[1]` and the return array would contain large negative values in
+    the `1` index of the second axis of the return array. In this example the
+    input array would have shape (batch, 2) and the returned array would have
+    shape (batch, 3))
+    """
+    if unmodeled_labels.size == 0:
+        return output
+    nobs, nlab = output.shape
+    n_new_lab = nlab + unmodeled_labels.size
+    # fill with large negative number since this is the model output which
+    # will be softmax-ed to get probabilities
+    new_output = np.full((nobs, n_new_lab), -1000, dtype=output.dtype)
+    new_output[:, 0] = output[:, 0]
+    unused_idx = 0
+    for idx in range(1, n_new_lab):
+        if idx in unmodeled_labels:
+            unused_idx += 1
+            continue
+        new_output[:, idx] = output[:, idx - unused_idx]
+    return new_output
 
 
 def _validate_model(
@@ -85,8 +107,12 @@ def _validate_model(
     full_results_fh=None,
 ):
     device = next(model.parameters()).device
-    label_conv = get_label_coverter(
-        dataset.mod_bases, model_mod_bases, dataset.base_pred
+    unmodeled_labels = np.array(
+        [
+            idx + 1
+            for idx, mb in enumerate(dataset.mod_bases)
+            if mb not in model_mod_bases
+        ]
     )
     is_torch_model = isinstance(model, nn.Module)
     if is_torch_model:
@@ -98,7 +124,7 @@ def _validate_model(
     all_outputs = []
     all_loss = []
     ds_iter = (
-        tqdm(dataset, smoothing=0, desc="Batches", leave=False)
+        tqdm(dataset, smoothing=0, desc="Batches")
         if display_progress_bar
         else dataset
     )
@@ -107,8 +133,7 @@ def _validate_model(
         labels,
         (read_ids, read_focus_bases),
     ) in ds_iter:
-        model_labels = label_conv[labels]
-        all_labels.append(model_labels)
+        all_labels.append(labels)
         enc_kmers = encoded_kmers.compute_encoded_kmer_batch(
             bb, ab, seqs, seq_maps, seq_lens
         )
@@ -118,16 +143,17 @@ def _validate_model(
             output = model(sigs, enc_kmers).detach().cpu().numpy()
         else:
             output = model.run([], {"sig": sigs, "seq": enc_kmers})[0]
+        output = add_unmodeled_labels(output, unmodeled_labels)
         all_outputs.append(output)
         all_loss.append(
-            criterion(torch.from_numpy(output), torch.from_numpy(model_labels))
+            criterion(torch.from_numpy(output), torch.from_numpy(labels))
             .detach()
             .cpu()
             .numpy()
         )
         if full_results_fh is not None:
             full_results_fh.write_results(
-                output, model_labels, read_ids, read_focus_bases
+                output, labels, read_ids, read_focus_bases
             )
     all_outputs = np.concatenate(all_outputs, axis=0)
     all_labels = np.concatenate(all_labels)
