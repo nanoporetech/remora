@@ -1395,12 +1395,17 @@ def merge_datasets(input_datasets, balance=False, quiet=False):
     sig_map_refiner = dataset.sig_map_refiner
     base_start_justify = dataset.base_start_justify
     offset = dataset.offset
+    raw_mod_long_names = []
+    raw_mod_bases = []
+    if not base_pred:
+        for mod_base, mln in zip(dataset.mod_bases, dataset.mod_long_names):
+            if mod_base not in raw_mod_bases:
+                raw_mod_bases.append(mod_base)
+                raw_mod_long_names.append(mln)
     del dataset
     gc.collect()
 
     all_num_chunks = [num_chunks]
-    raw_mod_long_names = []
-    raw_mod_bases = []
     for ds_path, num_chunks in input_datasets[1:]:
         dataset, num_chunks = load_dataset(ds_path, num_chunks)
         for attr_name, attr_val in (
@@ -1416,10 +1421,10 @@ def merge_datasets(input_datasets, balance=False, quiet=False):
                     f"All datasets must have same {attr_name} "
                     f"{getattr(dataset, attr_name)} != {attr_val}"
                 )
-        if dataset.motifs != motifs:
+        if set(dataset.motifs) != motifs:
             log_fp(
                 "WARNING: Datasets have different motifs. Merging motifs "
-                f"{motifs} with motifs {dataset.motifs}"
+                f"{motifs} with motifs {set(dataset.motifs)}"
             )
             motifs.update(dataset.motifs)
         if not base_pred:
