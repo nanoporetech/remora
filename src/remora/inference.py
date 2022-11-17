@@ -203,7 +203,7 @@ def mods_tags_to_str(mods_tags):
     ]
 
 
-def prepare_batches(read_errs, model_metadata, batch_size, ref_anchored=False):
+def prepare_batches(read_errs, model_metadata, batch_size, ref_anchored):
     out_read_errs = []
     for io_read, err in read_errs:
         if io_read is None:
@@ -330,7 +330,7 @@ def infer_from_pod5_and_bam(
         prepare_batches,
         reads,
         num_workers=num_prep_batch_workers,
-        args=(model_metadata, batch_size),
+        args=(model_metadata, batch_size, ref_anchored),
         name="PrepBatches",
         use_process=True,
     )

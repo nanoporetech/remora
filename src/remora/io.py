@@ -339,7 +339,16 @@ class Read:
     def into_remora_read(self, use_reference_anchor: bool) -> DC.RemoraRead:
         if use_reference_anchor:
             if self.ref_to_signal is None:
-                raise RemoraError("need to have ref-to-signal")
+                if self.cigar is None or self.ref_seq is None:
+                    raise RemoraError("missing reference alignment")
+                ref_to_signal = DC.compute_ref_to_signal(
+                    self.query_to_signal,
+                    self.cigar,
+                    query_seq=self.seq,
+                    ref_seq=self.ref_seq,
+                )
+                self.ref_to_signal = ref_to_signal
+
             trim_signal = self.signal[
                 self.ref_to_signal[0] : self.ref_to_signal[-1]
             ]
