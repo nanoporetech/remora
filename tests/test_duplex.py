@@ -5,7 +5,6 @@ import numpy as np
 from remora import (
     model_util,
     inference as infer,
-    io,
     data_chunks as DC,
     util,
     duplex_utils as DU,
@@ -257,34 +256,6 @@ def test_duplex_alignment_to_signal_mapping_ragged_ends():
 @pytest.mark.etl
 def test_duplex_reads_data_etl(duplex_reads):
     pass
-
-
-@pytest.mark.smoke
-@pytest.mark.duplex
-@pytest.mark.etl
-def test_duplex_iterator(duplex_reads_and_pairs_pod5, simplex_alignments):
-    pod5_path, pairs_path = duplex_reads_and_pairs_pod5
-    duplex_iter = io.DuplexPairsIter(
-        pairs_path=pairs_path,
-        pod5_path=pod5_path,
-        simplex_bam_path=simplex_alignments,
-    )
-    expected_pairs = io.DuplexPairsIter.parse_pairs(pairs_path)
-    templates = set()
-    complements = set()
-
-    for x, y in duplex_iter:
-        assert x.read_id not in templates
-        assert x.read_id not in complements
-        assert y.read_id not in complements
-        assert y.read_id not in templates
-        templates.add(x.read_id)
-        complements.add(y.read_id)
-
-    assert len(templates) == len(expected_pairs)
-    assert len(templates) == len(complements)
-    assert templates == set((x[0] for x in expected_pairs))
-    assert complements == set((x[1] for x in expected_pairs))
 
 
 @pytest.mark.unit

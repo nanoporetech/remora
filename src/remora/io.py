@@ -3,7 +3,7 @@ from copy import copy
 from pathlib import Path
 from dataclasses import dataclass
 from collections import defaultdict
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Tuple
 
 import pysam
 import numpy as np
@@ -511,9 +511,7 @@ def iter_pod5_reads(
         for i, read in enumerate(
             pod5_fh.reads(selection=read_ids, preload=["samples"])
         ):
-            if (
-                num_reads is not None and i >= num_reads
-            ):  # should this return an error?
+            if num_reads is not None and i >= num_reads:
                 LOGGER.debug(
                     f"Completed pod5 signal worker, reached {num_reads}."
                 )
@@ -538,82 +536,88 @@ def iter_signal(pod5_path, num_reads=None, read_ids=None):
     LOGGER.debug("Completed signal worker")
 
 
-class DuplexPairsIter:
+class DuplexPairsBuilder:
     def __init__(
-        self, *, pairs_path: str, pod5_path: str, simplex_bam_path: str
+        self,
+        simplex_index: dict,
+        pod5_path: str,
+        simplex_bam_path: str,
     ):
-        self.pairs = iter(DuplexPairsIter.parse_pairs(pairs_path))
         self.pod5_path = pod5_path
         self.reader = Pod5Reader(Path(pod5_path))
-        self.alignments_path = simplex_bam_path
-        self.simplex_index = None
-        self.simplex_alignments = None
-        self.p5_reads = None
+        self.simplex_index = simplex_index
+        self.simplex_bam_handle = pysam.AlignmentFile(simplex_bam_path)
 
     @staticmethod
     def parse_pairs(pairs_path):
-        pairs = []
         with open(pairs_path, "r") as fh:
-            seen_header = False
-            for line in fh:
-                if not seen_header:
-                    seen_header = True
-                    continue
-                template, complement = line.split()
-                pairs.append((template, complement))
+            pairs = [tuple(line.split()) for line in fh]
         return pairs
 
-    def __iter__(self):
-        self.simplex_index, _ = index_bam(
-            self.alignments_path,
-            skip_non_primary=True,
-            req_tags={"mv"},
-            careful=False,
-        )
-        self.simplex_alignments = pysam.AlignmentFile(
-            self.alignments_path, "rb", check_sq=False
-        )
-        return self
-
-    def _make_read(self, p5_read):
+    def _make_read(self, p5_read) -> Optional[Read]:
         """Initialize io.Read from pod5 read object
 
         Args:
             p5_read (pod5_format.ReadRecord)
+
+        Returns:
+            remora.io.Read or None if missing from simplex alignment
         """
-        alns = self.simplex_index[str(p5_read.read_id)]
+        try:
+            alns = self.simplex_index[str(p5_read.read_id)]
+        except KeyError:
+            return None
+
         assert len(alns) == 1, (
             "should not have multiple BAM records for simplex reads, make "
             "sure the index only has primary alignments"
         )
-        self.simplex_alignments.seek(alns[0])
-        alignment_record = next(self.simplex_alignments)
+        self.simplex_bam_handle.seek(alns[0])
+        alignment_record = next(self.simplex_bam_handle)
         io_read = Read.from_pod5_and_alignment(
             pod5_read_record=p5_read, alignment_record=alignment_record
         )
         return io_read
 
-    def __next__(self):
-        for read_id_pair in self.pairs:
+    def make_read_pair(self, read_id_pair: Tuple[str, str]):
+        try:
             pod5_reads = self.reader.reads(
-                selection=read_id_pair, preload=["samples"]
+                selection=list(read_id_pair), preload=["samples"]
             )
-            pod5_reads_filtered = [
-                read for read in pod5_reads if str(read.read_id) in read_id_pair
-            ]
-            if len(pod5_reads_filtered) < 2:
-                LOGGER.debug(f"read pair {read_id_pair} was not found in pod5")
-                continue
-            io_reads = {
-                str(p5_read.read_id): self._make_read(p5_read)
-                for p5_read in pod5_reads_filtered
-            }
-            template_read_id, complement_read_id = read_id_pair
-            return io_reads[template_read_id], io_reads[complement_read_id]
+        except RuntimeError:
+            return None, "duplex pair read id(s) missing from pod5"
 
+        pod5_reads_filtered = {
+            str(read.read_id): read
+            for read in pod5_reads
+            if str(read.read_id) in read_id_pair
+        }
+        if len(pod5_reads_filtered) < 2:
+            return None, "duplex pair read id(s) missing from pod5"
+        if len(pod5_reads_filtered) > 2:
+            return None, "pod5 has multiple reads with the same id"
+
+        template_read_id, complement_read_id = read_id_pair
+        template_io_read = self._make_read(
+            pod5_reads_filtered[template_read_id]
+        )
+        if template_io_read is None:
+            return None, "failed to find template in simplex bam"
+
+        complement_io_read = self._make_read(
+            pod5_reads_filtered[complement_read_id]
+        )
+        if complement_io_read is None:
+            return None, "failed to find complement in simplex bam"
+
+        return (template_io_read, complement_io_read), None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
         self.reader.close()
-        self.simplex_alignments.close()
-        raise StopIteration
+        self.simplex_bam_handle.close()
 
 
 if _SIG_PROF_FN:

@@ -1,8 +1,9 @@
 import os
+import itertools
 from copy import copy
 import array as pyarray
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Any
 from collections import defaultdict
 
 import pysam
@@ -19,7 +20,7 @@ from remora.io import (
     extract_alignments,
     DuplexRead,
     Read as IoRead,
-    DuplexPairsIter,
+    DuplexPairsBuilder,
 )
 from remora.util import (
     MultitaskMap,
@@ -109,9 +110,6 @@ class DuplexReadModCaller:
         self,
         duplex_read: DuplexRead,
     ):
-        LOGGER.debug(
-            f"calling mods on duplex read {duplex_read.duplex_read_id}"
-        )
         template_read = duplex_read.template_read.into_remora_read(False)
         complement_read = duplex_read.complement_read.into_remora_read(False)
 
@@ -301,18 +299,28 @@ def infer_from_pod5_and_bam(
 ):
     bam_idx, num_bam_reads = index_bam(in_bam_path, skip_non_primary)
     with Pod5Reader(Path(pod5_path)) as pod5_fh:
-        num_pod5_reads = sum(1 for _ in pod5_fh.reads())
+        pod5_read_ids = set((str(read.read_id) for read in pod5_fh.reads()))
+        # pod5 will raise when it cannot find a "selected" read id, so we make
+        # sure they're all present before starting
+        # todo(arand) this could be performed using the read_table instead, but
+        #  it's worth checking that it's actually faster and doesn't explode
+        #  memory before switching from a sweep throug the pod5 file
+        pod5_bam_read_id_intersection = list(
+            set(bam_idx.keys()).intersection(pod5_read_ids)
+        )
+        num_pod5_reads = len(pod5_bam_read_id_intersection)
         LOGGER.info(
             f"Found {num_bam_reads} BAM records and "
             f"{num_pod5_reads} POD5 reads"
         )
         if num_reads is None:
-            num_reads = min(num_pod5_reads, num_bam_reads)
+            num_reads = num_pod5_reads
         else:
-            num_reads = min(num_reads, num_pod5_reads, num_bam_reads)
+            num_reads = min(num_reads, num_pod5_reads)
+
     signals = BackgroundIter(
         iter_signal,
-        args=(pod5_path, num_reads, list(bam_idx.keys())),
+        args=(pod5_path, num_reads, pod5_bam_read_id_intersection),
         name="ExtractSignal",
         use_process=True,
     )
@@ -409,6 +417,45 @@ if _PROF_MAIN_FN:
         return retval
 
 
+def check_simplex_alignments(
+    *, simplex_index: dict, duplex_index: dict, pairs: list
+):
+    if len(pairs) == 0:
+        raise ValueError("no pairs found in file")
+    all_paired_read_ids = set(itertools.chain(*pairs))
+    simplex_read_ids = set(simplex_index.keys())
+    duplex_read_ids = set(duplex_index)
+    count_paired_simplex_alignments = sum(
+        [1 for read_id in all_paired_read_ids if read_id in simplex_read_ids]
+    )
+    if count_paired_simplex_alignments == 0:
+        raise ValueError("zero simplex alignments found")
+
+    # valid meaning we have all the parts to perform inference
+    valid_read_pairs = [
+        (t, c)
+        for t, c in pairs
+        if all(read_id in simplex_read_ids for read_id in (t, c))
+        and t in duplex_read_ids
+    ]
+    return valid_read_pairs, len(valid_read_pairs)
+
+
+def prep_duplex_read_builder(simplex_index, pod5_path, simplex_bam_path):
+    builder = DuplexPairsBuilder(
+        simplex_index=simplex_index,
+        pod5_path=pod5_path,
+        simplex_bam_path=simplex_bam_path,
+    )
+    return [builder], {}
+
+
+def iter_duplexed_io_reads(
+    read_id_pair: Tuple[str, str], builder: DuplexPairsBuilder
+):
+    return builder.make_read_pair(read_id_pair)
+
+
 def infer_duplex(
     *,
     simplex_pod5_path: str,
@@ -419,32 +466,66 @@ def infer_duplex(
     model_metadata,
     out_bam,
     num_extract_alignment_threads,
+    num_duplex_prep_workers,
     num_infer_threads,
+    num_reads=None,
     skip_non_primary=True,
+    duplex_deliminator=";",
 ):
     duplex_bam_index, _ = index_bam(
         duplex_bam_path, skip_non_primary=skip_non_primary, req_tags=set()
     )
+    duplex_bam_index = {
+        k.split(duplex_deliminator)[0]: v for k, v in duplex_bam_index.items()
+    }
 
-    def iterate_duplex_pairs(pairs, pod5, simplex):
-        duplex_pairs_iter = DuplexPairsIter(
-            pairs_path=pairs,
-            pod5_path=pod5,
-            simplex_bam_path=simplex,
-        )
-        for read_pair in duplex_pairs_iter:
-            yield read_pair
+    simplex_bam_index, _ = index_bam(
+        simplex_bam_path, skip_non_primary=True, req_tags={"mv"}
+    )
+    pairs = DuplexPairsBuilder.parse_pairs(pairs_path)
+    valid_pairs, num_valid_reads = check_simplex_alignments(
+        simplex_index=simplex_bam_index,
+        duplex_index=duplex_bam_index,
+        pairs=pairs,
+    )
+    if num_reads is not None:
+        num_reads = min(num_valid_reads, num_reads)
 
-    read_pairs = BackgroundIter(
-        iterate_duplex_pairs,
-        args=(pairs_path, simplex_pod5_path, simplex_bam_path),
-        name="DuplexPairsIter",
+    # source of pipeline, template, complement read ID pairs
+    # produces template, complement read id tuples
+    def iter_pairs(pairs, num_reads):
+        for i, pair in enumerate(pairs):
+            if num_reads is not None and i > num_reads - 1:
+                return
+            yield pair
+
+    read_id_pairs = BackgroundIter(
+        iter_pairs,
+        kwargs=dict(pairs=valid_pairs, num_reads=num_reads),
+        use_process=True,
+    )
+
+    # consumes: tuple of template, complement read Ids
+    # prep: open resources for Pod5 and simplex BAM
+    # produces: (io.Read, io.Read), str
+    io_read_pairs_results = MultitaskMap(
+        iter_duplexed_io_reads,
+        read_id_pairs,
+        prep_func=prep_duplex_read_builder,
+        args=(simplex_bam_index, simplex_pod5_path, simplex_bam_path),
+        name="BuildDuplexedIoReads",
+        num_workers=num_extract_alignment_threads,
         use_process=True,
     )
 
     def make_duplex_reads(
-        read_pair: Tuple[IoRead, IoRead], duplex_index, bam_file_handle
+        read_pair_result: Tuple[Tuple[IoRead, IoRead], Any],
+        duplex_index,
+        bam_file_handle,
     ):
+        read_pair, err = read_pair_result
+        if err is not None or read_pair is None:
+            return None, err
         template, complement = read_pair
         if template.read_id not in duplex_index:
             return None, "duplex BAM record not found for read_id"
@@ -459,13 +540,13 @@ def infer_duplex(
 
             return duplex_read, None
 
-    # not sure if this really needs to be another step, could just make duplex
-    # read assembly part of the first step since it will likely be the slow part
+    # consumes: tuple of io.Reads (template, complement)
+    # produces: (DuplexRead, str), for inference by the model
     duplex_aln = pysam.AlignmentFile(duplex_bam_path, "rb", check_sq=False)
     duplex_reads = MultitaskMap(
         make_duplex_reads,
-        read_pairs,
-        num_workers=num_extract_alignment_threads,
+        io_read_pairs_results,
+        num_workers=num_duplex_prep_workers,
         args=(duplex_bam_index, duplex_aln),
         name="MakeDuplexReads",
         use_process=True,
@@ -495,6 +576,10 @@ def infer_duplex(
     use_process = True
     if isinstance(model, RecursiveScriptModule):
         use_process = next(model.parameters()).device.type == "cpu"
+
+    # consumes: Result[DuplexReads, str]
+    # produces: (dict, str) the dict is the BAM record with mods
+    # added/substituted mod tags
     alignment_records_with_mod_tags = MultitaskMap(
         add_mod_mappings_to_alignment,
         duplex_reads,
@@ -508,7 +593,9 @@ def infer_duplex(
     pysam_save = pysam.set_verbosity(0)
     with pysam.AlignmentFile(duplex_bam_path, "rb", check_sq=False) as in_bam:
         with pysam.AlignmentFile(out_bam, "wb", template=in_bam) as out_bam:
-            for mod_read_mapping, err in tqdm(alignment_records_with_mod_tags):
+            for mod_read_mapping, err in tqdm(
+                alignment_records_with_mod_tags, total=num_reads
+            ):
                 if err is not None:
                     errs[err] += 1
                     continue
@@ -523,8 +610,6 @@ def infer_duplex(
     if len(errs) > 0:
         err_types = sorted([(num, err) for err, num in errs.items()])[::-1]
         err_str = "\n".join(f"{num:>7} : {err:<80}" for num, err in err_types)
-        # TODO make a proper run report that tabulates the errors by read_id
-        # to make forensics easier
         LOGGER.info(f"Unsuccessful read reasons:\n{err_str}")
 
 
