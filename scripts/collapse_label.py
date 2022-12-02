@@ -10,6 +10,12 @@ from remora.inference import mods_tags_to_str
 
 
 def collapse_label(read, alphabet, valid_indices, new_alphabet):
+    if (
+        read.is_secondary
+        or read.is_supplementary
+        or read.modified_bases_forward is None
+    ):
+        return
     q_mod_probs = defaultdict(dict)
     for (
         _,
@@ -19,6 +25,8 @@ def collapse_label(read, alphabet, valid_indices, new_alphabet):
         assert mod_strand == 0, "Duplex mods not supported"
         for pos, prob in mod_values:
             q_mod_probs[pos][mod_name] = (prob + 0.5) / 256
+    if len(q_mod_probs) == 0:
+        return
     q_mod_probs_collapse = {}
     for q_pos, pos_probs in q_mod_probs.items():
         pos_probs = np.array(
@@ -63,6 +71,8 @@ def main(args):
         read = collapse_label(
             read, args.mod_alphabet, valid_indices, new_alphabet
         )
+        if read is None:
+            continue
         out_bam.write(pysam.AlignedSegment.from_dict(read, out_bam.header))
     in_bam.close()
     out_bam.close()
