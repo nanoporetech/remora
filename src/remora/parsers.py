@@ -939,6 +939,7 @@ def register_infer_from_pod5_and_bam(parser):
 
 
 def register_infer_duplex_from_pod5_and_bam(parser):
+    duplex_delim_flag = "--duplex-delim"
     subparser = parser.add_parser(
         "duplex_from_pod5_and_bam",
         description="Infer modified bases on duplex reads from pod5 and bam "
@@ -953,16 +954,25 @@ def register_infer_duplex_from_pod5_and_bam(parser):
     )
     subparser.add_argument(
         "simplex_bam",
-        help="BAM file containing mv tags.",
+        help="Base called BAM file containing mv tags.",
     )
     subparser.add_argument(
         "duplex_bam",
         help="BAM file containing duplex base called sequences (and optional "
-        "reference mappings)",
+        "reference mappings). Record names may either be the template read_id "
+        "or template<delim>complement. The value of <delim> can be set with "
+        f"{duplex_delim_flag}.",
     )
     subparser.add_argument(
         "duplex_read_pairs",
-        help="Whitespace separated plain text file containing read ID pairs",
+        help="Whitespace separated plain text file containing read ID pairs, no"
+        "header.",
+    )
+    subparser.add_argument(
+        duplex_delim_flag,
+        help="deliminator string between template and complement read "
+        "ids in the duplex BAM",
+        default=";",
     )
 
     out_grp = subparser.add_argument_group("Output Arguments")
@@ -1027,7 +1037,14 @@ def register_infer_duplex_from_pod5_and_bam(parser):
         "--num-extract-alignment-workers",
         type=int,
         default=1,
-        help="Number of signal extraction workers. Default: %(default)d",
+        help="Number of IO extraction workers. Default: %(default)d",
+    )
+    comp_grp.add_argument(
+        "--num-duplex-prep-workers",
+        type=int,
+        default=1,
+        help="Number of duplex prep workers (tends to bottleneck). Default:"
+        "%(default)d",
     )
     comp_grp.add_argument(
         "--num-infer-workers",
@@ -1041,6 +1058,9 @@ def register_infer_duplex_from_pod5_and_bam(parser):
 
 
 def _unpack_model_kw_args(args) -> dict:
+    if args.model and not os.path.exists(args.model):
+        raise ValueError(f"didn't find model file at {args.model}")
+
     model_kwargs = {
         "model_filename": args.model,
         "pore": args.pore,
@@ -1086,6 +1106,18 @@ def run_infer_from_pod5_and_bam_duplex(args):
         log.init_logger(args.log_filename)
     model_kwargs = _unpack_model_kw_args(args)
     model, model_metadata = load_model(**model_kwargs, quiet=False)
+
+    if not os.path.exists(args.pod5):
+        raise ValueError(f"didn't find pod5 at {args.pod5}")
+    if not os.path.exists(args.simplex_bam):
+        raise ValueError(f"didn't find simplex bam at {args.simplex_bam}")
+    if not os.path.exists(args.duplex_bam):
+        raise ValueError(f"didn't find duplex bam at {args.duplex_bam}")
+    if not os.path.exists(args.duplex_read_pairs):
+        raise ValueError(
+            f"didn't find duplex read pairs at {args.duplex_read_pairs}"
+        )
+
     infer_duplex(
         simplex_pod5_path=args.pod5,
         simplex_bam_path=args.simplex_bam,
@@ -1095,7 +1127,10 @@ def run_infer_from_pod5_and_bam_duplex(args):
         model_metadata=model_metadata,
         out_bam=args.out_bam,
         num_extract_alignment_threads=args.num_extract_alignment_workers,
+        num_duplex_prep_workers=args.num_duplex_prep_workers,
         num_infer_threads=args.num_infer_workers,
+        num_reads=args.num_reads,
+        duplex_deliminator=args.duplex_delim,
     )
 
 

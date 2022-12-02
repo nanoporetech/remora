@@ -270,8 +270,6 @@ class RemoraRead:
                 self.int_seq,
                 self.dacs,
             )
-            LOGGER.debug(f"rough_rescale_shift: {prev_shift} {self.shift}")
-            LOGGER.debug(f"rough_rescale_scale: {prev_scale} {self.scale}")
             self._sig = None
             self._sig_cumsum = None
             self._base_levels = None

@@ -4,9 +4,9 @@ import platform
 import queue
 import re
 import traceback
-from os.path import realpath, expanduser
-from threading import Thread
 from time import sleep
+from threading import Thread
+from os.path import realpath, expanduser
 
 import numpy as np
 
@@ -368,6 +368,10 @@ def _mt_func(func, in_q, out_q, prep_func, name, *args, **kwargs):
                     f"UNEXPECTED_ERROR in {name} worker: '{e}'.\n"
                     f"Full traceback: {traceback.format_exc()}"
                 )
+            except KeyboardInterrupt:
+                LOGGER.debug(f"stopping {name} due to user interrupt")
+                break
+
     except KeyboardInterrupt:
         pass
     except Exception as e:

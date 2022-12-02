@@ -154,7 +154,7 @@ def test_mod_infer_duplex(
 
     assert out_path.exists()
 
-    n_expected_alignments = len(io.DuplexPairsIter.parse_pairs(pairs_path))
+    n_expected_alignments = len(io.DuplexPairsBuilder.parse_pairs(pairs_path))
     n_observed_alignments = 0
     with pysam.AlignmentFile(out_path, "rb", check_sq=False) as out_bam_fh:
         for alignment in out_bam_fh:
