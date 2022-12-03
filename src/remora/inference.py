@@ -6,10 +6,10 @@ from pathlib import Path
 from typing import Tuple, Any
 from collections import defaultdict
 
+import pod5
 import pysam
 import numpy as np
 from tqdm import tqdm
-from pod5_format import Reader as Pod5Reader
 from torch.jit._script import RecursiveScriptModule
 
 from remora import constants, log, RemoraError
@@ -298,7 +298,7 @@ def infer_from_pod5_and_bam(
     ref_anchored=False,
 ):
     bam_idx, num_bam_reads = index_bam(in_bam_path, skip_non_primary)
-    with Pod5Reader(Path(pod5_path)) as pod5_fh:
+    with pod5.Reader(Path(pod5_path)) as pod5_fh:
         pod5_read_ids = set((str(read.read_id) for read in pod5_fh.reads()))
         # pod5 will raise when it cannot find a "selected" read id, so we make
         # sure they're all present before starting

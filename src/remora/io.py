@@ -5,11 +5,11 @@ from dataclasses import dataclass
 from collections import defaultdict
 from typing import Iterator, Optional, Tuple
 
+import pod5
 import pysam
 import numpy as np
 from tqdm import tqdm
 from pysam import AlignedSegment
-from pod5_format import Reader as Pod5Reader
 
 from remora import log
 from remora import util
@@ -251,7 +251,7 @@ class Read:
         """Initialize read from pod5 and pysam records
 
         Args:
-            pod5_read_record (pod5_format.ReadRecord)
+            pod5_read_record (pod5.ReadRecord)
             alignment_record (pysam.AlignedSegment)
         """
         try:
@@ -507,7 +507,7 @@ def iter_pod5_reads(
     pod5_path: str, num_reads: int = None, read_ids: Iterator = None
 ):
     LOGGER.debug(f"Reading from POD5 at {pod5_path}")
-    with Pod5Reader(Path(pod5_path)) as pod5_fh:  # todo change to pod5_fh
+    with pod5.Reader(Path(pod5_path)) as pod5_fh:
         for i, read in enumerate(
             pod5_fh.reads(selection=read_ids, preload=["samples"])
         ):
@@ -544,7 +544,7 @@ class DuplexPairsBuilder:
         simplex_bam_path: str,
     ):
         self.pod5_path = pod5_path
-        self.reader = Pod5Reader(Path(pod5_path))
+        self.reader = pod5.Reader(Path(pod5_path))
         self.simplex_index = simplex_index
         self.simplex_bam_handle = pysam.AlignmentFile(simplex_bam_path)
 
@@ -558,7 +558,7 @@ class DuplexPairsBuilder:
         """Initialize io.Read from pod5 read object
 
         Args:
-            p5_read (pod5_format.ReadRecord)
+            p5_read (pod5.ReadRecord)
 
         Returns:
             remora.io.Read or None if missing from simplex alignment
@@ -816,7 +816,7 @@ def iter_alignments(
 
 
 def prep_extract_signal(pod5_path):
-    pod5_fh = Pod5Reader(Path(pod5_path))
+    pod5_fh = pod5.Reader(Path(pod5_path))
     return [
         pod5_fh,
     ], {}
