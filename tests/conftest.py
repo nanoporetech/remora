@@ -7,8 +7,10 @@ import pytest
 from remora import io
 
 
-def load_pod5s(pod5_fn):
-    reads = [(str(r.read_id), r) for r in io.iter_pod5_reads(pod5_path=pod5_fn)]
+def load_pod5s(pod5_path):
+    reads = [
+        (str(r.read_id), r) for r in io.iter_pod5_reads(pod5_path=pod5_path)
+    ]
     return dict(reads)
 
 
@@ -170,8 +172,8 @@ def pretrain_model_args():
 def duplex_reads(
     simplex_alignments, duplex_mapped_alignments, duplex_reads_and_pairs_pod5
 ):
-    pod5_fn, pairs_fn = duplex_reads_and_pairs_pod5
-    raw_reads = load_pod5s(pod5_fn)
+    pod5_path, pairs_fn = duplex_reads_and_pairs_pod5
+    raw_reads = load_pod5s(pod5_path)
     simplex_bam_lut = load_alignments(
         simplex_alignments, require_move_table=True
     )
