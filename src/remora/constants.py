@@ -42,19 +42,12 @@ E.g. for "dna_r10.4.1_e8.2_400bps" and "5mc" the default model is
 CG_sup_v3.5.1_2.
 """
 MODEL_DICT = {
-    "dna_r9.4.1_e8_400bps": {
+    "dna_r9.4.1_e8": {
         "5mc": {
             "CG": {
-                "sup": {"v3.5.1": {2: ""}},
-                "hac": {"v3.5.1": {2: ""}},
-                "fast": {"v3.5.1": {2: ""}},
-            }
-        },
-        "5hmc_5mc": {
-            "CG": {
-                "sup": {"v3.5.1": {2: ""}},
-                "hac": {"v3.5.1": {2: ""}},
-                "fast": {"v3.5.1": {2: ""}},
+                "sup": {"v3.5.1": {0: "qedo6lilt29haqtdd97tic83lxoribfr"}},
+                "hac": {"v3.5.1": {0: "icimz7z06ijdme9zkfletxl323nveunh"}},
+                "fast": {"v3.5.1": {0: "ogtg6odxf9elj0mqjqxpx7xw82j5finz"}},
             }
         },
     },
@@ -80,9 +73,9 @@ MODEL_DICT = {
         },
         "5hmc_5mc": {
             "CG": {
-                "sup": {"v3.5.1": {2: ""}},
-                "hac": {"v3.5.1": {2: ""}},
-                "fast": {"v3.5.1": {2: ""}},
+                "sup": {"v4.0.0": {2: "whlux6wohu5fwyg4mreg5mz0a8iaugxk"}},
+                "hac": {"v4.0.0": {2: "o1ah5qgd77l393gjnyrv44jt4wp6wxcl"}},
+                "fast": {"v4.0.0": {2: "hms1t8ledf09p8ta9katj90l29uz2qll"}},
             }
         },
     },
