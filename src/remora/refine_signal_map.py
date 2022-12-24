@@ -149,6 +149,16 @@ class SigMapRefiner:
                 r_str += f" Short dwell penalty array set to {self.sd_params}."
         return r_str
 
+    @property
+    def bases_before(self):
+        """Number of bases in k-mer before the central base"""
+        return self.center_idx
+
+    @property
+    def bases_after(self):
+        """Number of bases in k-mer after the central base"""
+        return self.kmer_len - self.center_idx - 1
+
     def load_kmer_table(self):
         self.str_kmer_levels = {}
         with open(self.kmer_model_filename) as kmer_fp:
@@ -227,7 +237,7 @@ class SigMapRefiner:
             and self.scale_iters >= 0
             and self.algo == REFINE_ALGO_DWELL_PEN_NAME
         ):
-            LOGGER.info(f"Refine short dwell penalty array: {self.sd_arr}")
+            LOGGER.debug(f"Refine short dwell penalty array: {self.sd_arr}")
 
     def extract_levels(self, int_seq):
         return extract_levels(
