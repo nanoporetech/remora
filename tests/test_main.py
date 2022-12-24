@@ -7,7 +7,6 @@ import pysam
 import pytest
 
 from remora.data_chunks import RemoraDataset
-from remora import io
 
 pytestmark = pytest.mark.main
 
@@ -154,7 +153,10 @@ def test_mod_infer_duplex(
 
     assert out_path.exists()
 
-    n_expected_alignments = len(io.DuplexPairsBuilder.parse_pairs(pairs_path))
+    n_expected_alignments = 0
+    with open(pairs_path) as fh:
+        for line in fh:
+            n_expected_alignments += 1
     n_observed_alignments = 0
     with pysam.AlignmentFile(out_path, "rb", check_sq=False) as out_bam_fh:
         for alignment in out_bam_fh:

@@ -154,7 +154,7 @@ def register_dataset_prepare(parser):
         help="Number of reads.",
     )
     data_grp.add_argument(
-        "--base-call-anchor",
+        "--basecall-anchor",
         action="store_true",
         help="makes dataset from base call sequence instead of aligned "
         "reference sequence",
@@ -245,8 +245,8 @@ def register_dataset_prepare(parser):
 
 
 def run_dataset_prepare(args):
-    from remora.io import parse_bed
     from remora.util import Motif
+    from remora.io import parse_bed
     from remora.refine_signal_map import SigMapRefiner
     from remora.prepare_train_data import extract_chunk_dataset
 
@@ -291,7 +291,7 @@ def run_dataset_prepare(args):
         args.num_reads,
         args.num_extract_alignment_workers,
         args.num_extract_chunks_workers,
-        base_call_anchor=args.base_call_anchor,
+        basecall_anchor=args.basecall_anchor,
     )
 
 

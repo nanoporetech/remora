@@ -9,19 +9,6 @@ before_script:
    - pip install -U pip
    - pip install .[tests]
 
-format:py37:
-    image: python:3.7
-    stage: format
-    script:
-        - pytest -m format
-
-unit_test:py37:
-    image: python:3.7
-    stage: test
-    script:
-        - pytest -m unit --durations 10
-
-
 format:py38:
     image: python:3.8
     stage: format
@@ -30,6 +17,32 @@ format:py38:
 
 unit_test:py38:
     image: python:3.8
+    stage: test
+    script:
+        - pytest -m unit --durations 10
+
+
+format:py39:
+    image: python:3.9
+    stage: format
+    script:
+        - pytest -m format
+
+unit_test:py39:
+    image: python:3.9
+    stage: test
+    script:
+        - pytest -m unit --durations 10
+
+
+format:py310:
+    image: python:3.10
+    stage: format
+    script:
+        - pytest -m format
+
+unit_test:py310:
+    image: python:3.10
     stage: test
     script:
         - pytest -m unit --durations 10

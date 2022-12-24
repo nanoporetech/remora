@@ -2,27 +2,13 @@ from pathlib import Path
 from collections import defaultdict
 
 import pod5
-import pysam
 import numpy as np
 from tqdm import tqdm
 
 from remora import log, RemoraError
 from remora.util import MultitaskMap, BackgroundIter
-from remora.data_chunks import (
-    RemoraRead,
-    RemoraDataset,
-    compute_ref_to_signal,
-)
-from remora.io import (
-    index_bam,
-    iter_signal,
-    extract_signal,
-    iter_alignments,
-    read_is_primary,
-    extract_alignments,
-    prep_extract_signal,
-    prep_extract_alignments,
-)
+from remora.io import ReadIndexedBam, iter_signal, extract_alignments
+from remora.data_chunks import RemoraRead, RemoraDataset, compute_ref_to_signal
 
 LOGGER = log.get_logger()
 
@@ -44,7 +30,7 @@ def extract_chunks(
     base_pred,
     base_start_justify,
     offset,
-    basecall_anchored,
+    basecall_anchor,
 ):
     read_chunks = []
     for read_idx, (io_read, err) in enumerate(read_errs):
@@ -56,13 +42,11 @@ def extract_chunks(
                 tuple((None, "No reference sequence (missing MD tag)"))
             )
             continue
-        if basecall_anchored:
+        if basecall_anchor:
             remora_read = io_read.into_remora_read(use_reference_anchor=False)
-            remora_read.focus_bases = (
-                io_read.get_base_call_anchored_focus_bases(
-                    motifs=motifs,
-                    select_focus_reference_positions=focus_ref_pos,
-                )
+            remora_read.focus_bases = io_read.get_basecall_anchored_focus_bases(
+                motifs=motifs,
+                select_focus_reference_positions=focus_ref_pos,
             )
             remora_read.labels = np.full(len(io_read.seq), int_label, dtype=int)
         else:
@@ -72,12 +56,12 @@ def extract_chunks(
                 query_seq=io_read.seq,
                 ref_seq=io_read.ref_seq,
             )
-            trim_signal = io_read.signal[
+            trim_dacs = io_read.dacs[
                 io_read.ref_to_signal[0] : io_read.ref_to_signal[-1]
             ]
             shift_ref_to_sig = io_read.ref_to_signal - io_read.ref_to_signal[0]
             remora_read = RemoraRead(
-                dacs=trim_signal,
+                dacs=trim_dacs,
                 shift=io_read.shift_dacs_to_norm,
                 scale=io_read.scale_dacs_to_norm,
                 seq_to_sig_map=shift_ref_to_sig,
@@ -143,38 +127,33 @@ def extract_chunk_dataset(
     num_reads,
     num_extract_alignment_threads,
     num_extract_chunks_threads,
-    signal_first=True,
     skip_non_primary=True,
-    base_call_anchor=False,
+    basecall_anchor=False,
 ):
-    if signal_first:
-        bam_idx, num_bam_reads = index_bam(bam_fn, skip_non_primary)
-        with pod5.Reader(Path(pod5_path)) as pod5_fp:
-            num_pod5_reads = sum(1 for _ in pod5_fp.reads())
-            LOGGER.info(
-                f"Found {num_bam_reads} BAM records and "
-                f"{num_pod5_reads} POD5 reads"
-            )
-            if num_reads is None:
-                num_reads = min(num_pod5_reads, num_bam_reads)
-            else:
-                num_reads = min(num_reads, num_pod5_reads, num_bam_reads)
-    else:
-        LOGGER.info("Counting reads in BAM file")
-        pysam_save = pysam.set_verbosity(0)
-        with pysam.AlignmentFile(bam_fn, mode="rb", check_sq=False) as bam_fp:
-            num_bam_reads = bam_fp.count(
-                until_eof=True, read_callback=read_is_primary
-            )
-            LOGGER.info(f"Found {num_bam_reads} BAM records")
-            if num_reads is None:
-                num_reads = num_bam_reads
-            else:
-                num_reads = min(num_reads, num_bam_reads)
-        pysam.set_verbosity(pysam_save)
+    bam_idx = ReadIndexedBam(bam_fn, skip_non_primary)
+    with pod5.Reader(Path(pod5_path)) as pod5_fh:
+        pod5_read_ids = set((str(read.read_id) for read in pod5_fh.reads()))
+        num_pod5_reads = len(pod5_read_ids)
+        # pod5 will raise when it cannot find a "selected" read id, so we make
+        # sure they're all present before starting
+        # todo(arand) this could be performed using the read_table instead, but
+        #  it's worth checking that it's actually faster and doesn't explode
+        #  memory before switching from a sweep throug the pod5 file
+        both_read_ids = list(pod5_read_ids.intersection(bam_idx.read_ids))
+        num_both_read_ids = len(both_read_ids)
+        LOGGER.info(
+            f"Found {bam_idx.num_reads} BAM records, {num_pod5_reads} "
+            f"POD5 reads, and {num_both_read_ids} in common"
+        )
+        if num_reads is None:
+            num_reads = num_both_read_ids
+        else:
+            num_reads = min(num_reads, num_both_read_ids)
+    if num_reads == 0:
+        return
 
     LOGGER.info(
-        f"Making {'base call' if base_call_anchor else 'reference'}-"
+        f"Making {'basecall' if basecall_anchor else 'reference'}-"
         f"anchored training data"
     )
     LOGGER.info("Allocating memory for output tensors")
@@ -193,41 +172,21 @@ def extract_chunk_dataset(
         offset=offset,
     )
 
-    assert len(bam_idx.keys()) > 0
-
     LOGGER.info("Processing reads")
-    if signal_first:
-        signals = BackgroundIter(
-            iter_signal,
-            args=(pod5_path, num_reads, list(bam_idx.keys())),
-            name="ExtractSignal",
-            use_process=True,
-        )
-        reads = MultitaskMap(
-            extract_alignments,
-            signals,
-            prep_func=prep_extract_alignments,
-            num_workers=num_extract_alignment_threads,
-            args=(bam_idx, bam_fn),
-            name="AddAlignments",
-            use_process=True,
-        )
-    else:
-        mappings = BackgroundIter(
-            iter_alignments,
-            args=(bam_fn, num_reads, skip_non_primary),
-            name="ExtractMappings",
-            use_process=True,
-        )
-        reads = MultitaskMap(
-            extract_signal,
-            mappings,
-            prep_func=prep_extract_signal,
-            num_workers=num_extract_alignment_threads,
-            args=(pod5_path,),
-            name="AddSignal",
-            use_process=True,
-        )
+    signals = BackgroundIter(
+        iter_signal,
+        args=(pod5_path, num_reads, both_read_ids),
+        name="ExtractSignal",
+        use_process=True,
+    )
+    reads = MultitaskMap(
+        extract_alignments,
+        signals,
+        num_workers=num_extract_alignment_threads,
+        args=(bam_idx,),
+        name="AddAlignments",
+        use_process=True,
+    )
     chunks = MultitaskMap(
         extract_chunks,
         reads,
@@ -243,7 +202,7 @@ def extract_chunk_dataset(
             base_pred,
             base_start_justify,
             offset,
-            base_call_anchor,
+            basecall_anchor,
         ],
         name="ExtractChunks",
         use_process=True,

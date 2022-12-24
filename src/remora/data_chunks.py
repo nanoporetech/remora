@@ -2,7 +2,6 @@ import gc
 import re
 from collections import Counter
 from dataclasses import dataclass
-from typing import List, Tuple
 
 import torch
 import numpy as np
@@ -43,7 +42,7 @@ CODE_TO_OP = {
 CIGAR_STRING_PATTERN = re.compile(r"(\d+)" + f"([{''.join(CIGAR_CODES)}])")
 
 
-def cigartuples_from_string(cigarstring: str) -> List[Tuple[int, int]]:
+def cigartuples_from_string(cigarstring):
     """
     Returns pysam-style list of (op, count) tuples from a cigarstring.
     """
@@ -53,9 +52,14 @@ def cigartuples_from_string(cigarstring: str) -> List[Tuple[int, int]]:
     ]
 
 
-def map_ref_to_signal(
-    *, query_to_signal: np.ndarray, ref_to_query_knots: np.ndarray
-) -> np.ndarray:
+def map_ref_to_signal(*, query_to_signal, ref_to_query_knots):
+    """Compute interpolated mapping from reference, through query alignment to
+    signal coordinates
+
+    Args:
+        query_to_signal (np.array): Query to signal coordinate mapping
+        ref_to_query_knots (np.array): Reference to query coordinate mapping
+    """
     return np.floor(
         np.interp(
             ref_to_query_knots,
@@ -65,26 +69,17 @@ def map_ref_to_signal(
     ).astype(int)
 
 
-def compute_ref_to_signal(query_to_signal, cigar, *, query_seq, ref_seq):
-    ref_to_read_knots = make_sequence_coordinate_mapping(
-        cigar=cigar, read_seq=query_seq, ref_seq=ref_seq
-    )
-    return map_ref_to_signal(
-        query_to_signal=query_to_signal, ref_to_query_knots=ref_to_read_knots
-    )
+def make_sequence_coordinate_mapping(cigar, *, read_seq, ref_seq):
+    """Maps an element in `read_seq` to every element in `ref_seq` using
+    alignment in `cigar`.
 
+    Args:
+        cigar (list): "cigartuples" representing alignment
+        read_seq (str): a.k.a. query sequence
+        ref_seq (str): "aligned-to" reference sequence
 
-def make_sequence_coordinate_mapping(
-    cigar: list, *, read_seq: str, ref_seq: str
-) -> np.ndarray:
-    """
-    Maps an element in `read_seq` to every element in `ref_seq` using alignment
-    in `cigar`.
-
-    :param cigar: "cigartuples" representing alignment
-    :param read_seq: a.k.a. query sequence
-    :param ref_seq: "aligned-to" reference sequence
-    :return: array shape (len(ref_seq),). [x_0, x_1, ..., x_(len(ref_seq))]
+    Returns:
+        array shape (len(ref_seq),). [x_0, x_1, ..., x_(len(ref_seq))]
              such that read_seq[x_i] <> ref_seq[i]
     """
     ops, lens = map(np.array, zip(*cigar))
@@ -116,6 +111,15 @@ def make_sequence_coordinate_mapping(
     assert np.min(knots) >= 0, "knots cannot be negative"
 
     return knots
+
+
+def compute_ref_to_signal(query_to_signal, cigar, *, query_seq, ref_seq):
+    ref_to_read_knots = make_sequence_coordinate_mapping(
+        cigar=cigar, read_seq=query_seq, ref_seq=ref_seq
+    )
+    return map_ref_to_signal(
+        query_to_signal=query_to_signal, ref_to_query_knots=ref_to_read_knots
+    )
 
 
 @dataclass
