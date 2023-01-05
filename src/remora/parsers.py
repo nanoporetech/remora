@@ -1369,3 +1369,177 @@ def run_validate_from_remora_dataset(args):
         args.pct_filt / 100,
         display_progress_bar=True,
     )
+
+
+##################
+# remora analyze #
+##################
+
+
+def register_analyze(parser):
+    subparser = parser.add_parser(
+        "analyze",
+        description="Analyze nanopore data including raw signal",
+        help="Analyze nanopore data including raw signal",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    ssubparser = subparser.add_subparsers(title="Analyze commands")
+    # Since `plot` has several sub-commands, print help as default
+    subparser.set_defaults(func=lambda x: subparser.print_help())
+    # Register analyze sub commands
+    register_analyze_plot(ssubparser)
+
+
+def register_analyze_plot(parser):
+    subparser = parser.add_parser(
+        "plot",
+        description="Plot nanopore data including raw signal",
+        help="Plot nanopore data including raw signal",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    ssubparser = subparser.add_subparsers(title="Plot commands")
+    # Since `plot` has several sub-commands, print help as default
+    subparser.set_defaults(func=lambda x: subparser.print_help())
+    # Register plot sub commands
+    register_plot_ref_region(ssubparser)
+
+
+def register_plot_ref_region(parser):
+    subparser = parser.add_parser(
+        "ref_region",
+        description="Plot signal at reference region",
+        help="Plot signal at reference region",
+        formatter_class=SubcommandHelpFormatter,
+    )
+
+    in_grp = subparser.add_argument_group("Input Arguments")
+    in_grp.add_argument(
+        "--pod5-and-bam",
+        required=True,
+        nargs=2,
+        metavar=("POD5", "BAM"),
+        action="append",
+        help="""POD5 signal path and BAM file path. BAM file must be mapped,
+        sorted and indexed and contain move table and MD tags. Multuple
+        samples can be supplied and will be plotted in different colors""",
+    )
+    in_grp.add_argument(
+        "--ref-region",
+        required=True,
+        action="append",
+        help="""Reference region(s) to plot. Format should be
+        [contig]:[start]-[end]:[strand]. Multiple regions can be supplied.
+        Coordinates are 1-based, closed-open (like genome browsers).""",
+    )
+
+    refine_grp = subparser.add_argument_group("Signal Mapping Refine Arguments")
+    refine_grp.add_argument(
+        "--refine-kmer-level-table",
+        help="Tab-delimited file containing no header and two fields: "
+        "1. string k-mer sequence and 2. float expected normalized level. "
+        "All k-mers must be the same length and all combinations of the bases "
+        "'ACGT' must be present in the file.",
+    )
+    refine_grp.add_argument(
+        "--refine-rough-rescale",
+        action="store_true",
+        help="Apply a rough rescaling using quantiles of signal+move table "
+        "and levels.",
+    )
+    refine_grp.add_argument(
+        "--refine-scale-iters",
+        default=constants.DEFAULT_REFINE_SCALE_ITERS,
+        type=int,
+        help="Number of iterations of signal mapping refinement and signal "
+        "re-scaling to perform. Set to 0 (default) in order to perform signal "
+        "mapping refinement, but skip re-scaling. Set to -1 to skip signal "
+        "mapping (potentially using levels for rough rescaling).",
+    )
+    refine_grp.add_argument(
+        "--refine-half-bandwidth",
+        default=constants.DEFAULT_REFINE_HBW,
+        type=int,
+        help="Half bandwidth around signal mapping over which to search for "
+        "new path.",
+    )
+    refine_grp.add_argument(
+        "--refine-algo",
+        default=constants.DEFAULT_REFINE_ALGO,
+        choices=constants.REFINE_ALGOS,
+        help="Refinement algorithm to apply (if kmer level table is provided).",
+    )
+    refine_grp.add_argument(
+        "--refine-short-dwell-parameters",
+        default=constants.DEFAULT_REFINE_SHORT_DWELL_PARAMS,
+        type=float,
+        nargs=3,
+        metavar=("TARGET", "LIMIT", "WEIGHT"),
+        help="Short dwell penalty refiner parameters. Dwells shorter than "
+        "LIMIT will be penalized a value of `WEIGHT * (dwell - TARGET)^2`. "
+        "Default: %(default)s",
+    )
+
+    plt_grp = subparser.add_argument_group("Plot Arguments")
+    plt_grp.add_argument(
+        "--figsize",
+        nargs=2,
+        type=int,
+        default=constants.DEFAULT_PLOT_FIG_SIZE,
+        help="Figure size",
+    )
+    plt_grp.add_argument(
+        "--ylim",
+        nargs=2,
+        type=int,
+        help="Signal plotting limits",
+    )
+
+    out_grp = subparser.add_argument_group("Output Arguments")
+    out_grp.add_argument(
+        "--plots-filename",
+        default="remora_raw_signal_plot.pdf",
+        help="Output plots PDF file location.",
+    )
+    out_grp.add_argument(
+        "--log-filename",
+        help="Log filename. Default: Don't output log file.",
+    )
+
+    subparser.set_defaults(func=run_plot_ref_region)
+
+
+def run_plot_ref_region(args):
+    import pod5
+    import pysam
+    from matplotlib import pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    from remora import log, io, refine_signal_map
+
+    if args.log_filename is not None:
+        log.init_logger(args.log_filename)
+    pod5_paths, bc_paths = zip(*args.pod5_and_bam)
+    bam_fhs = [pysam.AlignmentFile(bc_path) for bc_path in bc_paths]
+    pod5_fhs = [pod5.Reader(pod5_path) for pod5_path in pod5_paths]
+    sig_map_refiner = refine_signal_map.SigMapRefiner(
+        kmer_model_filename=args.refine_kmer_level_table,
+        do_rough_rescale=args.refine_rough_rescale,
+        scale_iters=args.refine_scale_iters,
+        algo=args.refine_algo,
+        half_bandwidth=args.refine_half_bandwidth,
+        sd_params=args.refine_short_dwell_parameters,
+        do_fix_guage=True,
+    )
+
+    with PdfPages(args.plots_filename) as pdf_fh:
+        for ref_reg in args.ref_region:
+            fig, ax = plt.subplots(figsize=args.figsize)
+            io.plot_signal_at_ref_region(
+                bam_fhs,
+                pod5_fhs,
+                io.RefPos.parse_ref_region_str(ref_reg),
+                sig_map_refiner,
+                ax=ax,
+                ylim=args.ylim,
+            )
+            pdf_fh.savefig(fig, bbox_inches="tight")

@@ -1,4 +1,5 @@
 import os
+import re
 import random
 from pathlib import Path
 from typing import Callable
@@ -15,7 +16,7 @@ from tqdm import tqdm
 from pysam import AlignedSegment
 from matplotlib import pyplot as plt
 
-from remora.constants import PA_TO_NORM_SCALING_FACTOR
+from remora.constants import PA_TO_NORM_SCALING_FACTOR, DEFAULT_PLOT_FIG_SIZE
 from remora import log, util, data_chunks as DC, duplex_utils as DU, RemoraError
 
 LOGGER = log.get_logger()
@@ -23,7 +24,13 @@ LOGGER = log.get_logger()
 _SIG_PROF_FN = os.getenv("REMORA_EXTRACT_SIGNAL_PROFILE_FILE")
 _ALIGN_PROF_FN = os.getenv("REMORA_EXTRACT_ALIGN_PROFILE_FILE")
 
-BASE_COLORS = {"A": "#00CC00", "C": "#0000CC", "G": "#FFB300", "T": "#CC0000"}
+BASE_COLORS = {
+    "A": "#00CC00",
+    "C": "#0000CC",
+    "G": "#FFB300",
+    "T": "#CC0000",
+    "N": "#FFFFFF",
+}
 
 
 def parse_bed(bed_path):
@@ -223,8 +230,9 @@ def parse_move_tag(mv_tag, sig_len, seq_len=None, check=True):
 
 
 def get_ref_seq_and_levels_from_reads(ref_reg, bam_reads, sig_map_refiner):
-    # TODO handle missing sig_to_seq_refiner and only return seq
-    if ref_reg.strand == "+":
+    if sig_map_refiner is None:
+        bb, context_st, context_en = 0, ref_reg.start, ref_reg.end
+    elif ref_reg.strand == "+":
         bb = sig_map_refiner.bases_before
         context_st = ref_reg.start - sig_map_refiner.bases_before
         context_en = ref_reg.end + sig_map_refiner.bases_after
@@ -233,9 +241,9 @@ def get_ref_seq_and_levels_from_reads(ref_reg, bam_reads, sig_map_refiner):
         context_st = ref_reg.start - sig_map_refiner.bases_after
         context_en = ref_reg.end + sig_map_refiner.bases_before
     context_len = context_en - context_st
-    # record forward reference sequence. Will be flipped after for reverse
-    # strand reference regions
-    context_int_seq = np.full(context_len, -1, np.int32)
+    # fill with -2 since N is represented by -1
+    context_int_seq = np.full(context_len, -2, np.int32)
+    # extract forward reference sequence.
     for bam_read in bam_reads:
         read_ref_seq = bam_read.get_reference_sequence().upper()
         context_int_seq[
@@ -249,16 +257,17 @@ def get_ref_seq_and_levels_from_reads(ref_reg, bam_reads, sig_map_refiner):
                 )
             ]
         )
-        if not np.any(context_int_seq == -1):
+        if not np.any(context_int_seq == -2):
             break
-    if ref_reg.strand == "+":
-        levels = sig_map_refiner.extract_levels(context_int_seq)[
-            bb : bb + ref_reg.len
-        ]
-    else:
-        levels = sig_map_refiner.extract_levels(
-            util.revcomp_np(context_int_seq)
-        )[::-1][bb : bb + ref_reg.len]
+    levels = None
+    if sig_map_refiner is not None:
+        if ref_reg.strand == "+":
+            levels = sig_map_refiner.extract_levels(context_int_seq)
+        else:
+            levels = sig_map_refiner.extract_levels(
+                util.revcomp_np(context_int_seq)
+            )[::-1]
+        levels = levels[bb : bb + ref_reg.len]
     seq = util.int_to_seq(context_int_seq[bb : bb + ref_reg.len])
     return seq, levels
 
@@ -324,7 +333,7 @@ def plot_ref_region_reads(
     levels,
     max_reads=50,
     ax=None,
-    figsize=(40, 10),
+    figsize=DEFAULT_PLOT_FIG_SIZE,
     sig_lw=2,
     sig_cols=["k", "r", "c"],
     levels_lw=6,
@@ -380,10 +389,13 @@ def plot_ref_region_reads(
             rotation=rotation,
         )
     ax.set_ylim(*ylim)
+    ax.set_xlim(ref_pos.start, ref_pos.end)
     ax.set_ylabel("Normalized Signal", fontsize=45)
     ax.set_xlabel("Reference Position", fontsize=45)
-    # TODO shift tick labels left by 0.5 plot units to match genome browsers
     ax.tick_params(labelsize=36)
+    # shift tick labels left by 0.5 plot units to match genome browsers
+    ax.set_xticks(ax.get_xticks() - 0.5)
+    ax.set_xticklabels(list(map(int, ax.get_xticks() + 0.5)))
     return ax
 
 
@@ -395,7 +407,7 @@ def plot_signal_at_ref_region(
     skip_sig_map_refine=False,
     max_reads=50,
     ax=None,
-    figsize=(40, 10),
+    figsize=DEFAULT_PLOT_FIG_SIZE,
     sig_lw=2,
     levels_lw=6,
     ylim=None,
@@ -458,6 +470,26 @@ class RefPos:
             return 1
         return self.end - self.start
 
+    @classmethod
+    def parse_ref_region_str(cls, ref_reg_str, req_strand=True):
+        mat = re.match(
+            r"^(?P<ctg>.+):(?P<st>\d+)-(?P<en>\d+):(?P<strand>[\+\-])$"
+            if req_strand
+            else r"^(?P<ctg>.+):(?P<st>\d+)-(?P<en>\d+)(:(?P<strand>[\+\-]))?$",
+            ref_reg_str,
+        )
+        if mat is None:
+            raise RemoraError(f"Invalid reference region: {ref_reg_str}")
+        start = int(mat.group("st")) - 1
+        if start < 0:
+            raise RemoraError("Invalid reference start coordinate")
+        return cls(
+            ctg=mat.group("ctg"),
+            strand=mat.group("strand"),
+            start=start,
+            end=int(mat.group("en")),
+        )
+
 
 @dataclass
 class ReadReferenceRegion:
@@ -516,7 +548,7 @@ class ReadBasecallRegion:
         self,
         levels=None,
         ax=None,
-        figsize=(40, 10),
+        figsize=DEFAULT_PLOT_FIG_SIZE,
         sig_lw=8,
         levels_lw=8,
         ylim=None,
@@ -588,7 +620,7 @@ class ReadBasecallRegion:
         self,
         levels=None,
         ax=None,
-        figsize=(40, 10),
+        figsize=DEFAULT_PLOT_FIG_SIZE,
         sig_lw=8,
         levels_lw=8,
         ylim=None,

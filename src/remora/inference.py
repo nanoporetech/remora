@@ -24,6 +24,7 @@ from remora.util import (
     BackgroundIter,
     format_mm_ml_tags,
     softmax_axis1,
+    get_read_ids,
     Motif,
     revcomp,
 )
@@ -296,27 +297,11 @@ def infer_from_pod5_and_bam(
 ):
     bam_idx = ReadIndexedBam(in_bam_path, skip_non_primary, req_tags={"mv"})
     with pod5.Reader(Path(pod5_path)) as pod5_fh:
-        pod5_read_ids = set((str(read.read_id) for read in pod5_fh.reads()))
-        num_pod5_reads = len(pod5_read_ids)
-        # pod5 will raise when it cannot find a "selected" read id, so we make
-        # sure they're all present before starting
-        # todo(arand) this could be performed using the read_table instead, but
-        #  it's worth checking that it's actually faster and doesn't explode
-        #  memory before switching from a sweep throug the pod5 file
-        both_read_ids = list(pod5_read_ids.intersection(bam_idx.read_ids))
-        num_both_read_ids = len(both_read_ids)
-        LOGGER.info(
-            f"Found {bam_idx.num_reads} BAM records, {num_pod5_reads} "
-            f"POD5 reads, and {num_both_read_ids} in common"
-        )
-        if num_reads is None:
-            num_reads = num_both_read_ids
-        else:
-            num_reads = min(num_reads, num_both_read_ids)
+        read_ids, num_reads = get_read_ids(bam_idx, pod5_fh, num_reads)
 
     signals = BackgroundIter(
         iter_signal,
-        args=(pod5_path, num_reads, both_read_ids),
+        args=(pod5_path, num_reads, read_ids),
         name="ExtractSignal",
         use_process=True,
     )
