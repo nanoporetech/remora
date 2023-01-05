@@ -6,7 +6,7 @@ import numpy as np
 from tqdm import tqdm
 
 from remora import log, RemoraError
-from remora.util import MultitaskMap, BackgroundIter
+from remora.util import MultitaskMap, BackgroundIter, get_read_ids
 from remora.io import ReadIndexedBam, iter_signal, extract_alignments
 from remora.data_chunks import RemoraRead, RemoraDataset, compute_ref_to_signal
 
@@ -132,23 +132,7 @@ def extract_chunk_dataset(
 ):
     bam_idx = ReadIndexedBam(bam_fn, skip_non_primary)
     with pod5.Reader(Path(pod5_path)) as pod5_fh:
-        pod5_read_ids = set((str(read.read_id) for read in pod5_fh.reads()))
-        num_pod5_reads = len(pod5_read_ids)
-        # pod5 will raise when it cannot find a "selected" read id, so we make
-        # sure they're all present before starting
-        # todo(arand) this could be performed using the read_table instead, but
-        #  it's worth checking that it's actually faster and doesn't explode
-        #  memory before switching from a sweep throug the pod5 file
-        both_read_ids = list(pod5_read_ids.intersection(bam_idx.read_ids))
-        num_both_read_ids = len(both_read_ids)
-        LOGGER.info(
-            f"Found {bam_idx.num_reads} BAM records, {num_pod5_reads} "
-            f"POD5 reads, and {num_both_read_ids} in common"
-        )
-        if num_reads is None:
-            num_reads = num_both_read_ids
-        else:
-            num_reads = min(num_reads, num_both_read_ids)
+        read_ids, num_reads = get_read_ids(bam_idx, pod5_fh, num_reads)
     if num_reads == 0:
         return
 
@@ -175,7 +159,7 @@ def extract_chunk_dataset(
     LOGGER.info("Processing reads")
     signals = BackgroundIter(
         iter_signal,
-        args=(pod5_path, num_reads, both_read_ids),
+        args=(pod5_path, num_reads, read_ids),
         name="ExtractSignal",
         use_process=True,
     )
