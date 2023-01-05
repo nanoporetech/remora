@@ -280,7 +280,6 @@ def extract_ref_region_reads(
     skip_sig_map_refine=False,
     max_reads=50,
 ):
-    # TODO handle both strand plots
     reg_bam_reads = [
         [
             bam_read
@@ -338,6 +337,7 @@ def plot_ref_region_reads(
     sig_cols=["k", "r", "c"],
     levels_lw=6,
     ylim=None,
+    highlight_ranges=None,
 ):
     # start plotting
     if ax is None:
@@ -351,6 +351,10 @@ def plot_ref_region_reads(
         ylim = (sig_min - sig_diff * 0.01, sig_max + sig_diff * 0.01)
     base_text_loc = ylim[0] + ((ylim[1] - ylim[0]) * 0.02)
 
+    # plot highlight regions
+    if highlight_ranges is not None:
+        for st, en, col in highlight_ranges:
+            ax.axvspan(st, en, facecolor=col, alpha=0.4)
     # plot vertical base lines
     for b in np.arange(ref_pos.start, ref_pos.end + 1):
         ax.axvline(x=b, color="k", alpha=0.1, lw=1)
@@ -394,8 +398,11 @@ def plot_ref_region_reads(
     ax.set_xlabel("Reference Position", fontsize=45)
     ax.tick_params(labelsize=36)
     # shift tick labels left by 0.5 plot units to match genome browsers
-    ax.set_xticks(ax.get_xticks() - 0.5)
-    ax.set_xticklabels(list(map(int, ax.get_xticks() + 0.5)))
+    xticks = np.array(
+        [int(xt) for xt in ax.get_xticks() if ref_pos.start < xt < ref_pos.end]
+    )
+    ax.set_xticks(xticks - 0.5)
+    ax.set_xticklabels(xticks)
     return ax
 
 
@@ -411,6 +418,7 @@ def plot_signal_at_ref_region(
     sig_lw=2,
     levels_lw=6,
     ylim=None,
+    highlight_ranges=None,
 ):
     """Plot signal from reads at a reference region.
 
@@ -427,6 +435,8 @@ def plot_signal_at_ref_region(
         sig_lw (int): Linewidth for signal lines
         levels_lw (int): Linewidth for level lines (if applicable)
         ylim (tuple): 2-tuple with y-axis limits
+        highlight_ranges (iterable): Elements should be 3-tuples containing
+            reference start, end and color values.
 
     Returns:
         matplotlib axis
@@ -453,6 +463,7 @@ def plot_signal_at_ref_region(
         sig_lw=sig_lw,
         levels_lw=levels_lw,
         ylim=ylim,
+        highlight_ranges=highlight_ranges,
     )
     return ax
 

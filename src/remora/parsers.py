@@ -1431,6 +1431,15 @@ def register_plot_ref_region(parser):
         [contig]:[start]-[end]:[strand]. Multiple regions can be supplied.
         Coordinates are 1-based, closed-open (like genome browsers).""",
     )
+    in_grp.add_argument(
+        "--highlight-ranges",
+        help="""BED file containing regions to highlight""",
+    )
+    in_grp.add_argument(
+        "--highlight-color",
+        default="orange",
+        help="""Color or highlighted regions""",
+    )
 
     refine_grp = subparser.add_argument_group("Signal Mapping Refine Arguments")
     refine_grp.add_argument(
@@ -1530,16 +1539,34 @@ def run_plot_ref_region(args):
         sd_params=args.refine_short_dwell_parameters,
         do_fix_guage=True,
     )
+    highlight_ranges = None
+    if args.highlight_ranges is not None:
+        highlight_ranges = io.parse_bed(args.highlight_ranges)
 
     with PdfPages(args.plots_filename) as pdf_fh:
-        for ref_reg in args.ref_region:
+        for ref_reg_raw in args.ref_region:
+            ref_reg = io.RefPos.parse_ref_region_str(ref_reg_raw)
+            reg_highlight_ranges = None
+            if highlight_ranges is not None:
+                try:
+                    reg_highlight_ranges = [
+                        (pos, pos + 1, args.highlight_color)
+                        for pos in highlight_ranges[
+                            (ref_reg.ctg, ref_reg.strand)
+                        ]
+                        if ref_reg.start <= pos < ref_reg.end
+                    ]
+                except KeyError:
+                    LOGGER.debug(f"No highlight values for region {ref_reg}")
+                    pass
             fig, ax = plt.subplots(figsize=args.figsize)
             io.plot_signal_at_ref_region(
                 bam_fhs,
                 pod5_fhs,
-                io.RefPos.parse_ref_region_str(ref_reg),
+                ref_reg,
                 sig_map_refiner,
                 ax=ax,
                 ylim=args.ylim,
+                highlight_ranges=reg_highlight_ranges,
             )
             pdf_fh.savefig(fig, bbox_inches="tight")
