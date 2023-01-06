@@ -1424,12 +1424,10 @@ def register_plot_ref_region(parser):
         samples can be supplied and will be plotted in different colors""",
     )
     in_grp.add_argument(
-        "--ref-region",
+        "--ref-regions",
         required=True,
-        action="append",
-        help="""Reference region(s) to plot. Format should be
-        [contig]:[start]-[end]:[strand]. Multiple regions can be supplied.
-        Coordinates are 1-based, closed-open (like genome browsers).""",
+        help="""Reference region(s) to plot specified in BED format. Each line
+        in this input file will produce one page in the output PDF.""",
     )
     in_grp.add_argument(
         "--highlight-ranges",
@@ -1544,8 +1542,7 @@ def run_plot_ref_region(args):
         highlight_ranges = io.parse_bed(args.highlight_ranges)
 
     with PdfPages(args.plots_filename) as pdf_fh:
-        for ref_reg_raw in args.ref_region:
-            ref_reg = io.RefPos.parse_ref_region_str(ref_reg_raw)
+        for ref_reg in io.parse_bed_lines(args.ref_regions):
             reg_highlight_ranges = None
             if highlight_ranges is not None:
                 try:

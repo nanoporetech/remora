@@ -33,17 +33,65 @@ BASE_COLORS = {
 }
 
 
-def parse_bed(bed_path):
-    regs = defaultdict(set)
+@dataclass
+class RefPos:
+    ctg: str
+    strand: str
+    start: int
+    end: int = None
+
+    @property
+    def len(self):
+        if self.end is None:
+            return 1
+        return self.end - self.start
+
+    @classmethod
+    def parse_ref_region_str(cls, ref_reg_str, req_strand=True):
+        mat = re.match(
+            r"^(?P<ctg>.+):(?P<st>\d+)-(?P<en>\d+):(?P<strand>[\+\-])$"
+            if req_strand
+            else r"^(?P<ctg>.+):(?P<st>\d+)-(?P<en>\d+)(:(?P<strand>[\+\-]))?$",
+            ref_reg_str,
+        )
+        if mat is None:
+            raise RemoraError(f"Invalid reference region: {ref_reg_str}")
+        start = int(mat.group("st")) - 1
+        if start < 0:
+            raise RemoraError("Invalid reference start coordinate")
+        return cls(
+            ctg=mat.group("ctg"),
+            strand=mat.group("strand"),
+            start=start,
+            end=int(mat.group("en")),
+        )
+
+    @property
+    def coord_range(self):
+        return range(self.start, self.end)
+
+
+def parse_bed_lines(bed_path):
     with open(bed_path) as regs_fh:
         for line in regs_fh:
             fields = line.split()
             ctg, st, en = fields[:3]
-            if len(fields) < 6 or fields[5] not in "+-":
-                for strand in "+-":
-                    regs[(ctg, strand)].update(range(int(st), int(en)))
-            else:
-                regs[(ctg, fields[5])].update(range(int(st), int(en)))
+            st = int(st)
+            en = int(en)
+            strand = (
+                None if len(fields) < 6 or fields[5] not in "+-" else fields[5]
+            )
+            yield RefPos(ctg, strand, st, en)
+
+
+def parse_bed(bed_path):
+    regs = defaultdict(set)
+    for ref_pos in parse_bed_lines(bed_path):
+        if ref_pos.strand is None:
+            for strand in "+-":
+                regs[(ref_pos.ctg, strand)].update(ref_pos.coord_range)
+        else:
+            regs[(ref_pos.ctg, ref_pos.strand)].update(ref_pos.coord_range)
     return regs
 
 
@@ -394,6 +442,7 @@ def plot_ref_region_reads(
         )
     ax.set_ylim(*ylim)
     ax.set_xlim(ref_pos.start, ref_pos.end)
+    ax.set_title(ref_pos.ctg, fontsize=50)
     ax.set_ylabel("Normalized Signal", fontsize=45)
     ax.set_xlabel("Reference Position", fontsize=45)
     ax.tick_params(labelsize=36)
@@ -466,40 +515,6 @@ def plot_signal_at_ref_region(
         highlight_ranges=highlight_ranges,
     )
     return ax
-
-
-@dataclass
-class RefPos:
-    ctg: str
-    strand: str
-    start: int
-    end: int = None
-
-    @property
-    def len(self):
-        if self.end is None:
-            return 1
-        return self.end - self.start
-
-    @classmethod
-    def parse_ref_region_str(cls, ref_reg_str, req_strand=True):
-        mat = re.match(
-            r"^(?P<ctg>.+):(?P<st>\d+)-(?P<en>\d+):(?P<strand>[\+\-])$"
-            if req_strand
-            else r"^(?P<ctg>.+):(?P<st>\d+)-(?P<en>\d+)(:(?P<strand>[\+\-]))?$",
-            ref_reg_str,
-        )
-        if mat is None:
-            raise RemoraError(f"Invalid reference region: {ref_reg_str}")
-        start = int(mat.group("st")) - 1
-        if start < 0:
-            raise RemoraError("Invalid reference start coordinate")
-        return cls(
-            ctg=mat.group("ctg"),
-            strand=mat.group("strand"),
-            start=start,
-            end=int(mat.group("en")),
-        )
 
 
 @dataclass
