@@ -509,9 +509,8 @@ def parse_mod_bam(
     pysam.set_verbosity(pysam_save)
     if len(probs) < 1:
         raise RemoraError(
-            f"No valid modification calls from {bam_path}. May need to revert "
-            "to original MM-tag style. Try `sed s/C+m?,/C+m,/g`and see "
-            "https://github.com/pysam-developers/pysam/issues/1123"
+            f"No valid modification calls from {bam_path}. Confirm that "
+            "contig names from reference FASTA and ground truth BED match."
         )
     LOGGER.debug(
         f"Parsed {len(probs)} modified base calls from file: {bam_path}"
