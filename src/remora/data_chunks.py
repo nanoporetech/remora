@@ -857,15 +857,7 @@ class RemoraDataset:
             self.read_focus_bases[:nchunks].copy(),
             shuffle_on_iter=shuffle_on_iter,
             drop_last=drop_last,
-            chunk_context=self.chunk_context,
-            max_seq_len=self.max_seq_len,
-            kmer_context_bases=self.kmer_context_bases,
-            base_pred=self.base_pred,
-            mod_bases=self.mod_bases,
-            mod_long_names=self.mod_long_names,
-            motifs=self.motifs,
-            batch_size=self.batch_size,
-            sig_map_refiner=self.sig_map_refiner,
+            **self.clone_metadata(),
         )
 
     def copy(self):
@@ -879,15 +871,23 @@ class RemoraDataset:
             self.read_focus_bases.copy(),
             shuffle_on_iter=self.shuffle_on_iter,
             drop_last=self.drop_last,
-            chunk_context=self.chunk_context,
-            max_seq_len=self.max_seq_len,
-            kmer_context_bases=self.kmer_context_bases,
-            base_pred=self.base_pred,
-            mod_bases=self.mod_bases,
-            mod_long_names=self.mod_long_names,
-            motifs=self.motifs,
-            batch_size=self.batch_size,
+            **self.clone_metadata(),
         )
+
+    def clone_metadata(self):
+        return {
+            "chunk_context": self.chunk_context,
+            "max_seq_len": self.max_seq_len,
+            "kmer_context_bases": self.kmer_context_bases,
+            "base_pred": self.base_pred,
+            "mod_bases": self.mod_bases,
+            "mod_long_names": self.mod_long_names,
+            "motifs": self.motifs,
+            "batch_size": self.batch_size,
+            "sig_map_refiner": self.sig_map_refiner,
+            "offset": self.offset,
+            "base_start_justify": self.base_start_justify,
+        }
 
     def __iter__(self):
         if self.shuffle_on_iter:
@@ -973,17 +973,7 @@ class RemoraDataset:
             raise RemoraError("Too many validation chunks for split")
         if val_num > self.nchunks // 2:
             LOGGER.warning("Val split contains more than half of chunks")
-        common_kwargs = {
-            "chunk_context": self.chunk_context,
-            "max_seq_len": self.max_seq_len,
-            "kmer_context_bases": self.kmer_context_bases,
-            "base_pred": self.base_pred,
-            "mod_bases": self.mod_bases,
-            "mod_long_names": self.mod_long_names,
-            "motifs": self.motifs,
-            "batch_size": self.batch_size,
-            "sig_map_refiner": self.sig_map_refiner,
-        }
+
         if not self.shuffled:
             self.shuffle()
 
@@ -1030,7 +1020,7 @@ class RemoraDataset:
             self.read_focus_bases[val_indices],
             shuffle_on_iter=False,
             drop_last=False,
-            **common_kwargs,
+            **self.clone_metadata(),
         )
         trn_ds = RemoraDataset(
             self.sig_tensor[trn_indices],
@@ -1043,7 +1033,7 @@ class RemoraDataset:
             shuffle_on_iter=True,
             drop_last=False,
             balanced_batch=self.balanced_batch,
-            **common_kwargs,
+            **self.clone_metadata(),
         )
         return trn_ds, val_ds
 
@@ -1068,15 +1058,7 @@ class RemoraDataset:
                         self.read_focus_bases[label_indices],
                         shuffle_on_iter=False,
                         drop_last=False,
-                        chunk_context=self.chunk_context,
-                        max_seq_len=self.max_seq_len,
-                        kmer_context_bases=self.kmer_context_bases,
-                        base_pred=self.base_pred,
-                        mod_bases=self.mod_bases,
-                        mod_long_names=self.mod_long_names,
-                        motifs=self.motifs,
-                        batch_size=self.batch_size,
-                        sig_map_refiner=self.sig_map_refiner,
+                        **self.clone_metadata(),
                     ),
                 )
             )
@@ -1109,14 +1091,7 @@ class RemoraDataset:
             read_ids=self.read_ids[choices],
             read_focus_bases=self.read_focus_bases[choices],
             nchunks=outs * min_class_len,
-            chunk_context=self.chunk_context,
-            max_seq_len=self.max_seq_len,
-            kmer_context_bases=self.kmer_context_bases,
-            base_pred=self.base_pred,
-            mod_bases=self.mod_bases,
-            mod_long_names=self.mod_long_names,
-            motifs=self.motifs,
-            sig_map_refiner=self.sig_map_refiner,
+            **self.clone_metadata(),
         )
 
     def filter(self, indices):
@@ -1134,15 +1109,7 @@ class RemoraDataset:
             self.read_focus_bases[indices],
             shuffle_on_iter=False,
             drop_last=False,
-            chunk_context=self.chunk_context,
-            max_seq_len=self.max_seq_len,
-            kmer_context_bases=self.kmer_context_bases,
-            base_pred=self.base_pred,
-            mod_bases=self.mod_bases,
-            mod_long_names=self.mod_long_names,
-            motifs=self.motifs,
-            batch_size=self.batch_size,
-            sig_map_refiner=self.sig_map_refiner,
+            **self.clone_metadata(),
         )
 
     def add_fake_base(self, new_mod_long_names, new_mod_bases):
@@ -1507,7 +1474,6 @@ def merge_datasets(input_datasets, balance=False, quiet=False):
         )
         del input_dataset
         gc.collect()
-
     output_dataset.clip_chunks()
     if balance:
         balanced_dataset = output_dataset.balance_classes()

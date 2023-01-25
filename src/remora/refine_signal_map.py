@@ -146,7 +146,7 @@ class SigMapRefiner:
                 f"{self.half_bandwidth})."
             )
             if self.algo == REFINE_ALGO_DWELL_PEN_NAME:
-                r_str += f" Short dwell penalty array set to {self.sd_params}."
+                r_str += f" Short dwell penalty array set to {self.sd_arr}."
         return r_str
 
     @property
