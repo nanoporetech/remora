@@ -1367,7 +1367,6 @@ def run_validate_from_remora_dataset(args):
         torch.nn.CrossEntropyLoss(),
         dataset,
         args.pct_filt / 100,
-        display_progress_bar=True,
     )
 
 

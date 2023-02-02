@@ -36,10 +36,10 @@ class ModelDownload:
         with tqdm(
             total=total,
             unit="iB",
-            ascii=True,
             ncols=100,
             unit_scale=True,
             leave=False,
+            disable=os.environ.get("LOG_SAFE", False),
         ) as t:
             with open(self.location(f_name), "wb") as f:
                 for data in req.iter_content(1024):

@@ -1,5 +1,6 @@
 import gc
 import re
+import os
 from collections import Counter
 from dataclasses import dataclass
 
@@ -1217,6 +1218,7 @@ class RemoraDataset:
             total=self.nchunks,
             desc="Mismatches",
             leave=False,
+            disable=os.environ.get("LOG_SAFE", False),
         ):
             if c_num_mm == 0:
                 continue
@@ -1241,6 +1243,7 @@ class RemoraDataset:
             total=self.nchunks,
             desc="Signal shifts",
             leave=False,
+            disable=os.environ.get("LOG_SAFE", False),
         ):
             # shift seq to sig mapping in the middle of chunk
             self.seq_mappings[c_idx, 1:c_seq_len] = np.clip(

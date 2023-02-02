@@ -213,7 +213,12 @@ class ReadIndexedBam:
         if not bam_opened:
             self.open()
         self._bam_idx = defaultdict(list)
-        pbar = tqdm(smoothing=0, unit=" Reads", desc="Indexing BAM by read id")
+        pbar = tqdm(
+            smoothing=0,
+            unit=" Reads",
+            desc="Indexing BAM by read id",
+            disable=os.environ.get("LOG_SAFE", False),
+        )
         self.num_records = 0
         # iterating over file handle gives incorrect pointers
         while True:
