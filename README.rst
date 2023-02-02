@@ -96,21 +96,28 @@ Remora data preparation begins from a POD5 file (containing signal data) and a B
 Note that the BAM file must contain the move table (default in Bonito and ``--moves_out`` in Guppy).
 
 The following example generates training data from canonical (PCR) and modified (M.SssI treatment) samples in the same fashion as the releasd 5mC CG-context models.
+Example reads and kit14 level table can be found in the Remora respoitory in the  ``test/data/`` directory.
 
 .. code-block:: bash
 
   remora \
     dataset prepare \
-    can_signal.pod5 \
-    can_basecalls.bam \
+    can_reads.pod5 \
+    can_mappings.bam \
     --output-remora-training-file can_chunks.npz \
+    --log-filename prep_can.log \
+    --refine-kmer-level-table levels.txt \
+    --refine-rough-rescale \
     --motif CG 0 \
-   --mod-base-control
+    --mod-base-control
   remora \
     dataset prepare \
-    mod_signal.pod5 \
-    mod_basecalls.bam \
+    mod_reads.pod5 \
+    mod_mappings.bam \
     --output-remora-training-file mod_chunks.npz \
+    --log-filename prep_can.log \
+    --refine-kmer-level-table levels.txt \
+    --refine-rough-rescale \
     --motif CG 0 \
     --mod-base m 5mC
   remora \
@@ -170,6 +177,68 @@ Ground truth BED files references positions where each read should be called as 
     --bam-and-bed can_infer.bam can_ground_truth.bed \
     --bam-and-bed mod_infer.bam mod_ground_truth.bed \
     --full-output-filename validation_results.txt
+
+Raw Signal Analysis
+-------------------
+
+As of version 2.1, Remora has made access to raw signal analysis more accessible via two CLI commands and an improved API.
+The ``remora analyze`` command group contains two commands ``plot ref_region`` and ``estimate_kmer_levels``.
+Additional commands will be added to this group to produce more useful raw signal analysis tasks.
+
+The ``plot ref_region`` command is useful for gaining intuition into signal attributes and visualize signal shifts around modified bases.
+
+As an example using the test data, the following command produces the plot below.
+
+.. code-block:: bash
+
+  remora \
+    analyze plot ref_region \
+    --pod5-and-bam can_reads.pod5 can_mappings.bam \
+    --pod5-and-bam mod_reads.pod5 mod_mappings.bam \
+    --ref-regions ref_regions.bed \
+    --highlight-ranges mod_gt.bed \
+    --refine-kmer-level-table levels.txt \
+    --refine-rough-rescale \
+    --log-filename log.txt
+
+.. image:: images/plot_ref_region_fwd.png
+   :width: 600
+   :alt: Plot reference region image (forward strand)
+
+.. image:: images/plot_ref_region_rev.png
+   :width: 600
+   :alt: Plot reference region image (reverse strand)
+
+The ``remora analyze estimate_kmer_levels`` command allows one to estimate the current level for each defined k-mer from the above signal.
+For each read, the mean level at each covered base is computed.
+Then for all reads covering a reference location the median of read levels is taken.
+These are grouped by kmer (defined by ``--kmer-context-bases``) and the median is taken over all occurences of each kmer to produce the output table.
+The following command exemplifies this.
+
+.. code-block:: bash
+
+  remora \
+    analyze estimate_kmer_levels \
+    --pod5-and-bam can_reads.pod5 can_mappings.bam \
+    --refine-kmer-level-table levels.txt \
+    --refine-rough-rescale \
+    --kmer-context-bases 1 1 \
+    --min-coverage 3 \
+    --num-workers 8 \
+    --log-filename log.txt
+
+Note that a reasonable starting kmer table is necessary to obtain reasonable output here.
+This command is only using 14 reads, so in practice ``--min-coverage`` should be >=10.
+This command is also only estimating a 3-mer model (``--kmer-context-bases 1 1``), so this can be increased on larger datasets for a more representative model.
+
+Raw Signal Analysis
+-------------------
+
+The new metrics API allows access to these per-read, per-site metrics for more advanced statistical analysis.
+This is API is primarily accessed via the ``remora.io.Read`` object.
+
+The iPython notebooks included in this repository exemplify some common analyses.
+[TODO add notebooks to repo]
 
 Terms and Licence
 -----------------

@@ -28,7 +28,7 @@ ctypedef void (*core_func_ptr)(
 # Banding #
 ###########
 
-def adjust_seq_band(int[:, ::1] seq_band, int min_step=1):
+def adjust_seq_band(int[:, ::1] seq_band, int min_step=2):
     """Adjust band boundaries to disallow invalid paths. Namely, make sure each
     band start and end is at least one greater than the previous.
 
@@ -40,7 +40,7 @@ def adjust_seq_band(int[:, ::1] seq_band, int min_step=1):
             band boundaries in signal coordinates and the second row contains
             the upper boundaries in signal coordinates. The first lower bound
             should be 0 and last upper bound should be signal.shape[0].
-       min_step (int): Minimum step between one base and the next to enforce
+        min_step (int): Minimum step between one base and the next to enforce
             in band adjustment.
     """
     cdef int band_min = seq_band[0, 0]
@@ -93,7 +93,7 @@ def extract_levels(
     levels = np.zeros(int_seq.shape[0], dtype=np.float32)
     cdef float[::1] levels_mv = levels
     cdef int pos, center_pos, kmer_idx
-    for pos in range(int_seq.shape[0] - kmer_len):
+    for pos in range(int_seq.shape[0] - kmer_len + 1):
         center_pos = pos + center_idx
         kmer_idx = index_from_int_kmer(int_seq[pos : pos + kmer_len], kmer_len)
         levels_mv[center_pos] = int_kmer_levels[kmer_idx]

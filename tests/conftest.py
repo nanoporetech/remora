@@ -91,39 +91,69 @@ def pytest_collection_modifyitems(session, config, items):
 
 
 @pytest.fixture(scope="session")
+def levels():
+    """Levels table"""
+    p = Path(__file__).absolute().parent / "data" / "levels.txt"
+    assert p.exists()
+    return p
+
+
+@pytest.fixture(scope="session")
+def ref_regions():
+    """BED file containing regions covered by mappings"""
+    p = Path(__file__).absolute().parent / "data" / "ref_regions.bed"
+    assert p.exists()
+    return p
+
+
+@pytest.fixture(scope="session")
 def can_pod5():
     """Canonical POD5 signal file"""
-    return Path(__file__).absolute().parent / "data" / "can_reads.pod5"
+    p = Path(__file__).absolute().parent / "data" / "can_reads.pod5"
+    assert p.exists()
+    return p
 
 
 @pytest.fixture(scope="session")
 def can_mappings():
     """Canonical mappings bam file"""
-    return Path(__file__).absolute().parent / "data" / "can_mappings.bam"
+    p = Path(__file__).absolute().parent / "data" / "can_mappings.bam"
+    assert p.exists()
+    pysam.index(str(p))
+    return p
 
 
 @pytest.fixture(scope="session")
 def mod_pod5():
     """Modified POD5 signal file"""
-    return Path(__file__).absolute().parent / "data" / "mod_reads.pod5"
+    p = Path(__file__).absolute().parent / "data" / "mod_reads.pod5"
+    assert p.exists()
+    return p
 
 
 @pytest.fixture(scope="session")
 def mod_mappings():
     """Modified mappings bam file"""
-    return Path(__file__).absolute().parent / "data" / "mod_mappings.bam"
+    p = Path(__file__).absolute().parent / "data" / "mod_mappings.bam"
+    assert p.exists()
+    pysam.index(str(p))
+    return p
 
 
 @pytest.fixture(scope="session")
 def can_gt_bed():
     """Canonical ground truth BED file"""
-    return Path(__file__).absolute().parent / "data" / "can_gt.bed"
+    p = Path(__file__).absolute().parent / "data" / "can_gt.bed"
+    assert p.exists()
+    return p
 
 
 @pytest.fixture(scope="session")
 def mod_gt_bed():
     """Modified ground truth BED file"""
-    return Path(__file__).absolute().parent / "data" / "mod_gt.bed"
+    p = Path(__file__).absolute().parent / "data" / "mod_gt.bed"
+    assert p.exists()
+    return p
 
 
 @pytest.fixture(scope="session")
@@ -203,11 +233,11 @@ def duplex_reads(
         assert duplex_read.template_read.seq != template_read.seq
         assert duplex_read.template_read.ref_seq is None
         assert duplex_read.template_read.ref_to_signal is None
-        assert duplex_read.template_read.ref_pos is None
+        assert duplex_read.template_read.ref_reg is None
         assert duplex_read.complement_read.seq != complement_read.seq
         assert duplex_read.complement_read.ref_seq is None
         assert duplex_read.complement_read.ref_to_signal is None
-        assert duplex_read.complement_read.ref_pos is None
+        assert duplex_read.complement_read.ref_reg is None
         duplex_reads.append(duplex_read)
     return duplex_reads
 

@@ -9,9 +9,7 @@ from remora.constants import (
     DEFAULT_REFINE_HBW,
     DEFAULT_REFINE_SHORT_DWELL_PARAMS,
     DEFAULT_REFINE_ALGO,
-    DEFAULT_REFINE_BAND_MIN_STEP,
     REFINE_ALGO_DWELL_PEN_NAME,
-    DEFAULT_REFINE_SCALE_ITERS,
 )
 from remora.refine_signal_map_core import (
     seq_banded_dp,
@@ -112,7 +110,7 @@ class SigMapRefiner:
 
     kmer_model_filename: str = None
     do_rough_rescale: bool = True
-    scale_iters: int = DEFAULT_REFINE_SCALE_ITERS
+    scale_iters: int = -1
     algo: str = DEFAULT_REFINE_ALGO
     half_bandwidth: int = DEFAULT_REFINE_HBW
     sd_params: tuple = None
@@ -158,6 +156,13 @@ class SigMapRefiner:
     def bases_after(self):
         """Number of bases in k-mer after the central base"""
         return self.kmer_len - self.center_idx - 1
+
+    def write_kmer_table(self, fh):
+        for kmer in product(*["ACGT"] * self.kmer_len):
+            fh.write(
+                f"{''.join(kmer)}\t"
+                f"{self._levels_array[index_from_kmer(kmer)]}\n"
+            )
 
     def load_kmer_table(self):
         self.str_kmer_levels = {}
@@ -218,6 +223,7 @@ class SigMapRefiner:
         LOGGER.debug(f"Choosen central position: {self.center_idx}")
 
     def __post_init__(self):
+        # determine if level model is loaded from any of 3 options
         if self._levels_array is not None and not np.array_equal(
             self._levels_array, np.array(None)
         ):
@@ -230,6 +236,12 @@ class SigMapRefiner:
             self.determine_dominant_pos()
             if self.do_fix_guage:
                 self.fix_gauge()
+        elif self.str_kmer_levels is not None:
+            self.is_loaded = True
+            self.determine_dominant_pos()
+            if self.do_fix_guage:
+                self.fix_gauge()
+
         if self.sd_params is not None:
             self.sd_arr = compute_dwell_pen_array(*self.sd_params)
         if (
@@ -413,6 +425,34 @@ class SigMapRefiner:
             sd_arr=data["refine_sd_arr"],
         )
 
+    @classmethod
+    def load_from_dict(
+        cls,
+        data,
+        do_rough_rescale=True,
+        scale_iters=-1,
+        algo=DEFAULT_REFINE_ALGO,
+        half_bandwidth=DEFAULT_REFINE_HBW,
+        sd_params=None,
+        do_fix_guage=False,
+        sd_arr=DEFAULT_REFINE_SHORT_DWELL_PEN,
+    ):
+        """Create refiner from str_kmer_levels dict with kmer keys and float
+        current level values.
+        """
+        kmer_len = len(next(iter(data.keys())))
+        return cls(
+            do_rough_rescale=do_rough_rescale,
+            scale_iters=scale_iters,
+            algo=algo,
+            half_bandwidth=half_bandwidth,
+            sd_params=sd_params,
+            do_fix_guage=do_fix_guage,
+            sd_arr=sd_arr,
+            str_kmer_levels=data,
+            kmer_len=kmer_len,
+        )
+
 
 ###########
 # Banding #
@@ -570,6 +610,7 @@ def refine_signal_mapping(
     band_half_width=DEFAULT_REFINE_HBW,
     refine_algo=DEFAULT_REFINE_ALGO,
     short_dwell_pen=DEFAULT_REFINE_SHORT_DWELL_PEN,
+    adjust_band_min_step=2,
 ):
     """Refine input signal mapping to minimize difference difference between
     signal and levels.
@@ -582,6 +623,8 @@ def refine_signal_mapping(
             last base. Values should be monotonically increasing (ties allowed).
         levels (np.ndarray): Float32 array containing estimated levels.
         band_half_width (int): Half bandwidth
+        adjust_band_min_step (int): Minimum step between one base and the next
+            to enforce in band adjustment.
 
     Returns:
         2-tuple containing:
@@ -604,7 +647,7 @@ def refine_signal_mapping(
         bhw=band_half_width,
     )
     seq_band = convert_to_seq_band(sig_band)
-    adjust_seq_band(seq_band, min_step=DEFAULT_REFINE_BAND_MIN_STEP)
+    adjust_seq_band(seq_band, min_step=adjust_band_min_step)
     validate_band(
         seq_band,
         sig_len=signal.shape[0],
