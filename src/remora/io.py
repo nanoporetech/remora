@@ -3,19 +3,22 @@ import re
 import random
 from pathlib import Path
 from typing import Callable
-from itertools import chain
 from copy import copy, deepcopy
 from dataclasses import dataclass
 from collections import defaultdict
+from itertools import chain, product
 from functools import cached_property
 
 import pod5
 import pysam
 import numpy as np
+import pandas as pd
 from tqdm import tqdm
+import seaborn as sns
 from pysam import AlignedSegment
 from matplotlib import pyplot as plt
 
+from remora.metrics import METRIC_FUNCS
 from remora.constants import PA_TO_NORM_SCALING_FACTOR, DEFAULT_PLOT_FIG_SIZE
 from remora import log, util, data_chunks as DC, duplex_utils as DU, RemoraError
 
@@ -24,6 +27,8 @@ LOGGER = log.get_logger()
 _SIG_PROF_FN = os.getenv("REMORA_EXTRACT_SIGNAL_PROFILE_FILE")
 _ALIGN_PROF_FN = os.getenv("REMORA_EXTRACT_ALIGN_PROFILE_FILE")
 
+SIG_PCTL_RANGE = (0.2, 99.8)
+SAMPLE_COLORS = ["k", "tab:red", "tab:cyan", "tab:pink", "tab:orange"]
 BASE_COLORS = {
     "A": "#00CC00",
     "C": "#0000CC",
@@ -33,8 +38,13 @@ BASE_COLORS = {
 }
 
 
+##############
+# General IO #
+##############
+
+
 @dataclass
-class RefPos:
+class RefRegion:
     ctg: str
     strand: str
     start: int
@@ -70,6 +80,28 @@ class RefPos:
     def coord_range(self):
         return range(self.start, self.end)
 
+    def adjust(self, start_adjust=0, end_adjust=0, ref_orient=True):
+        """Return a copy of this region adjusted by the specified amounts.
+
+        Args:
+            start_adjust (int): Adjustment to start
+            end_adjust (int): Adjustment to end
+            ref_orient (bool): If True, expand start and end directly. If False
+                (read oriented) and region is reverse strand, swap start and
+                end adjustments. For read_orient, the region will be expanded
+                relative to the reads mapping to the appropriate strand.
+        """
+        if ref_orient or self.strand == "+":
+            end_coord = None if self.end is None else self.end + end_adjust
+            return RefRegion(
+                self.ctg, self.strand, self.start + start_adjust, end_coord
+            )
+        else:
+            end_coord = None if self.end is None else self.end - start_adjust
+            return RefRegion(
+                self.ctg, self.strand, self.start - end_adjust, end_coord
+            )
+
 
 def parse_bed_lines(bed_path):
     with open(bed_path) as regs_fh:
@@ -81,17 +113,17 @@ def parse_bed_lines(bed_path):
             strand = (
                 None if len(fields) < 6 or fields[5] not in "+-" else fields[5]
             )
-            yield RefPos(ctg, strand, st, en)
+            yield RefRegion(ctg, strand, st, en)
 
 
 def parse_bed(bed_path):
     regs = defaultdict(set)
-    for ref_pos in parse_bed_lines(bed_path):
-        if ref_pos.strand is None:
+    for ref_reg in parse_bed_lines(bed_path):
+        if ref_reg.strand is None:
             for strand in "+-":
-                regs[(ref_pos.ctg, strand)].update(ref_pos.coord_range)
+                regs[(ref_reg.ctg, strand)].update(ref_reg.coord_range)
         else:
-            regs[(ref_pos.ctg, ref_pos.strand)].update(ref_pos.coord_range)
+            regs[(ref_reg.ctg, ref_reg.strand)].update(ref_reg.coord_range)
     return regs
 
 
@@ -277,150 +309,629 @@ def parse_move_tag(mv_tag, sig_len, seq_len=None, check=True):
     return query_to_signal, mv_table, stride
 
 
-def get_ref_seq_and_levels_from_reads(ref_reg, bam_reads, sig_map_refiner):
-    if sig_map_refiner is None:
-        bb, context_st, context_en = 0, ref_reg.start, ref_reg.end
-    elif ref_reg.strand == "+":
-        bb = sig_map_refiner.bases_before
-        context_st = ref_reg.start - sig_map_refiner.bases_before
-        context_en = ref_reg.end + sig_map_refiner.bases_after
-    else:
-        bb = sig_map_refiner.bases_after
-        context_st = ref_reg.start - sig_map_refiner.bases_after
-        context_en = ref_reg.end + sig_map_refiner.bases_before
-    context_len = context_en - context_st
+#######################
+# POD5/BAM Extraction #
+#######################
+
+
+def iter_pod5_reads(pod5_path, num_reads=None, read_ids=None):
+    """Iterate over Pod5Read objects
+
+    Args:
+        pod5_path (str): Path to POD5 file
+        num_reads (int): Maximum number of reads to iterate
+        read_ids (iterable): Read IDs to extract
+
+    Yields:
+        Requested pod5.reader.ReadRecord objects
+    """
+    LOGGER.debug(f"Reading from POD5 at {pod5_path}")
+    with pod5.Reader(Path(pod5_path)) as pod5_fh:
+        for read_num, read in enumerate(
+            pod5_fh.reads(selection=read_ids, preload=["samples"])
+        ):
+            if num_reads is not None and read_num >= num_reads:
+                LOGGER.debug(
+                    f"Completed pod5 signal worker, reached {num_reads}."
+                )
+                return
+
+            yield read
+    LOGGER.debug("Completed pod5 signal worker")
+
+
+def iter_signal(pod5_path, num_reads=None, read_ids=None):
+    """Iterate io Read objects loaded from Pod5
+
+    Args:
+        pod5_path (str): Path to POD5 file
+        num_reads (int): Maximum number of reads to iterate
+        read_ids (iterable): Read IDs to extract
+
+    Yields:
+        2-tuple:
+            1. remora.io.Read object
+            2. Error text or None if no errors
+    """
+    for pod5_read in iter_pod5_reads(
+        pod5_path=pod5_path, num_reads=num_reads, read_ids=read_ids
+    ):
+        read = Read(
+            read_id=str(pod5_read.read_id),
+            dacs=pod5_read.signal,
+            shift_dacs_to_pa=pod5_read.calibration.offset,
+            scale_dacs_to_pa=pod5_read.calibration.scale,
+        )
+
+        yield read, None
+    LOGGER.debug("Completed signal worker")
+
+
+if _SIG_PROF_FN:
+    _iter_signal_wrapper = iter_signal
+
+    def iter_signal(*args, **kwargs):
+        import cProfile
+
+        sig_prof = cProfile.Profile()
+        retval = sig_prof.runcall(_iter_signal_wrapper, *args, **kwargs)
+        sig_prof.dump_stats(_SIG_PROF_FN)
+        return retval
+
+
+def extract_alignments(read_err, bam_idx):
+    io_read, err = read_err
+    if io_read is None:
+        return [read_err]
+    read_alignments = []
+    try:
+        for bam_read in bam_idx.get_alignments(io_read.read_id):
+            align_read = io_read.copy()
+            align_read.add_alignment(bam_read)
+            read_alignments.append(tuple((align_read, None)))
+    except KeyError:
+        return [tuple((None, "Read id not found in BAM file"))]
+    return read_alignments
+
+
+if _ALIGN_PROF_FN:
+    _extract_align_wrapper = extract_alignments
+
+    def extract_alignments(*args, **kwargs):
+        import cProfile
+
+        align_prof = cProfile.Profile()
+        retval = align_prof.runcall(_extract_align_wrapper, *args, **kwargs)
+        align_prof.dump_stats(_ALIGN_PROF_FN)
+        return retval
+
+
+def iter_regions(bam_fh, reg_len=100_000):
+    for ctg, ctg_len in zip(bam_fh.header.references, bam_fh.header.lengths):
+        for st in range((ctg_len // reg_len) + 1):
+            yield RefRegion(
+                ctg=ctg,
+                strand="+",
+                start=st * reg_len,
+                end=(st + 1) * reg_len,
+            )
+            yield RefRegion(
+                ctg=ctg,
+                strand="-",
+                start=st * reg_len,
+                end=(st + 1) * reg_len,
+            )
+
+
+def get_reg_bam_reads(ref_reg, bam_fh):
+    return [
+        bam_read
+        for bam_read in bam_fh.fetch(ref_reg.ctg, ref_reg.start, ref_reg.end)
+        if read_is_primary(bam_read) and strands_match(ref_reg.strand, bam_read)
+    ]
+
+
+def iter_covered_regions(
+    bam_path, chunk_len=1_000, max_chunk_cov=None, pickle_safe=False
+):
+    with pysam.AlignmentFile(bam_path) as bam_fh:
+        for reg in iter_regions(bam_fh, chunk_len):
+            bam_reads = get_reg_bam_reads(reg, bam_fh)
+            if len(bam_reads) == 0:
+                continue
+            if max_chunk_cov is not None:
+                target_bases = chunk_len * max_chunk_cov
+                total_bases = 0
+                random.shuffle(bam_reads)
+                sampled_bam_reads = []
+                for bam_read in bam_reads:
+                    sampled_bam_reads.append(bam_read)
+                    total_bases += min(bam_read.reference_end, reg.end) - max(
+                        bam_read.reference_start, reg.start
+                    )
+                    if total_bases >= target_bases:
+                        break
+                bam_reads = sampled_bam_reads
+            if pickle_safe:
+                yield reg, [br.to_dict() for br in bam_reads]
+                continue
+            yield reg, bam_reads
+
+
+def compute_base_space_sig_coords(seq_to_sig_map):
+    """Compute coordinates for signal points, interpolating signal assigned to
+    each base linearly through the span of each covered base.
+    """
+    return np.interp(
+        np.arange(seq_to_sig_map[-1] - seq_to_sig_map[0]),
+        seq_to_sig_map,
+        np.arange(seq_to_sig_map.size),
+    )
+
+
+@dataclass
+class ReadRefReg:
+    read_id: str
+    norm_signal: np.ndarray
+    seq: str
+    seq_to_sig_map: np.ndarray
+    ref_reg: RefRegion
+
+    @property
+    def ref_sig_coords(self):
+        """Compute signal coorindates for plotting this read against the
+        mapped stretch of reference.
+        """
+        return (
+            compute_base_space_sig_coords(self.seq_to_sig_map)
+            + self.ref_reg.start
+        )
+
+    def plot_on_signal_coords(self, **kwargs):
+        """Plot signal on signal coordinates. See global plot_on_signal_coords
+        function for kwargs.
+        """
+        return plot_on_signal_coords(
+            self.seq,
+            self.norm_signal,
+            self.seq_to_sig_map,
+            rev_strand=self.ref_reg.strand == "-",
+            **kwargs,
+        )
+
+    def plot_on_base_coords(self, **kwargs):
+        """Plot signal on base/sequence coordinates. See global
+        plot_on_base_coords function for kwargs.
+        """
+        return plot_on_base_coords(
+            self.ref_reg.start,
+            self.seq,
+            self.norm_signal,
+            self.seq_to_sig_map,
+            rev_strand=self.ref_reg.strand == "-",
+            **kwargs,
+        )
+
+
+@dataclass
+class ReadBasecallRegion:
+    read_id: str
+    norm_signal: np.ndarray
+    seq: str
+    seq_to_sig_map: np.ndarray
+    start: int
+
+    def plot_on_signal_coords(self, **kwargs):
+        """Plot signal on signal coordinates. See global plot_on_signal_coords
+        function for kwargs.
+        """
+        return plot_on_signal_coords(
+            self.seq, self.norm_signal, self.seq_to_sig_map, **kwargs
+        )
+
+    def plot_on_base_coords(self, **kwargs):
+        """Plot signal on base/sequence coordinates. See global
+        plot_on_base_coords function for kwargs.
+        """
+        return plot_on_base_coords(
+            self.start,
+            self.seq,
+            self.norm_signal,
+            self.seq_to_sig_map,
+            **kwargs,
+        )
+
+
+def get_ref_int_seq_from_reads(ref_reg, bam_reads, ref_orient=True):
     # fill with -2 since N is represented by -1
-    context_int_seq = np.full(context_len, -2, np.int32)
+    int_seq = np.full(ref_reg.len, -2, np.int32)
     # extract forward reference sequence.
     for bam_read in bam_reads:
         read_ref_seq = bam_read.get_reference_sequence().upper()
-        context_int_seq[
-            max(0, bam_read.reference_start - context_st) : (
-                bam_read.reference_end - context_st
+        int_seq[
+            max(0, bam_read.reference_start - ref_reg.start) : (
+                bam_read.reference_end - ref_reg.start
             )
         ] = util.seq_to_int(
             read_ref_seq[
-                max(0, context_st - bam_read.reference_start) : (
-                    context_en - bam_read.reference_start
+                max(0, ref_reg.start - bam_read.reference_start) : (
+                    ref_reg.end - bam_read.reference_start
                 )
             ]
         )
-        if not np.any(context_int_seq == -2):
+        if not np.any(int_seq == -2):
             break
-    levels = None
-    if sig_map_refiner is not None:
-        if ref_reg.strand == "+":
-            levels = sig_map_refiner.extract_levels(context_int_seq)
+    if ref_reg.strand == "-":
+        if ref_orient:
+            return util.comp_np(int_seq)
         else:
-            levels = sig_map_refiner.extract_levels(
-                util.revcomp_np(context_int_seq)
-            )[::-1]
-        levels = levels[bb : bb + ref_reg.len]
-    seq = util.int_to_seq(context_int_seq[bb : bb + ref_reg.len])
+            return util.revcomp_np(int_seq)
+    return int_seq
+
+
+def get_ref_seq_from_reads(ref_reg, bam_reads, ref_orient=True):
+    int_seq = get_ref_int_seq_from_reads(
+        ref_reg, bam_reads, ref_orient=ref_orient
+    )
+    int_seq[np.equal(int_seq, -2)] = -1
+    return util.int_to_seq(int_seq)
+
+
+def get_ref_seq_and_levels_from_reads(
+    ref_reg,
+    bam_reads,
+    sig_map_refiner,
+    ref_orient=True,
+):
+    """Extract sequence and levels from BAM reads covering a region.
+
+    Args:
+        ref_reg (RefRegion): Reference region
+        bam_reads (iterable): pysam.AlignedSegments covering ref_reg
+        sig_map_refiner (SigMapRefiner): For level extraction
+        ref_orient (bool): Should returned sequence and levels be reference
+            oriented? This only effects the output for reverse strand ref_reg.
+            Reference orientation will return the reference sequence and levels
+            in the forward reference direction. Read orient (ref_orient=False)
+            will return sequence and levels in 5' to 3' read direction on the
+            reverse strand.
+    """
+    # extract read oriented context seq
+    context_int_seq = get_ref_int_seq_from_reads(
+        ref_reg.adjust(
+            -sig_map_refiner.bases_before,
+            sig_map_refiner.bases_after,
+            ref_orient=False,
+        ),
+        bam_reads,
+        ref_orient=False,
+    )
+    # levels are read oriented
+    levels = sig_map_refiner.extract_levels(context_int_seq)
+    # convert sequence positions not in reads to nan and seq to N
+    levels[np.equal(context_int_seq, -2)] = np.NAN
+    context_int_seq[np.equal(context_int_seq, -2)] = -1
+    seq = util.int_to_seq(context_int_seq)
+    # trim seq and levels
+    seq = seq[
+        sig_map_refiner.bases_before : sig_map_refiner.bases_before
+        + ref_reg.len
+    ]
+    levels = levels[
+        sig_map_refiner.bases_before : sig_map_refiner.bases_before
+        + ref_reg.len
+    ]
+
+    if ref_reg.strand == "-" and ref_orient:
+        seq = seq[::-1]
+        levels = levels[::-1]
     return seq, levels
 
 
-def extract_ref_region_reads(
-    bam_fhs,
-    pod5_fhs,
-    ref_pos,
+def get_pod5_reads(pod5_fh, read_ids):
+    return dict(
+        (str(pod5_read.read_id), pod5_read)
+        for pod5_read in pod5_fh.reads(selection=read_ids, preload=["samples"])
+    )
+
+
+def get_io_reads(bam_reads, pod5_fh, missing_ok=False):
+    pod5_reads = get_pod5_reads(
+        pod5_fh, [bam_read.query_name for bam_read in bam_reads]
+    )
+    io_reads = []
+    for bam_read in bam_reads:
+        try:
+            io_read = Read.from_pod5_and_alignment(
+                pod5_read_record=pod5_reads[bam_read.query_name],
+                alignment_record=bam_read,
+            )
+        except Exception:
+            if missing_ok:
+                continue
+            else:
+                raise RemoraError("BAM record not found in POD5")
+        io_reads.append(io_read)
+    return io_reads
+
+
+def get_reads_reference_regions(
+    ref_reg,
+    pod5_and_bam_fhs,
     sig_map_refiner=None,
     skip_sig_map_refine=False,
     max_reads=50,
 ):
-    reg_bam_reads = [
-        [
-            bam_read
-            for bam_read in bam_fh.fetch(
-                ref_pos.ctg, ref_pos.start, ref_pos.end
-            )
-            if read_is_primary(bam_read)
-            and strands_match(ref_pos.strand, bam_read)
-        ]
-        for bam_fh in bam_fhs
-    ]
-    seq, levels = get_ref_seq_and_levels_from_reads(
-        ref_pos, chain(*reg_bam_reads), sig_map_refiner
-    )
-    if max_reads is not None:
-        reg_bam_reads = [
-            random.sample(samp_reads, max_reads)
-            if len(samp_reads) > max_reads
-            else samp_reads
-            for samp_reads in reg_bam_reads
-        ]
-
-    ref_reg_reads = []
-    for samp_reads, pod5_fh in zip(reg_bam_reads, pod5_fhs):
-        ref_reg_reads.append([])
-        for bam_read in samp_reads:
-            pod5_read = next(
-                pod5_fh.reads(
-                    selection=[bam_read.query_name], preload=["samples"]
-                )
-            )
-            io_read = Read.from_pod5_and_alignment(
-                pod5_read_record=pod5_read,
-                alignment_record=bam_read,
-            )
-            if sig_map_refiner is not None and not skip_sig_map_refine:
+    all_bam_reads = []
+    samples_read_ref_regs = []
+    for pod5_fh, bam_fh in pod5_and_bam_fhs:
+        sample_bam_reads = get_reg_bam_reads(ref_reg, bam_fh)
+        if len(sample_bam_reads) == 0:
+            raise RemoraError("No reads covering region")
+        if max_reads is not None and len(sample_bam_reads) > max_reads:
+            sample_bam_reads = random.sample(sample_bam_reads, max_reads)
+        all_bam_reads.append(sample_bam_reads)
+        io_reads = get_io_reads(sample_bam_reads, pod5_fh)
+        if sig_map_refiner is not None and not skip_sig_map_refine:
+            for io_read in io_reads:
                 io_read.set_refine_signal_mapping(
                     sig_map_refiner, ref_mapping=True
                 )
-            ref_reg_reads[-1].append(
-                io_read.extract_reference_region(ref_pos.start, ref_pos.end)
-            )
-    return ref_reg_reads, seq, levels
-
-
-def plot_ref_region_reads(
-    ref_pos,
-    ref_reg_reads,
-    seq,
-    levels,
-    max_reads=50,
-    ax=None,
-    figsize=DEFAULT_PLOT_FIG_SIZE,
-    sig_lw=2,
-    sig_cols=["k", "r", "c"],
-    levels_lw=6,
-    ylim=None,
-    highlight_ranges=None,
-):
-    # start plotting
-    if ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
-    if ylim is None:
-        sig_min, sig_max = np.percentile(
-            np.concatenate([r.norm_signal for r in chain(*ref_reg_reads)]),
-            (0, 100),
+        samples_read_ref_regs.append(
+            [io_read.extract_ref_reg(ref_reg) for io_read in io_reads]
         )
+    return samples_read_ref_regs, all_bam_reads
+
+
+def get_ref_reg_sample_metrics(
+    ref_reg,
+    pod5_fh,
+    bam_reads,
+    metric,
+    sig_map_refiner,
+    skip_sig_map_refine=False,
+    ref_orient=True,
+    **kwargs,
+):
+    io_reads = get_io_reads(bam_reads, pod5_fh)
+    if sig_map_refiner is not None and not skip_sig_map_refine:
+        for io_read in io_reads:
+            io_read.set_refine_signal_mapping(sig_map_refiner, ref_mapping=True)
+    sample_metrics = [
+        io_read.compute_per_base_metric(metric, region=ref_reg, **kwargs)
+        for io_read in io_reads
+    ]
+    if len(sample_metrics) > 0:
+        reg_metrics = dict(
+            (
+                metric_name,
+                np.stack([mv[metric_name] for mv in sample_metrics]),
+            )
+            for metric_name in sample_metrics[0].keys()
+        )
+        # ref_anchored read metrics are read oriented. Thus if ref_orient=True,
+        # need to flip metrics
+        if ref_orient and ref_reg.strand == "-":
+            return dict(
+                (metric_name, vals[:, ::-1])
+                for metric_name, vals in reg_metrics.items()
+            )
+        return reg_metrics
+
+
+def get_ref_reg_samples_metrics(
+    ref_reg,
+    pod5_and_bam_fhs,
+    sig_map_refiner=None,
+    skip_sig_map_refine=False,
+    metric="dwell_trimmean",
+    max_reads=None,
+    **kwargs,
+):
+    all_bam_reads = []
+    samples_metrics = []
+    for pod5_fh, bam_fh in pod5_and_bam_fhs:
+        sample_bam_reads = get_reg_bam_reads(ref_reg, bam_fh)
+        if len(sample_bam_reads) == 0:
+            raise RemoraError("No reads covering region")
+        if max_reads is not None and len(sample_bam_reads) > max_reads:
+            sample_bam_reads = random.sample(sample_bam_reads, max_reads)
+        all_bam_reads.append(sample_bam_reads)
+        sample_metrics = get_ref_reg_sample_metrics(
+            ref_reg,
+            pod5_fh,
+            sample_bam_reads,
+            metric,
+            sig_map_refiner,
+            skip_sig_map_refine,
+            **kwargs,
+        )
+        if sample_metrics is not None:
+            samples_metrics.append(sample_metrics)
+
+    return samples_metrics, all_bam_reads
+
+
+###################
+# K-mer functions #
+###################
+
+
+def get_region_kmers(
+    reg_and_bam_reads,
+    pod5_fh,
+    sig_map_refiner,
+    kmer_context_bases,
+    min_cov=10,
+    start_trim=2,
+    end_trim=2,
+    dict_bam_reads=False,
+    bam_header=None,
+):
+    reg, bam_reads = reg_and_bam_reads
+    if dict_bam_reads:
+        bam_reads = [
+            pysam.AlignedSegment.from_dict(br, bam_header) for br in bam_reads
+        ]
+    reg_metrics = get_ref_reg_sample_metrics(
+        reg,
+        pod5_fh,
+        bam_reads,
+        "dwell_trimmean",
+        sig_map_refiner,
+        start_trim=start_trim,
+        end_trim=end_trim,
+        ref_orient=False,
+    )
+    seq = get_ref_seq_from_reads(
+        reg.adjust(
+            -kmer_context_bases[0], kmer_context_bases[1], ref_orient=False
+        ),
+        bam_reads,
+        ref_orient=False,
+    )
+    kmer_len = sum(kmer_context_bases) + 1
+    reg_kmer_levels = dict(
+        ("".join(bs), []) for bs in product("ACGT", repeat=kmer_len)
+    )
+    for offset in range(reg.len):
+        kmer = seq[offset : offset + kmer_len]
+        try:
+            offset_kmer_levels = reg_kmer_levels[kmer]
+        except KeyError:
+            continue
+        site_read_levels = reg_metrics["trimmean"][:, offset]
+        site_read_levels = site_read_levels[np.isfinite(site_read_levels)]
+        if site_read_levels.size < min_cov:
+            continue
+        offset_kmer_levels.append(np.median(site_read_levels))
+    return dict(
+        (kmer, np.array(levels)) for kmer, levels in reg_kmer_levels.items()
+    )
+
+
+def prep_region_kmers(*args, **kwargs):
+    args = list(args)
+    args[0] = pod5.Reader(args[0])
+    return tuple(args), kwargs
+
+
+def get_site_kmer_levels(
+    pod5_path,
+    bam_path,
+    sig_map_refiner,
+    kmer_context_bases,
+    min_cov=10,
+    chunk_len=1_000,
+    max_chunk_cov=100,
+    start_trim=1,
+    end_trim=1,
+    num_workers=1,
+):
+    regs_bam_reads = util.BackgroundIter(
+        iter_covered_regions,
+        args=(bam_path, chunk_len, max_chunk_cov),
+        kwargs={"pickle_safe": True},
+    )
+    with pysam.AlignmentFile(bam_path) as bam_fh:
+        bam_header = bam_fh.header
+    regs_kmer_levels = util.MultitaskMap(
+        get_region_kmers,
+        regs_bam_reads,
+        prep_func=prep_region_kmers,
+        num_workers=num_workers,
+        use_process=True,
+        args=(
+            pod5_path,
+            sig_map_refiner,
+            kmer_context_bases,
+        ),
+        kwargs={
+            "min_cov": min_cov,
+            "start_trim": start_trim,
+            "end_trim": start_trim,
+            "dict_bam_reads": True,
+            "bam_header": bam_header,
+        },
+        name="GetKmers",
+    )
+
+    # enumerate kmers for dict
+    kmer_len = sum(kmer_context_bases) + 1
+    all_kmer_levels = dict(
+        ("".join(bs), []) for bs in product("ACGT", repeat=kmer_len)
+    )
+    for reg_kmer_levels in regs_kmer_levels:
+        for kmer, levels in reg_kmer_levels.items():
+            all_kmer_levels[kmer].append(levels)
+    return dict(
+        (kmer, np.concatenate(levels) if len(levels) > 0 else np.array([]))
+        for kmer, levels in all_kmer_levels.items()
+    )
+
+
+######################
+# Plotting functions #
+######################
+
+
+def plot_on_signal_coords(
+    seq,
+    sig,
+    seq_to_sig_map,
+    rev_strand=False,
+    levels=None,
+    fig_ax=None,
+    figsize=DEFAULT_PLOT_FIG_SIZE,
+    sig_lw=8,
+    levels_lw=8,
+    ylim=None,
+):
+    """Plot a single read on signal coordinates.
+
+    Args:
+        seq (str): Sequence to plot
+        sig (np.array): Signal to plot
+        seq_to_sig_map (np.array): Mapping from sequence to signal coordinates
+        rev_strand (bool): Plot seq with 180 rotation
+        levels (np.array): Expected signal levels for bases in region
+        fig_ax (tuple): If None, new figure/axes will be opened
+        figsize (tuple): option to pass to plt.subplots if ax is None
+        sig_lw (int): Linewidth for signal lines
+        levels_lw (int): Linewidth for level lines (if applicable)
+        ylim (tuple): 2-tuple with y-axis limits
+
+    Returns:
+        matplotlib axis
+    """
+    if fig_ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig, ax = fig_ax
+    if ylim is None:
+        sig_min, sig_max = np.percentile(sig, SIG_PCTL_RANGE)
         sig_diff = sig_max - sig_min
         ylim = (sig_min - sig_diff * 0.01, sig_max + sig_diff * 0.01)
     base_text_loc = ylim[0] + ((ylim[1] - ylim[0]) * 0.02)
 
-    # plot highlight regions
-    if highlight_ranges is not None:
-        for st, en, col in highlight_ranges:
-            ax.axvspan(st, en, facecolor=col, alpha=0.4)
     # plot vertical base lines
-    for b in np.arange(ref_pos.start, ref_pos.end + 1):
+    for b in seq_to_sig_map:
         ax.axvline(x=b, color="k", alpha=0.1, lw=1)
-    for samp_col, samp_reads in zip(sig_cols, ref_reg_reads):
-        for read_reg in samp_reads:
-            # plot read signal
-            ax.plot(
-                read_reg.sig_x_coords,
-                read_reg.norm_signal,
-                color=samp_col,
-                alpha=0.1,
-                lw=sig_lw,
-            )
+    # plot read signal
+    ax.plot(
+        np.arange(seq_to_sig_map[0], seq_to_sig_map[-1]),
+        sig,
+        color="k",
+        alpha=0.5,
+        lw=sig_lw,
+    )
     # plot levels
     if levels is not None:
-        for b_num, b_lev in enumerate(levels):
+        for b_lev, b_st, b_en in zip(
+            levels, seq_to_sig_map[:-1], seq_to_sig_map[1:]
+        ):
             ax.plot(
-                [ref_pos.start + b_num, ref_pos.start + b_num + 1],
+                [b_st, b_en],
                 [b_lev] * 2,
                 linestyle="-",
                 color="y",
@@ -428,11 +939,165 @@ def plot_ref_region_reads(
                 lw=levels_lw,
             )
     # plot bases
-    plot_seq = seq if ref_pos.strand == "+" else util.comp(seq)
-    rotation = 0 if ref_pos.strand == "+" else 180
-    for b_num, base in enumerate(plot_seq):
+    for b_st, b_en, base in zip(seq_to_sig_map[:-1], seq_to_sig_map[1:], seq):
         ax.text(
-            ref_pos.start + b_num + 0.5,
+            (b_en + b_st) / 2,
+            base_text_loc,
+            base,
+            color=BASE_COLORS[base],
+            ha="center",
+            size=30,
+            rotation=180 if rev_strand else 0,
+        )
+    ax.set_ylim(*ylim)
+    ax.set_ylabel("Normalized Signal", fontsize=45)
+    ax.set_xlabel("Signal Position", fontsize=45)
+    ax.tick_params(labelsize=36)
+    return fig, ax
+
+
+def plot_on_base_coords(
+    start_base,
+    seq,
+    sig,
+    seq_to_sig_map,
+    levels=None,
+    rev_strand=False,
+    fig_ax=None,
+    figsize=DEFAULT_PLOT_FIG_SIZE,
+    sig_lw=8,
+    levels_lw=8,
+    ylim=None,
+):
+    """Plot a single read on base/sequence coordinates.
+
+    Args:
+        start_base (int): Coordinate of first base in seq
+        seq (str): Sequence to plot
+        sig (np.array): Signal to plot
+        seq_to_sig_map (np.array): Mapping from sequence to signal coordinates
+        levels (np.array): Expected signal levels for bases in region
+        rev_strand (bool): Plot bases upside down
+        fig_ax (tuple): If None, new figure/axes will be opened
+        figsize (tuple): option to pass to plt.subplots if ax is None
+        sig_lw (int): Linewidth for signal lines
+        levels_lw (int): Linewidth for level lines (if applicable)
+        ylim (tuple): 2-tuple with y-axis limits
+
+    Returns:
+        matplotlib axis
+    """
+    if fig_ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig, ax = fig_ax
+    if ylim is None:
+        sig_min, sig_max = np.percentile(sig, SIG_PCTL_RANGE)
+        sig_diff = sig_max - sig_min
+        ylim = (sig_min - sig_diff * 0.01, sig_max + sig_diff * 0.01)
+    base_text_loc = ylim[0] + ((ylim[1] - ylim[0]) * 0.02)
+
+    # plot vertical base lines
+    for b in np.arange(start_base, start_base + seq_to_sig_map.size):
+        ax.axvline(x=b, color="k", alpha=0.1, lw=1)
+    # plot read signal
+    ax.plot(
+        compute_base_space_sig_coords(seq_to_sig_map) + start_base,
+        sig,
+        color="k",
+        alpha=0.5,
+        lw=sig_lw,
+    )
+    # plot levels
+    if levels is not None:
+        for b_num, b_lev in enumerate(levels):
+            ax.plot(
+                [start_base + b_num, start_base + b_num + 1],
+                [b_lev] * 2,
+                linestyle="-",
+                color="y",
+                alpha=0.5,
+                lw=levels_lw,
+            )
+    # plot bases
+    for b_num, base in enumerate(seq):
+        ax.text(
+            start_base + b_num + 0.5,
+            base_text_loc,
+            base,
+            color=BASE_COLORS[base],
+            ha="center",
+            size=30,
+            rotation=180 if rev_strand else 0,
+        )
+    ax.set_ylim(*ylim)
+    ax.set_ylabel("Normalized Signal", fontsize=45)
+    ax.set_xlabel("Base Position", fontsize=45)
+    ax.tick_params(labelsize=36)
+    return fig, ax
+
+
+def plot_ref_region_reads(
+    ref_reg,
+    ref_reg_reads,
+    seq,
+    levels,
+    max_reads=50,
+    fig_ax=None,
+    figsize=DEFAULT_PLOT_FIG_SIZE,
+    sig_lw=2,
+    sig_cols=SAMPLE_COLORS,
+    levels_lw=6,
+    ylim=None,
+    highlight_ranges=None,
+):
+    # start plotting
+    if fig_ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig, ax = fig_ax
+
+    # plot highlight regions
+    if highlight_ranges is not None:
+        for st, en, col in highlight_ranges:
+            ax.axvspan(st, en, facecolor=col, alpha=0.4)
+    # plot vertical base lines
+    for b in np.arange(ref_reg.start, ref_reg.end + 1):
+        ax.axvline(x=b, color="k", alpha=0.1, lw=1)
+    # plot read signal
+    for sample_col, sample_reads in zip(sig_cols, ref_reg_reads):
+        for read_reg in sample_reads:
+            ax.plot(
+                read_reg.ref_sig_coords,
+                read_reg.norm_signal,
+                color=sample_col,
+                alpha=0.1,
+                lw=sig_lw,
+            )
+    # plot levels
+    if levels is not None:
+        for b_num, b_lev in enumerate(levels):
+            ax.plot(
+                [ref_reg.start + b_num, ref_reg.start + b_num + 1],
+                [b_lev] * 2,
+                linestyle="-",
+                color="y",
+                alpha=0.5,
+                lw=levels_lw,
+            )
+    # plot bases
+    if ylim is None:
+        sig_min, sig_max = np.percentile(
+            np.concatenate([r.norm_signal for r in chain(*ref_reg_reads)]),
+            SIG_PCTL_RANGE,
+        )
+        sig_diff = sig_max - sig_min
+        ylim = (sig_min - sig_diff * 0.01, sig_max + sig_diff * 0.01)
+    base_text_loc = ylim[0] + ((ylim[1] - ylim[0]) * 0.02)
+    rotation = 0 if ref_reg.strand == "+" else 180
+    for b_num, base in enumerate(seq):
+        ax.text(
+            ref_reg.start + b_num + 0.5,
             base_text_loc,
             base,
             color=BASE_COLORS[base],
@@ -441,28 +1106,27 @@ def plot_ref_region_reads(
             rotation=rotation,
         )
     ax.set_ylim(*ylim)
-    ax.set_xlim(ref_pos.start, ref_pos.end)
-    ax.set_title(ref_pos.ctg, fontsize=50)
+    ax.set_xlim(ref_reg.start, ref_reg.end)
+    ax.set_title(ref_reg.ctg, fontsize=50)
     ax.set_ylabel("Normalized Signal", fontsize=45)
     ax.set_xlabel("Reference Position", fontsize=45)
     ax.tick_params(labelsize=36)
     # shift tick labels left by 0.5 plot units to match genome browsers
     xticks = np.array(
-        [int(xt) for xt in ax.get_xticks() if ref_pos.start < xt < ref_pos.end]
+        [int(xt) for xt in ax.get_xticks() if ref_reg.start < xt < ref_reg.end]
     )
     ax.set_xticks(xticks - 0.5)
     ax.set_xticklabels(xticks)
-    return ax
+    return fig, ax
 
 
 def plot_signal_at_ref_region(
-    bam_fhs,
-    pod5_fhs,
-    ref_pos,
+    ref_reg,
+    pod5_and_bam_fhs,
     sig_map_refiner=None,
     skip_sig_map_refine=False,
     max_reads=50,
-    ax=None,
+    fig_ax=None,
     figsize=DEFAULT_PLOT_FIG_SIZE,
     sig_lw=2,
     levels_lw=6,
@@ -475,11 +1139,11 @@ def plot_signal_at_ref_region(
         bam_fhs (pysam.AlignmentFile): Sorted and indexed BAM file handle or
             a list of them
         pod5_fhs (str): POD5 file handles or a list of them
-        ref_pos (RefPos): Reference position at which to plot signal
+        ref_reg (RefRegion): Reference position at which to plot signal
         sig_map_refiner (SigMapRefiner): For signal mapping and level extract
         skip_sig_map_refine (bool): Skip signal mapping refinement
         max_reads (int): Maximum reads to plot (TODO: add overplotting options)
-        ax (matplotlib.axes): If None, new figure will be opened
+        fig_ax (tuple): If None, new figure/axes will be opened
         figsize (tuple): option to pass to plt.subplots if ax is None
         sig_lw (int): Linewidth for signal lines
         levels_lw (int): Linewidth for level lines (if applicable)
@@ -490,212 +1154,159 @@ def plot_signal_at_ref_region(
     Returns:
         matplotlib axis
     """
-    if isinstance(bam_fhs, pysam.AlignmentFile):
-        bam_fhs = [bam_fhs]
-    if isinstance(bam_fhs, pod5.reader.Reader):
-        pod5_fhs = [pod5_fhs]
-    ref_reg_reads, seq, levels = extract_ref_region_reads(
-        bam_fhs,
-        pod5_fhs,
-        ref_pos,
+    read_ref_regs, reg_bam_reads = get_reads_reference_regions(
+        ref_reg,
+        pod5_and_bam_fhs,
         sig_map_refiner=sig_map_refiner,
         skip_sig_map_refine=skip_sig_map_refine,
         max_reads=max_reads,
     )
-    ax = plot_ref_region_reads(
-        ref_pos,
-        ref_reg_reads,
+    seq, levels = get_ref_seq_and_levels_from_reads(
+        ref_reg, chain(*reg_bam_reads), sig_map_refiner
+    )
+    fig_ax = plot_ref_region_reads(
+        ref_reg,
+        read_ref_regs,
         seq,
         levels,
-        ax=ax,
+        fig_ax=fig_ax,
         figsize=figsize,
         sig_lw=sig_lw,
         levels_lw=levels_lw,
         ylim=ylim,
         highlight_ranges=highlight_ranges,
     )
-    return ax
+    return fig_ax
 
 
-@dataclass
-class ReadReferenceRegion:
-    read_id: str
-    norm_signal: np.ndarray
-    seq: str
-    seq_to_sig_map: np.ndarray
-    ref_pos: RefPos
-
-    @property
-    def sig_x_coords(self):
-        """Compute x-axis coorindates for plotting this read against the
-        reference.
-        """
-        if self.ref_pos.strand == "+":
-            return (
-                np.interp(
-                    np.arange(self.norm_signal.size),
-                    self.seq_to_sig_map,
-                    np.arange(self.seq_to_sig_map.size),
-                )
-                + self.ref_pos.start
-            )
-        return (
-            self.ref_pos.start
-            + self.seq_to_sig_map.size
-            - 1
-            - np.interp(
-                np.arange(self.norm_signal.size),
-                self.seq_to_sig_map,
-                np.arange(self.seq_to_sig_map.size),
-            )
+def plot_ref_region_metrics(
+    ref_reg,
+    samples_metrics,
+    seq,
+    levels,
+    fig_axs=None,
+    fig_width=DEFAULT_PLOT_FIG_SIZE[0],
+    facet_height=DEFAULT_PLOT_FIG_SIZE[1],
+    highlight_ranges=None,
+    sample_names=None,
+):
+    metric_names = list(samples_metrics[0].keys())
+    if fig_axs is None:
+        fig, axs = plt.subplots(
+            len(metric_names),
+            figsize=(fig_width, facet_height * len(metric_names)),
+            sharex=True,
         )
+    else:
+        fig, axs = fig_axs
+    if sample_names is None:
+        sample_names = [f"Sample{idx}" for idx in range(len(samples_metrics))]
 
-
-@dataclass
-class ReadBasecallRegion:
-    read_id: str
-    norm_signal: np.ndarray
-    seq: str
-    seq_to_sig_map: np.ndarray
-    start: int
-
-    @property
-    def base_x_coords(self):
-        return (
-            np.interp(
-                np.arange(self.norm_signal.size),
-                self.seq_to_sig_map,
-                np.arange(self.seq_to_sig_map.size),
-            )
-            + self.start
+    for ax, metric_name in zip(axs, metric_names):
+        samples_num_reads = np.array(
+            [sm[metric_name].shape[0] for sm in samples_metrics]
         )
-
-    def plot_on_signal_coords(
-        self,
-        levels=None,
-        ax=None,
-        figsize=DEFAULT_PLOT_FIG_SIZE,
-        sig_lw=8,
-        levels_lw=8,
-        ylim=None,
-    ):
-        """Plot signal from reads at a reference region.
-
-        Args:
-            levels (np.array): Expected signal levels for bases in region.
-            ax (matplotlib.axes): If None, new figure will be opened
-            figsize (tuple): option to pass to plt.subplots if ax is None
-            sig_lw (int): Linewidth for signal lines
-            levels_lw (int): Linewidth for level lines (if applicable)
-            ylim (tuple): 2-tuple with y-axis limits
-
-        Returns:
-            matplotlib axis
-        """
-        if ax is None:
-            fig, ax = plt.subplots(figsize=figsize)
-        if ylim is None:
-            sig_min, sig_max = np.percentile(self.norm_signal, (0, 100))
-            sig_diff = sig_max - sig_min
-            ylim = (sig_min - sig_diff * 0.01, sig_max + sig_diff * 0.01)
-        base_text_loc = ylim[0] + ((ylim[1] - ylim[0]) * 0.02)
-
-        # plot vertical base lines
-        for b in self.seq_to_sig_map:
-            ax.axvline(x=b, color="k", alpha=0.1, lw=1)
-        # plot read signal
-        ax.plot(
-            np.arange(self.seq_to_sig_map[0], self.seq_to_sig_map[-1]),
-            self.norm_signal,
-            color="k",
-            alpha=0.5,
-            lw=sig_lw,
+        plot_data = pd.DataFrame(
+            {
+                metric_name: np.concatenate(
+                    [sm[metric_name].flatten() for sm in samples_metrics]
+                ),
+                "Position": np.tile(
+                    np.arange(ref_reg.len), [samples_num_reads.sum()]
+                ),
+                "Sample": np.repeat(
+                    sample_names, samples_num_reads * ref_reg.len
+                ),
+            }
         )
-        # plot levels
-        if levels is not None:
-            for b_lev, b_st, b_en in zip(
-                levels, self.seq_to_sig_map[:-1], self.seq_to_sig_map[1:]
-            ):
-                ax.plot(
-                    [b_st, b_en],
-                    [b_lev] * 2,
-                    linestyle="-",
-                    color="y",
-                    alpha=0.5,
-                    lw=levels_lw,
-                )
-        # plot bases
-        for b_st, b_en, base in zip(
-            self.seq_to_sig_map[:-1], self.seq_to_sig_map[1:], self.seq
-        ):
-            ax.text(
-                (b_en + b_st) / 2,
-                base_text_loc,
-                base,
-                color=BASE_COLORS[base],
-                ha="center",
-                size=30,
-            )
-        ax.set_ylim(*ylim)
-        ax.set_ylabel("Normalized Signal", fontsize=45)
-        ax.set_xlabel("Signal Position", fontsize=45)
-        ax.tick_params(labelsize=36)
-        return ax
+        plot_data = plot_data.loc[~np.isnan(plot_data[metric_name])]
 
-    def plot_on_base_coords(
-        self,
-        levels=None,
-        ax=None,
-        figsize=DEFAULT_PLOT_FIG_SIZE,
-        sig_lw=8,
-        levels_lw=8,
-        ylim=None,
-    ):
-        if ax is None:
-            fig, ax = plt.subplots(figsize=figsize)
-        if ylim is None:
-            sig_min, sig_max = np.percentile(self.norm_signal, (0, 100))
-            sig_diff = sig_max - sig_min
-            ylim = (sig_min - sig_diff * 0.01, sig_max + sig_diff * 0.01)
-        base_text_loc = ylim[0] + ((ylim[1] - ylim[0]) * 0.02)
-
-        # plot vertical base lines
-        for b in np.arange(self.start, self.start + self.seq_to_sig_map.size):
-            ax.axvline(x=b, color="k", alpha=0.1, lw=1)
-        # plot read signal
-        ax.plot(
-            self.base_x_coords,
-            self.norm_signal,
-            color="k",
-            alpha=0.5,
-            lw=sig_lw,
-        )
-        # plot levels
-        if levels is not None:
-            for b_num, b_lev in enumerate(levels):
-                ax.plot(
-                    [self.start + b_num, self.start + b_num + 1],
-                    [b_lev] * 2,
-                    linestyle="-",
-                    color="y",
-                    alpha=0.5,
-                    lw=levels_lw,
-                )
-        # plot bases
-        for b_num, base in enumerate(self.seq):
-            ax.text(
-                self.start + b_num + 0.5,
-                base_text_loc,
-                base,
-                color=BASE_COLORS[base],
-                ha="center",
-                size=30,
+        with np.errstate(invalid="ignore"):
+            _ = sns.boxplot(
+                data=plot_data,
+                x="Position",
+                y=metric_name,
+                hue="Sample",
+                ax=ax,
             )
-        ax.set_ylim(*ylim)
-        ax.set_ylabel("Normalized Signal", fontsize=45)
-        ax.set_xlabel("Base Position", fontsize=45)
-        ax.tick_params(labelsize=36)
-        return ax
+        ax.set_xlabel("", fontsize=45)
+        if metric_name == "dwell":
+            ax.set_ylim(2, 80)
+            ax.set_yscale("log")
+        if metric_name.endswith("mean"):
+            ax.set_ylim(-1.5, 2)
+        if metric_name.endswith("sd"):
+            ax.set_ylim(-0.005, 0.3)
+            ax.set_xlabel("Position", fontsize=45)
+        ax.set_ylabel(metric_name, fontsize=45)
+        ax.tick_params(labelsize=16, axis="x")
+        ax.tick_params(labelsize=32, axis="y")
+    return fig, axs
+
+
+def plot_metric_at_ref_region(
+    ref_reg,
+    pod5_and_bam_fhs,
+    metric="dwell_trimmean",
+    sig_map_refiner=None,
+    skip_sig_map_refine=False,
+    max_reads=None,
+    fig_axs=None,
+    fig_width=DEFAULT_PLOT_FIG_SIZE[0],
+    facet_height=DEFAULT_PLOT_FIG_SIZE[1],
+    highlight_ranges=None,
+    **kwargs,
+):
+    """Plot signal from reads at a reference region.
+
+    Args:
+        ref_reg (RefRegion): Reference position to plot
+        pod5_and_bam_fhs (list): List of 2-tuples containing sorted and indexed
+            BAM file handles and POD5 file handles
+        metric (str): Named metric (e.g. dwell, mean, sd). Should be a key
+            in metrics.METRIC_FUNCS
+        sig_map_refiner (SigMapRefiner): For signal mapping and level extract
+        skip_sig_map_refine (bool): Skip signal mapping refinement
+        max_reads (int): Maximum reads to plot
+        fig_axs (tuple): If None, new figure/axes will be opened. Should be
+            same length as the number of metrics computed.
+        fig_width (float): Figure width
+        facet_height (float): Height of each facet (one per metric)
+        highlight_ranges (iterable): Elements should be 3-tuples containing
+            reference start, end and color values.
+
+    Returns:
+        matplotlib axis
+    """
+    samples_metrics, all_bam_reads = get_ref_reg_samples_metrics(
+        ref_reg,
+        pod5_and_bam_fhs,
+        metric=metric,
+        max_reads=max_reads,
+        sig_map_refiner=sig_map_refiner,
+        skip_sig_map_refine=skip_sig_map_refine,
+        **kwargs,
+    )
+    seq, levels = get_ref_seq_and_levels_from_reads(
+        ref_reg, chain(*all_bam_reads), sig_map_refiner
+    )
+    fig_axs = plot_ref_region_metrics(
+        ref_reg,
+        samples_metrics,
+        seq,
+        levels,
+        fig_axs=fig_axs,
+        fig_width=fig_width,
+        facet_height=facet_height,
+        highlight_ranges=highlight_ranges,
+    )
+    plt.tight_layout()
+    return fig_axs
+
+
+###########
+# IO Read #
+###########
 
 
 @dataclass
@@ -714,7 +1325,7 @@ class Read:
     shift_dacs_to_norm: float = None
     scale_dacs_to_norm: float = None
     ref_seq: str = None
-    ref_pos: RefPos = None
+    ref_reg: RefRegion = None
     cigar: list = None
     ref_to_signal: np.ndarray = None
     full_align: str = None
@@ -802,7 +1413,7 @@ class Read:
 
         read.ref_seq = None
         read.ref_to_signal = None
-        read.ref_pos = None
+        read.ref_reg = None
         return read, simplex_duplex_mapping.duplex_offset
 
     def add_alignment(self, alignment_record, parse_ref_align=True):
@@ -854,7 +1465,7 @@ class Read:
         if not parse_ref_align:
             return
 
-        self.ref_pos = RefPos(
+        self.ref_reg = RefRegion(
             ctg=alignment_record.reference_name,
             strand="-" if alignment_record.is_reverse else "+",
             start=alignment_record.reference_start,
@@ -867,7 +1478,7 @@ class Read:
         if alignment_record.is_reverse:
             self.ref_seq = util.revcomp(self.ref_seq)
             self.cigar = self.cigar[::-1]
-        if self.ref_pos.ctg is not None:
+        if self.ref_reg.ctg is not None:
             self.ref_to_signal = DC.compute_ref_to_signal(
                 query_to_signal=self.query_to_signal,
                 cigar=self.cigar,
@@ -875,7 +1486,7 @@ class Read:
                 ref_seq=self.ref_seq,
             )
             assert self.ref_to_signal.size == len(self.ref_seq) + 1
-            self.ref_pos.end = self.ref_pos.start + self.ref_to_signal.size - 1
+            self.ref_reg.end = self.ref_reg.start + self.ref_to_signal.size - 1
 
     @classmethod
     def from_pod5_and_alignment(cls, pod5_read_record, alignment_record):
@@ -976,28 +1587,28 @@ class Read:
             np.ndarray of positions covered by the read and within the
             selected focus position
         """
-        if self.ref_pos is None or self.ref_seq is None:
+        if self.ref_reg is None or self.ref_seq is None:
             raise RemoraError("Cannot extract focus positions without mapping")
-        ref_pos = self.ref_pos
+        ref_reg = self.ref_reg
         ref_len = len(self.ref_seq)
         try:
-            cs_focus_pos = select_focus_positions[(ref_pos.ctg, ref_pos.strand)]
+            cs_focus_pos = select_focus_positions[(ref_reg.ctg, ref_reg.strand)]
         except KeyError:
             # no focus positions on contig/strand
             return np.array([], dtype=int)
 
-        read_focus_ref_pos = np.array(
+        read_focus_ref_reg = np.array(
             sorted(
-                set(range(ref_pos.start, ref_pos.start + ref_len)).intersection(
+                set(range(ref_reg.start, ref_reg.start + ref_len)).intersection(
                     cs_focus_pos
                 )
             ),
             dtype=int,
         )
         return (
-            read_focus_ref_pos - ref_pos.start
-            if ref_pos.strand == "+"
-            else ref_pos.start + ref_len - read_focus_ref_pos[::-1] - 1
+            read_focus_ref_reg - ref_reg.start
+            if ref_reg.strand == "+"
+            else ref_reg.start + ref_len - read_focus_ref_reg[::-1] - 1
         )
 
     def get_basecall_anchored_focus_bases(
@@ -1068,47 +1679,149 @@ class Read:
             start=start_base,
         )
 
-    def extract_reference_region(self, ref_start, ref_end):
+    def extract_ref_reg(self, ref_reg):
         """Extract region of read from reference coordinates.
 
         Args:
-            ref_start (int): Reference start coordinate for region
-            ref_end (int): Reference end coordinate for region
+            ref_reg (RefRegion): Reference region
 
         Returns:
-            ReadReferenceRegion object
+            ReadRefReg object
         """
         if self.ref_to_signal is None:
             raise RemoraError(
                 "Cannot extract reference region from unmapped read"
             )
-        if ref_start >= self.ref_pos.start + self.ref_seq_len:
+        if ref_reg.start >= self.ref_reg.start + self.ref_seq_len:
             raise RemoraError("Reference region starts after read ends")
-        if ref_end < self.ref_pos.start:
+        if ref_reg.end < self.ref_reg.start:
             raise RemoraError("Reference region ends before read starts")
 
-        if self.ref_pos.strand == "+":
-            reg_st_within_read = max(0, ref_start - self.ref_pos.start)
-            reg_en_within_read = ref_end - self.ref_pos.start
+        if self.ref_reg.strand == "+":
+            reg_st_within_read = max(0, ref_reg.start - self.ref_reg.start)
+            reg_en_within_read = ref_reg.end - self.ref_reg.start
         else:
-            reg_st_within_read = max(0, self.ref_pos.end - ref_end)
-            reg_en_within_read = self.ref_pos.end - ref_start
+            reg_st_within_read = max(0, self.ref_reg.end - ref_reg.end)
+            reg_en_within_read = self.ref_reg.end - ref_reg.start
         reg_seq_to_sig = self.ref_to_signal[
             reg_st_within_read : reg_en_within_read + 1
         ].copy()
         reg_sig = self.norm_signal[reg_seq_to_sig[0] : reg_seq_to_sig[-1]]
         reg_seq = self.ref_seq[reg_st_within_read:reg_en_within_read]
         reg_seq_to_sig -= reg_seq_to_sig[0]
-        read_reg_ref_st = max(self.ref_pos.start, ref_start)
-        return ReadReferenceRegion(
+        read_reg_ref_st = max(self.ref_reg.start, ref_reg.start)
+        # orient reverse strand reads on the reference
+        if self.ref_reg.strand == "-":
+            reg_sig = reg_sig[::-1]
+            reg_seq = reg_seq[::-1]
+            reg_seq_to_sig = reg_seq_to_sig[-1] - reg_seq_to_sig[::-1]
+        return ReadRefReg(
             read_id=self.read_id,
             norm_signal=reg_sig,
             seq=reg_seq,
             seq_to_sig_map=reg_seq_to_sig,
-            ref_pos=RefPos(
-                self.ref_pos.ctg, self.ref_pos.strand, read_reg_ref_st
+            ref_reg=RefRegion(
+                self.ref_reg.ctg,
+                self.ref_reg.strand,
+                read_reg_ref_st,
+                read_reg_ref_st + len(reg_seq),
             ),
         )
+
+    def compute_per_base_metric(
+        self,
+        metric=None,
+        metric_func=None,
+        ref_anchored=True,
+        region=None,
+        signal_type="norm",
+        **kwargs,
+    ):
+        """Compute a per-base metric from a read.
+
+        Args:
+            metric (str): Named metric (e.g. dwell, mean, sd). Should be a key
+                in metrics.METRIC_FUNCS
+            metric_func (Callable): Function taking three arguments sequence,
+                signal and a sequence to signal mapping and return a dict of
+                metric names to per base metric values.
+            ref_anchored (bool): Compute metric against reference bases. If
+                False, return basecall anchored metrics.
+            region (RefRegion): Reference region from which to extract metrics
+                of bases.
+            signal_type (str): Type of signal. Should be one of: norm, pa, and
+                dac
+            **kwargs: Extra args to pass through to metric computations
+
+        Returns:
+            Result of metric_func. Preset metrics will return dict with metric
+            name keys and a numpy array of per-base metric values.
+        """
+        if metric is not None:
+            metric_func = METRIC_FUNCS[metric]
+        assert (
+            metric_func is not None
+        ), "Must provide either metric or metric_func"
+        st_buf = en_buf = 0
+        if region is None:
+            seq_to_sig = (
+                self.ref_to_signal if ref_anchored else self.query_to_signal
+            )
+        else:
+            if ref_anchored:
+                if (
+                    self.ref_reg.ctg != region.ctg
+                    or self.ref_reg.strand != region.strand
+                ):
+                    raise RemoraError("Region contig/strand do not match read")
+                if (
+                    region.start >= self.ref_reg.end
+                    or self.ref_reg.start >= region.end
+                ):
+                    raise RemoraError("Region does not overlap read.")
+                if self.ref_reg.strand == "+":
+                    st_coord = region.start - self.ref_reg.start
+                    en_coord = region.end - self.ref_reg.start
+                else:
+                    st_coord = self.ref_reg.end - region.end
+                    en_coord = self.ref_reg.end - region.start
+                if st_coord < 0:
+                    st_buf = -st_coord
+                    st_coord = 0
+                if en_coord > self.ref_seq_len:
+                    en_buf = en_coord - self.ref_seq_len
+                    en_coord = self.ref_seq_len
+                seq_to_sig = self.ref_to_signal[st_coord : en_coord + 1]
+            else:
+                if region.start < 0 or region.start > self.seq_len:
+                    raise RemoraError("Region does not overlap read.")
+                # TODO deal with partially overlapping region
+                st_buf = en_buf = 0
+                seq_to_sig = self.query_to_signal[region.start : region.end]
+        if signal_type == "norm":
+            sig = self.norm_signal
+        elif signal_type == "pa":
+            sig = self.pa_signal
+        elif signal_type == "dac":
+            sig = self.dacs
+        else:
+            assert False, "signal_type must be norm, pa or dac"
+
+        metrics_vals = metric_func(sig, seq_to_sig, **kwargs)
+        if max(st_buf, en_buf) > 0:
+            tmp_metrics_vals = {}
+            for metric_name, metric_vals in metrics_vals.items():
+                tmp_metrics_vals[metric_name] = np.full(region.len, np.NAN)
+                tmp_metrics_vals[metric_name][
+                    st_buf : st_buf + metric_vals.size
+                ] = metric_vals
+            metrics_vals = tmp_metrics_vals
+        return metrics_vals
+
+
+##########
+# Duplex #
+##########
 
 
 @dataclass
@@ -1168,64 +1881,6 @@ class DuplexRead:
         return self.duplex_alignment["seq"]
 
 
-##########################
-# Signal then alignments #
-##########################
-
-
-def iter_pod5_reads(pod5_path, num_reads=None, read_ids=None):
-    """Iterate over Pod5Read objects
-
-    Args:
-        pod5_path (str): Path to POD5 file
-        num_reads (int): Maximum number of reads to iterate
-        read_ids (iterable): Read IDs to extract
-
-    Yields:
-        Requested pod5.reader.ReadRecord objects
-    """
-    LOGGER.debug(f"Reading from POD5 at {pod5_path}")
-    with pod5.Reader(Path(pod5_path)) as pod5_fh:
-        for read_num, read in enumerate(
-            pod5_fh.reads(selection=read_ids, preload=["samples"])
-        ):
-            if num_reads is not None and read_num >= num_reads:
-                LOGGER.debug(
-                    f"Completed pod5 signal worker, reached {num_reads}."
-                )
-                return
-
-            yield read
-    LOGGER.debug("Completed pod5 signal worker")
-
-
-def iter_signal(pod5_path, num_reads=None, read_ids=None):
-    """Iterate io Read objects loaded from Pod5
-
-    Args:
-        pod5_path (str): Path to POD5 file
-        num_reads (int): Maximum number of reads to iterate
-        read_ids (iterable): Read IDs to extract
-
-    Yields:
-        2-tuple:
-            1. remora.io.Read object
-            2. Error text or None if no errors
-    """
-    for pod5_read in iter_pod5_reads(
-        pod5_path=pod5_path, num_reads=num_reads, read_ids=read_ids
-    ):
-        read = Read(
-            read_id=str(pod5_read.read_id),
-            dacs=pod5_read.signal,
-            shift_dacs_to_pa=pod5_read.calibration.offset,
-            scale_dacs_to_pa=pod5_read.calibration.scale,
-        )
-
-        yield read, None
-    LOGGER.debug("Completed signal worker")
-
-
 class DuplexPairsBuilder:
     def __init__(self, simplex_index, pod5_path):
         """Duplex Pairs Builder
@@ -1282,42 +1937,3 @@ class DuplexPairsBuilder:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.reader.close()
         self.simplex_index.close()
-
-
-if _SIG_PROF_FN:
-    _iter_signal_wrapper = iter_signal
-
-    def iter_signal(*args, **kwargs):
-        import cProfile
-
-        sig_prof = cProfile.Profile()
-        retval = sig_prof.runcall(_iter_signal_wrapper, *args, **kwargs)
-        sig_prof.dump_stats(_SIG_PROF_FN)
-        return retval
-
-
-def extract_alignments(read_err, bam_idx):
-    io_read, err = read_err
-    if io_read is None:
-        return [read_err]
-    read_alignments = []
-    try:
-        for bam_read in bam_idx.get_alignments(io_read.read_id):
-            align_read = io_read.copy()
-            align_read.add_alignment(bam_read)
-            read_alignments.append(tuple((align_read, None)))
-    except KeyError:
-        return [tuple((None, "Read id not found in BAM file"))]
-    return read_alignments
-
-
-if _ALIGN_PROF_FN:
-    _extract_align_wrapper = extract_alignments
-
-    def extract_alignments(*args, **kwargs):
-        import cProfile
-
-        align_prof = cProfile.Profile()
-        retval = align_prof.runcall(_extract_align_wrapper, *args, **kwargs)
-        align_prof.dump_stats(_ALIGN_PROF_FN)
-        return retval

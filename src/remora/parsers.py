@@ -176,7 +176,7 @@ def register_dataset_prepare(parser):
     )
     refine_grp.add_argument(
         "--refine-scale-iters",
-        default=constants.DEFAULT_REFINE_SCALE_ITERS,
+        default=-1,
         type=int,
         help="Number of iterations of signal mapping refinement and signal "
         "re-scaling to perform. Set to 0 (default) in order to perform signal "
@@ -1384,6 +1384,7 @@ def register_analyze(parser):
         formatter_class=SubcommandHelpFormatter,
     )
     ssubparser = subparser.add_subparsers(title="Analyze commands")
+    register_estimate_kmer_levels(ssubparser)
     # Since `plot` has several sub-commands, print help as default
     subparser.set_defaults(func=lambda x: subparser.print_help())
     # Register analyze sub commands
@@ -1420,7 +1421,7 @@ def register_plot_ref_region(parser):
         metavar=("POD5", "BAM"),
         action="append",
         help="""POD5 signal path and BAM file path. BAM file must be mapped,
-        sorted and indexed and contain move table and MD tags. Multuple
+        sorted and indexed and contain move table and MD tags. Multiple
         samples can be supplied and will be plotted in different colors""",
     )
     in_grp.add_argument(
@@ -1455,7 +1456,7 @@ def register_plot_ref_region(parser):
     )
     refine_grp.add_argument(
         "--refine-scale-iters",
-        default=constants.DEFAULT_REFINE_SCALE_ITERS,
+        default=0,
         type=int,
         help="Number of iterations of signal mapping refinement and signal "
         "re-scaling to perform. Set to 0 (default) in order to perform signal "
@@ -1558,12 +1559,198 @@ def run_plot_ref_region(args):
                     pass
             fig, ax = plt.subplots(figsize=args.figsize)
             io.plot_signal_at_ref_region(
-                bam_fhs,
-                pod5_fhs,
                 ref_reg,
+                zip(pod5_fhs, bam_fhs),
                 sig_map_refiner,
-                ax=ax,
+                fig_ax=(fig, ax),
                 ylim=args.ylim,
                 highlight_ranges=reg_highlight_ranges,
             )
             pdf_fh.savefig(fig, bbox_inches="tight")
+
+
+def register_estimate_kmer_levels(parser):
+    subparser = parser.add_parser(
+        "estimate_kmer_levels",
+        description="Estimate k-mer level table",
+        help="Estimate k-mer level table",
+        formatter_class=SubcommandHelpFormatter,
+    )
+
+    in_grp = subparser.add_argument_group("Input Arguments")
+    in_grp.add_argument(
+        "--pod5-and-bam",
+        required=True,
+        nargs=2,
+        metavar=("POD5", "BAM"),
+        action="append",
+        help="""POD5 signal path and BAM file path. BAM file must be mapped,
+        sorted and indexed and contain move table and MD tags. Multiple
+        samples can be supplied and will be aggregated after site level
+        extraction""",
+    )
+
+    refine_grp = subparser.add_argument_group("Signal Mapping Refine Arguments")
+    refine_grp.add_argument(
+        "--refine-kmer-level-table",
+        help="Tab-delimited file containing no header and two fields: "
+        "1. string k-mer sequence and 2. float expected normalized level. "
+        "All k-mers must be the same length and all combinations of the bases "
+        "'ACGT' must be present in the file.",
+    )
+    refine_grp.add_argument(
+        "--refine-rough-rescale",
+        action="store_true",
+        help="Apply a rough rescaling using quantiles of signal+move table "
+        "and levels.",
+    )
+    refine_grp.add_argument(
+        "--refine-scale-iters",
+        default=0,
+        type=int,
+        help="""Number of iterations of signal mapping refinement and signal
+        re-scaling to perform. Set to 0 (default) in order to perform signal
+        mapping refinement (aka resquiggle), but skip fine re-scaling. Set to
+        -1 to skip signal mapping (potentially using levels for rough
+        rescaling).""",
+    )
+    refine_grp.add_argument(
+        "--refine-half-bandwidth",
+        default=constants.DEFAULT_REFINE_HBW,
+        type=int,
+        help="""Half bandwidth around signal mapping over which to search for
+        new path.""",
+    )
+    refine_grp.add_argument(
+        "--refine-algo",
+        default=constants.DEFAULT_REFINE_ALGO,
+        choices=constants.REFINE_ALGOS,
+        help="Refinement algorithm to apply (if kmer level table is provided).",
+    )
+    refine_grp.add_argument(
+        "--refine-short-dwell-parameters",
+        default=constants.DEFAULT_REFINE_SHORT_DWELL_PARAMS,
+        type=float,
+        nargs=3,
+        metavar=("TARGET", "LIMIT", "WEIGHT"),
+        help="Short dwell penalty refiner parameters. Dwells shorter than "
+        "LIMIT will be penalized a value of `WEIGHT * (dwell - TARGET)^2`. "
+        "Default: %(default)s",
+    )
+
+    data_grp = subparser.add_argument_group("Data Arguments")
+    data_grp.add_argument(
+        "--min-coverage",
+        type=int,
+        default=10,
+        help="Miniumum coverage to include a site.",
+    )
+    data_grp.add_argument(
+        "--kmer-context-bases",
+        nargs=2,
+        default=(2, 2),
+        type=int,
+        help="""Definition of k-mer by the number of bases before and after the
+        assigned signal position""",
+    )
+
+    out_grp = subparser.add_argument_group("Output Arguments")
+    out_grp.add_argument(
+        "--levels-filename",
+        default="remora_kmer_levels.txt",
+        help="Output file for kmer levels.",
+    )
+    out_grp.add_argument(
+        "--log-filename",
+        help="Log filename. Default: Don't output log file.",
+    )
+
+    comp_grp = subparser.add_argument_group("Compute Arguments")
+    comp_grp.add_argument(
+        "--num-workers",
+        type=int,
+        default=1,
+        help="Number of workers.",
+    )
+    comp_grp.add_argument(
+        "--chunk-width",
+        type=int,
+        default=1_000,
+        help="""Width of reference region to process at one time. Should be
+        smaller for very high coverage.""",
+    )
+    comp_grp.add_argument(
+        "--max-chunk-coverage",
+        type=int,
+        default=100,
+        help="Maxiumum mean chunk coverage for each region.",
+    )
+
+    subparser.set_defaults(func=run_estimate_kmer_levels)
+
+
+def run_estimate_kmer_levels(args):
+    from itertools import product
+
+    import pysam
+    import numpy as np
+
+    from remora import log, io, refine_signal_map
+
+    if args.log_filename is not None:
+        log.init_logger(args.log_filename)
+    # open first to avoid long process without write access
+    out_fh = open(args.levels_filename, "w")
+
+    sig_map_refiner = refine_signal_map.SigMapRefiner(
+        kmer_model_filename=args.refine_kmer_level_table,
+        do_rough_rescale=args.refine_rough_rescale,
+        scale_iters=args.refine_scale_iters,
+        algo=args.refine_algo,
+        half_bandwidth=args.refine_half_bandwidth,
+        sd_params=args.refine_short_dwell_parameters,
+        do_fix_guage=True,
+    )
+    if not sig_map_refiner.is_loaded or sig_map_refiner.scale_iters < 0:
+        LOGGER.warning(
+            "It is highly recommended to apply signal mapping refinement in "
+            "order to output a valid kmer level table."
+        )
+
+    kmer_len = sum(args.kmer_context_bases) + 1
+    all_kmer_levels = dict(
+        ("".join(bs), []) for bs in product("ACGT", repeat=kmer_len)
+    )
+    for pod5_path, bam_path in args.pod5_and_bam:
+        try:
+            with pysam.AlignmentFile(bam_path) as bam_fh:
+                _ = bam_fh.fetch(bam_fh.header.references[0], 0, 1)
+        except ValueError:
+            LOGGER.warning(
+                "Cannot estimate levels from BAM file without mappings or index"
+            )
+            continue
+        LOGGER.info(f"Extracting levels from {pod5_path} and {bam_path}")
+        for kmer, levels in io.get_site_kmer_levels(
+            pod5_path,
+            bam_path,
+            sig_map_refiner,
+            args.kmer_context_bases,
+            min_cov=args.min_coverage,
+            chunk_len=args.chunk_width,
+            max_chunk_cov=args.max_chunk_coverage,
+            num_workers=args.num_workers,
+        ).items():
+            all_kmer_levels[kmer].append(levels)
+    LOGGER.info("Aggregating and outputting levels")
+    been_warned = False
+    for kmer, levels in sorted(all_kmer_levels.items()):
+        levels = np.concatenate(levels)
+        if levels.size == 0:
+            if not been_warned:
+                LOGGER.warning("Some k-mers not observed.")
+                been_warned = True
+            out_fh.write(f"{kmer}\tnan\n")
+        else:
+            out_fh.write(f"{kmer}\t{np.median(levels)}\n")
+    out_fh.close()

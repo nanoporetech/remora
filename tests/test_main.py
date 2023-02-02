@@ -24,6 +24,9 @@ MODEL_PATHS = [
     and str(model_path).find("var_width") == -1
 ]
 
+EXPECTED_CAN_CHUNKS = 205
+EXPECTED_MOD_CHUNKS = 210
+
 
 @pytest.mark.smoke
 def test_help():
@@ -38,8 +41,8 @@ def test_prep_can(can_chunks):
         batch_size=10,
         balanced_batch=False,
     )
-    assert dataset.nchunks == 75
-    assert dict(dataset.get_label_counts()) == {0: 75}
+    assert dataset.nchunks == EXPECTED_CAN_CHUNKS
+    assert dict(dataset.get_label_counts()) == {0: EXPECTED_CAN_CHUNKS}
 
 
 @pytest.mark.unit
@@ -50,8 +53,8 @@ def test_prep_mod(mod_chunks):
         batch_size=10,
         balanced_batch=False,
     )
-    assert dataset.nchunks == 75
-    assert dict(dataset.get_label_counts()) == {1: 75}
+    assert dataset.nchunks == EXPECTED_MOD_CHUNKS
+    assert dict(dataset.get_label_counts()) == {1: EXPECTED_MOD_CHUNKS}
 
 
 @pytest.mark.unit
@@ -63,8 +66,11 @@ def test_remora_dataset(chunks):
         balanced_batch=False,
     )
     assert len(dataset.get_label_counts()) > 1, "label counts should be > 1"
-    assert dataset.nchunks == 150
-    assert dict(dataset.get_label_counts()) == {1: 75, 0: 75}
+    assert dataset.nchunks == EXPECTED_CAN_CHUNKS + EXPECTED_MOD_CHUNKS
+    assert dict(dataset.get_label_counts()) == {
+        1: EXPECTED_MOD_CHUNKS,
+        0: EXPECTED_CAN_CHUNKS,
+    }
 
 
 ##################
@@ -284,3 +290,94 @@ def test_base_pred_validate(tmpdir_factory, can_chunks, fw_base_pred_model_dir):
             full_file,
         ],
     )
+
+
+####################
+# Analyze Commands #
+####################
+
+
+@pytest.mark.unit
+def test_plot_ref_region(
+    tmpdir_factory,
+    can_pod5,
+    can_mappings,
+    mod_pod5,
+    mod_mappings,
+    ref_regions,
+    can_gt_bed,
+    levels,
+):
+    """Run `analyze plot ref_region` on the command line."""
+    print("Running command line `remora analyze plot ref_region`")
+    out_dir = tmpdir_factory.mktemp("plot_ref_region")
+    log_path = out_dir / "log.txt"
+    print(f"Output dir: {out_dir}")
+    check_call(
+        [
+            "remora",
+            "analyze",
+            "plot",
+            "ref_region",
+            "--pod5-and-bam",
+            can_pod5,
+            can_mappings,
+            "--pod5-and-bam",
+            mod_pod5,
+            mod_mappings,
+            "--ref-regions",
+            ref_regions,
+            "--highlight-ranges",
+            can_gt_bed,
+            "--refine-kmer-level-table",
+            levels,
+            "--refine-rough-rescale",
+            "--refine-scale-iters",
+            "0",
+            "--log-filename",
+            log_path,
+        ],
+    )
+    return out_dir
+
+
+@pytest.mark.unit
+def test_estimate_kmer_levels(
+    tmpdir_factory,
+    can_pod5,
+    can_mappings,
+    levels,
+):
+    """Run `analyze estimate_kmer_levels` on the command line."""
+    print("Running command line `remora analyze estimate_kmer_levels`")
+    out_dir = tmpdir_factory.mktemp("estimate_kmer_levels")
+    out_levels_path = out_dir / "remora_kmer_levels.txt"
+    log_path = out_dir / "log.txt"
+    print(f"Output dir: {out_dir}")
+    check_call(
+        [
+            "remora",
+            "analyze",
+            "estimate_kmer_levels",
+            "--pod5-and-bam",
+            can_pod5,
+            can_mappings,
+            "--refine-kmer-level-table",
+            levels,
+            "--refine-rough-rescale",
+            "--refine-scale-iters",
+            "0",
+            "--min-coverage",
+            "2",
+            "--kmer-context-bases",
+            "1",
+            "1",
+            "--levels-filename",
+            out_levels_path,
+            "--num-workers",
+            "2",
+            "--log-filename",
+            log_path,
+        ],
+    )
+    return out_levels_path
