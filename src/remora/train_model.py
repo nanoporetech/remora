@@ -256,6 +256,7 @@ def train_model(
         dynamic_ncols=True,
         position=0,
         leave=True,
+        disable=os.environ.get("LOG_SAFE", False),
     )
     pbar = tqdm(
         total=len(trn_ds),
@@ -264,6 +265,7 @@ def train_model(
         position=1,
         leave=True,
         bar_format="{desc}: {percentage:3.0f}%|{bar}| " "{n_fmt}/{total_fmt}",
+        disable=os.environ.get("LOG_SAFE", False),
     )
     ebar.set_postfix(
         acc_val=f"{val_metrics.acc:.4f}",

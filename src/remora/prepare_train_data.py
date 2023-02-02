@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from collections import defaultdict
 
@@ -199,6 +200,7 @@ def extract_chunk_dataset(
         smoothing=0,
         unit=" Reads",
         desc="Extracting chunks",
+        disable=os.environ.get("LOG_SAFE", False),
     ):
         if len(read_chunks) == 0:
             errs["No chunks extracted"] += 1

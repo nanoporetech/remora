@@ -347,6 +347,7 @@ def infer_from_pod5_and_bam(
             total=num_reads,
             unit=" Reads",
             desc="Inferring mods",
+            disable=os.environ.get("LOG_SAFE", False),
         )
         for read_errs in mod_reads_mappings:
             pbar.update()
@@ -576,7 +577,9 @@ def infer_duplex(
     with pysam.AlignmentFile(duplex_bam_path, "rb", check_sq=False) as in_bam:
         with pysam.AlignmentFile(out_bam, "wb", template=in_bam) as out_bam:
             for mod_read_mapping, err in tqdm(
-                alignment_records_with_mod_tags, total=num_reads
+                alignment_records_with_mod_tags,
+                total=num_reads,
+                disable=os.environ.get("LOG_SAFE", False),
             ):
                 if err is not None:
                     errs[err] += 1

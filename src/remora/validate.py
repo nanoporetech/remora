@@ -1,3 +1,4 @@
+import os
 import json
 import atexit
 from collections import defaultdict, namedtuple
@@ -103,7 +104,6 @@ def _validate_model(
     criterion,
     dataset,
     filt_frac=constants.DEFAULT_FILT_FRAC,
-    display_progress_bar=True,
     full_results_fh=None,
 ):
     device = next(model.parameters()).device
@@ -123,16 +123,17 @@ def _validate_model(
     all_labels = []
     all_outputs = []
     all_loss = []
-    ds_iter = (
-        tqdm(dataset, smoothing=0, desc="Batches")
-        if display_progress_bar
-        else dataset
-    )
+
     for (
         (sigs, seqs, seq_maps, seq_lens),
         labels,
         (read_ids, read_focus_bases),
-    ) in ds_iter:
+    ) in tqdm(
+        dataset,
+        smoothing=0,
+        desc="Batches",
+        disable=os.environ.get("LOG_SAFE", False),
+    ):
         all_labels.append(labels)
         enc_kmers = encoded_kmers.compute_encoded_kmer_batch(
             bb, ab, seqs, seq_maps, seq_lens
@@ -282,7 +283,6 @@ class ValidationLogger:
         val_type="val",
         nepoch=0,
         niter=0,
-        display_progress_bar=False,
     ):
         ms = _validate_model(
             model,
@@ -290,7 +290,6 @@ class ValidationLogger:
             criterion,
             dataset,
             filt_frac,
-            display_progress_bar=display_progress_bar,
             full_results_fh=self.full_results_fh,
         )
         self.fp.write(
