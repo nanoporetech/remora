@@ -1,7 +1,9 @@
 import os
 import re
+
 import requests
 from tqdm import tqdm
+
 from remora import log
 
 LOGGER = log.get_logger()
@@ -41,9 +43,18 @@ class ModelDownload:
             leave=False,
             disable=os.environ.get("LOG_SAFE", False),
         ) as t:
-            with open(self.location(f_name), "wb") as f:
-                for data in req.iter_content(1024):
-                    f.write(data)
-                    t.update(len(data))
-
-        LOGGER.info(f"Model {f_name} downloaded to {self.location(f_name)}")
+            try:
+                with open(self.location(f_name), "wb") as f:
+                    for data in req.iter_content(1024):
+                        f.write(data)
+                        t.update(len(data))
+            except OSError as e:
+                LOGGER.error(
+                    "File-system was unable to write download model. "
+                    f"URL is {url} and intended download path was "
+                    f"{self.location(f_name)}.\nFull error message: {e}"
+                )
+            else:
+                LOGGER.info(
+                    f"Model {f_name} downloaded to {self.location(f_name)}"
+                )
