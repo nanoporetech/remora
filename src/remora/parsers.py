@@ -596,6 +596,17 @@ def register_model_train(parser):
         action="store_true",
         help="Balance classes exactly for each batch in training",
     )
+    train_grp.add_argument(
+        "--high-conf-incorrect-thr-frac",
+        nargs=2,
+        type=float,
+        metavar=("THRESHOLD", "FRACTION"),
+        help="1.) Threshold value of what to consider a high confidence "
+        " predicition. Based on the softmax output. \n"
+        "2.) Fraction (of the batch size) of highly confident incorrect "
+        "predictions to filter during training. Filtering up to this value, "
+        "but might be lower.",
+    )
 
     comp_grp = subparser.add_argument_group("Compute Arguments")
     comp_grp.add_argument(
@@ -643,6 +654,7 @@ def run_model_train(args):
         args.lr_sched_kwargs,
         args.balance,
         args.balanced_batch,
+        args.high_conf_incorrect_thr_frac,
     )
 
 

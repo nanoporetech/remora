@@ -111,6 +111,7 @@ def train_model(
     lr_sched_kwargs,
     balance,
     balanced_batch,
+    high_conf_incorrect_thr_frac,
 ):
     seed = (
         np.random.randint(0, np.iinfo(np.uint32).max, dtype=np.uint32)
@@ -149,7 +150,10 @@ def train_model(
     val_fp = validate.ValidationLogger(val_fp)
     batch_fp = open(out_path / "batch.log", "w", buffering=1)
     atexit.register(batch_fp.close)
-    batch_fp.write("Iteration\tLoss\n")
+    if high_conf_incorrect_thr_frac is not None:
+        batch_fp.write("Iteration\tLoss\tNumberFiltered\n")
+    else:
+        batch_fp.write("Iteration\tLoss\n")
 
     LOGGER.info("Loading model")
     copy_model_path = util.resolve_path(os.path.join(out_path, "model.py"))
@@ -318,15 +322,42 @@ def train_model(
                 enc_kmers = enc_kmers.cuda()
                 labels = labels.cuda()
             outputs = model(sigs, enc_kmers)
-            loss = criterion(outputs, labels)
+
+            if high_conf_incorrect_thr_frac is not None:
+                nr_to_skip = int(len(labels) * high_conf_incorrect_thr_frac[1])
+                mask = torch.arange(0, outputs.shape[0])
+                preds = torch.nn.functional.softmax(outputs, dim=1)
+                highest_preds, high_conf_cl = torch.max(preds, dim=1)
+                cl_missmatch = labels != high_conf_cl
+                high_confs = highest_preds > high_conf_incorrect_thr_frac[0]
+                high_confs_miss = high_confs.logical_and(cl_missmatch)
+                high_conf_inds = torch.argsort(
+                    highest_preds[high_confs_miss], descending=True
+                )
+                if sum(high_confs_miss) < nr_to_skip:
+                    nr_to_skip = sum(high_confs_miss)
+                if sum(high_confs_miss):
+                    skips = high_conf_inds[:nr_to_skip]
+                    inds_to_skip = mask[high_confs_miss][skips]
+                    mask = np.delete(mask, inds_to_skip)
+                    loss = criterion(outputs[mask], labels[mask])
+                else:
+                    loss = criterion(outputs, labels)
+            else:
+                loss = criterion(outputs, labels)
+
             opt.zero_grad()
             loss.backward()
             opt.step()
-
             batch_fp.write(
                 f"{(epoch * len(trn_ds)) + epoch_i}\t"
-                f"{loss.detach().cpu():.6f}\n"
+                f"{loss.detach().cpu():.6f}"
             )
+            if high_conf_incorrect_thr_frac is not None:
+                batch_fp.write(f"\t{len(inds_to_skip)}\n")
+            else:
+                batch_fp.write("\n")
+
             pbar.update()
             pbar.refresh()
 
