@@ -80,7 +80,7 @@ def register_dataset_prepare(parser):
     out_grp.add_argument(
         "--output-remora-training-file",
         default="remora_training_dataset.npz",
-        help="Output Remora training dataset file. Default: %(default)s",
+        help="Output Remora training dataset file.",
     )
     out_grp.add_argument(
         "--log-filename",
@@ -93,102 +93,99 @@ def register_dataset_prepare(parser):
         nargs=2,
         action="append",
         metavar=("MOTIF", "FOCUS_POSITION"),
-        help="Extract training chunks centered on a defined motif. Argument "
-        "takes 2 values representing 1) sequence motif and 2) focus position "
-        "within the motif. For example to restrict to CpG sites use "
-        '"--motif CG 0". Default: Any context ("N 0")',
+        help="""Extract training chunks centered on a defined motif. Argument
+        takes 2 values representing 1) sequence motif and 2) focus position
+        within the motif. For example to restrict to CpG sites use "
+        "--motif CG 0". Default: Any context ("N 0")""",
     )
     data_grp.add_argument(
         "--focus-reference-positions",
-        help="BED file containing reference positions around which to extract "
-        "training chunks.",
+        help="""BED file containing reference positions around which to extract
+        training chunks.""",
     )
     data_grp.add_argument(
         "--chunk-context",
         default=constants.DEFAULT_CHUNK_CONTEXT,
         type=int,
         nargs=2,
-        help="Number of context signal points to select around the central "
-        "position. Default: %(default)s",
+        help="""Number of context signal points to select around the central
+        position.""",
     )
     data_grp.add_argument(
         "--min-samples-per-base",
         type=int,
         default=constants.DEFAULT_MIN_SAMPLES_PER_BASE,
-        help="Minimum number of samples per base. This sets the size of the "
-        "ragged arrays of chunk sequences. Default: %(default)s",
+        help="""Minimum number of samples per base. This sets the size of the
+        ragged arrays of chunk sequences.""",
     )
     data_grp.add_argument(
         "--kmer-context-bases",
         nargs=2,
         default=constants.DEFAULT_KMER_CONTEXT_BASES,
         type=int,
-        help="Definition of k-mer (derived from the reference) passed into "
-        "the model along with each signal position. Default: %(default)s",
+        help="""Definition of k-mer (derived from the reference) passed into
+        the model along with each signal position.""",
     )
     data_grp.add_argument(
         "--max-chunks-per-read",
         type=int,
         default=15,
-        help="Maxiumum number of chunks to extract from a single read. "
-        "Default: %(default)s",
+        help="Maxiumum number of chunks to extract from a single read.",
     )
     data_grp.add_argument(
         "--base-start-justify",
         action="store_true",
-        help="Justify extracted chunk against the start of the base of "
-        "interest. Default justifies chunk to middle of signal of the base "
-        "of interest.",
+        help="""Justify extracted chunk against the start of the base of
+        interest. Default justifies chunk to middle of signal of the base
+        of interest.""",
     )
     data_grp.add_argument(
         "--offset",
         default=0,
         type=int,
-        help="Offset selected chunk position by a number of bases. "
-        "Default: %(default)d",
+        help="Offset selected chunk position by a number of bases.",
     )
     data_grp.add_argument(
         "--num-reads",
-        default=None,
         type=int,
         help="Number of reads.",
     )
     data_grp.add_argument(
         "--basecall-anchor",
         action="store_true",
-        help="makes dataset from base call sequence instead of aligned "
-        "reference sequence",
+        help="""Make dataset from basecall sequence instead of aligned
+        reference sequence""",
     )
 
     refine_grp = subparser.add_argument_group("Signal Mapping Refine Arguments")
     refine_grp.add_argument(
         "--refine-kmer-level-table",
-        help="Tab-delimited file containing no header and two fields: "
-        "1. string k-mer sequence and 2. float expected normalized level. "
-        "All k-mers must be the same length and all combinations of the bases "
-        "'ACGT' must be present in the file.",
+        help="""Tab-delimited file containing no header and two fields:
+        1. string k-mer sequence and 2. float expected normalized level.
+        All k-mers must be the same length and all combinations of the bases
+        'ACGT' must be present in the file.""",
     )
     refine_grp.add_argument(
         "--refine-rough-rescale",
         action="store_true",
-        help="Apply a rough rescaling using quantiles of signal+move table "
-        "and levels.",
+        help="""Apply a rough rescaling using quantiles of signal+move table
+        and levels.""",
     )
     refine_grp.add_argument(
         "--refine-scale-iters",
         default=-1,
         type=int,
-        help="Number of iterations of signal mapping refinement and signal "
-        "re-scaling to perform. Set to 0 (default) in order to perform signal "
-        "mapping refinement, but skip re-scaling. Set to -1 to skip signal "
-        "mapping (potentially using levels for rough rescaling).",
+        help="""Number of iterations of signal mapping refinement and signal
+        re-scaling to perform. Set to 0 in order to perform signal mapping
+        refinement, but skip re-scaling. Set to -1 (default) to skip signal
+        mapping (potentially using levels for rough rescaling).""",
     )
     refine_grp.add_argument(
         "--refine-half-bandwidth",
         default=constants.DEFAULT_REFINE_HBW,
         type=int,
-        help="Half bandwidth around signal mapping over which to search for "
-        "new path.",
+        help="""Half bandwidth around signal mapping over which to search for
+        "new path.""",
     )
     refine_grp.add_argument(
         "--refine-algo",
@@ -202,9 +199,8 @@ def register_dataset_prepare(parser):
         type=float,
         nargs=3,
         metavar=("TARGET", "LIMIT", "WEIGHT"),
-        help="Short dwell penalty refiner parameters. Dwells shorter than "
-        "LIMIT will be penalized a value of `WEIGHT * (dwell - TARGET)^2`. "
-        "Default: %(default)s",
+        help="""Short dwell penalty refiner parameters. Dwells shorter than
+        LIMIT will be penalized a value of `WEIGHT * (dwell - TARGET)^2`.""",
     )
 
     label_grp = subparser.add_argument_group("Label Arguments")
@@ -212,7 +208,6 @@ def register_dataset_prepare(parser):
         "--mod-base",
         nargs=2,
         metavar=("SINGLE_LETTER_CODE", "MOD_BASE"),
-        default=None,
         help="Modified base information. Example: `--mod-base m 5mC`",
     )
     label_grp.add_argument(
@@ -231,14 +226,14 @@ def register_dataset_prepare(parser):
         "--num-extract-alignment-workers",
         type=int,
         default=1,
-        help="Number of signal extraction workers. Default: %(default)d",
+        help="Number of signal extraction workers.",
     )
     comp_grp.add_argument(
         "--num-extract-chunks-workers",
         type=int,
         default=1,
-        help="Number of chunk extraction workers. If performing signal "
-        "refinement this should be increased. Default: %(default)d",
+        help="""Number of chunk extraction workers. If performing signal
+        refinement this should be increased.""",
     )
 
     subparser.set_defaults(func=run_dataset_prepare)
@@ -309,13 +304,13 @@ def register_dataset_split(parser):
     subparser.add_argument(
         "--output-basename",
         default="split_remora_dataset",
-        help="Basename for output datasets. Default: %(default)s",
+        help="Basename for output datasets.",
     )
     subparser.add_argument(
         "--val-prop",
         type=float,
-        help="The proportion of data to be split into validation set, where "
-        "val-prop in [0,0.5).",
+        help="""The proportion of data to be split into validation set, where
+        val-prop in [0,0.5).""",
     )
     subparser.add_argument(
         "--val-num",
@@ -325,8 +320,8 @@ def register_dataset_split(parser):
     subparser.add_argument(
         "--unstratified",
         action="store_true",
-        help="For --val-prop split, perform unstratified splitting. Default "
-        "will perform split stratified over labels.",
+        help="""For --val-prop split, perform unstratified splitting. Default
+        will perform split stratified over labels.""",
     )
     subparser.add_argument(
         "--by-label",
@@ -403,8 +398,8 @@ def register_dataset_merge(parser):
         "--input-dataset",
         nargs=2,
         action="append",
-        help="1) Remora training dataset path and 2) max number of chunks "
-        "to extract from this dataset.",
+        help="""1) Remora training dataset path and 2) max number of chunks
+        to extract from this dataset.""",
     )
     subparser.add_argument(
         "--output-dataset",
@@ -469,29 +464,28 @@ def register_model_train(parser):
         "--val-prop",
         default=constants.DEFAULT_VAL_PROP,
         type=float,
-        help="Proportion of the dataset to be used as validation. "
-        "Default: %(default)f",
+        help="Proportion of the dataset to be used as validation.",
     )
     data_grp.add_argument(
         "--batch-size",
         default=constants.DEFAULT_BATCH_SIZE,
         type=int,
-        help="Number of samples per batch. Default: %(default)d",
+        help="Number of samples per batch.",
     )
     data_grp.add_argument(
         "--chunk-context",
         type=int,
         nargs=2,
-        help="Override chunk context from data prep. Number of context signal "
-        "points to select around the central position.",
+        help="""Override chunk context from data prep. Number of context signal
+        points to select around the central position.""",
     )
     data_grp.add_argument(
         "--kmer-context-bases",
         nargs=2,
         type=int,
-        help="Override kmer context bases from data prep. Definition of "
-        "k-mer (derived from the reference) passed into the model along with "
-        "each signal position.",
+        help="""Override kmer context bases from data prep. Definition of
+        k-mer (derived from the reference) passed into the model along with
+        each signal position.""",
     )
     data_grp.add_argument(
         "--ext-val",
@@ -508,13 +502,13 @@ def register_model_train(parser):
     out_grp.add_argument(
         "--output-path",
         default="remora_train_results",
-        help="Path to the output files. Default: %(default)s",
+        help="Path to the output files.",
     )
     out_grp.add_argument(
         "--save-freq",
         default=10,
         type=int,
-        help="After how many epochs to save the model. Default %(default)d",
+        help="After how many epochs to save the model.",
     )
     out_grp.add_argument(
         "--overwrite",
@@ -530,7 +524,7 @@ def register_model_train(parser):
         "--size",
         type=int,
         default=constants.DEFAULT_NN_SIZE,
-        help="Model layer size. Default: %(default)d",
+        help="Model layer size.",
     )
 
     train_grp = subparser.add_argument_group("Training Arguments")
@@ -538,57 +532,54 @@ def register_model_train(parser):
         "--epochs",
         default=constants.DEFAULT_EPOCHS,
         type=int,
-        help="Number of training epochs. Default: %(default)d",
+        help="Number of training epochs.",
     )
     train_grp.add_argument(
         "--optimizer",
         default=constants.OPTIMIZERS[0],
         choices=constants.OPTIMIZERS,
-        help="Optimizer setting. Default: %(default)s",
+        help="Optimizer setting.",
     )
     train_grp.add_argument(
         "--scheduler",
         default=None,
-        help="Scheduler setting. Default: %(default)s",
+        help="Scheduler setting.",
     )
     train_grp.add_argument(
         "--lr",
         default=constants.DEFAULT_LR,
         type=float,
-        help="Learning rate setting. Default: %(default)f",
+        help="Learning rate setting.",
     )
     train_grp.add_argument(
         "--weight-decay",
         default=constants.DEFAULT_WEIGHT_DECAY,
         type=float,
-        help="Weight decay setting. Default: %(default)f",
+        help="Weight decay setting.",
     )
     train_grp.add_argument(
         "--early-stopping",
-        default=10,
+        default=5,
         type=int,
-        help="Stops training after a number of epochs without improvement."
-        "If set to 0 no stopping is done. Default: %(default)d",
+        help="""Stops training after a number of epochs without improvement.
+        If set to 0 no stopping is done.""",
     )
     train_grp.add_argument(
         "--seed",
-        default=None,
         type=int,
-        help="Seed value. Default: Random seed",
+        help="Seed value.",
     )
     train_grp.add_argument(
         "--filter-fraction",
         default=constants.DEFAULT_FILT_FRAC,
         type=float,
-        help="Fraction of predictions to filter in validation reporting. "
-        "Un-filtered validation metrics will always be reported as well. "
-        "Default: %(default)f",
+        help="""Fraction of predictions to filter in validation reporting.
+        Un-filtered validation metrics will always be reported as well.""",
     )
     train_grp.add_argument(
         "--lr-sched-kwargs",
         nargs=3,
         action="append",
-        default=None,
         metavar=("NAME", "VALUE", "TYPE"),
     )
     train_grp.add_argument(
@@ -671,8 +662,7 @@ def register_model_export(parser):
     )
     subparser.add_argument(
         "output_path",
-        help="Path to save the model file, or the directory in which to "
-        "save the dorado tensor files if '--format dorado' has been specified.",
+        help="Path or directory to save the model.",
     )
     subparser.add_argument(
         "--model-path",
@@ -680,9 +670,9 @@ def register_model_export(parser):
     )
     subparser.add_argument(
         "--format",
-        default="torchscript",
+        default="dorado",
         choices=["dorado", "torchscript"],
-        help="Export format. Default: torchscript",
+        help="Export format.",
     )
 
     subparser.set_defaults(func=run_model_export)
@@ -726,23 +716,22 @@ def register_model_list_pretrained(parser):
     subparser.add_argument("--pore", help="specify pore type")
     subparser.add_argument(
         "--basecall-model-type",
-        help="specify the basecaller model type (e.g., fast, hac or sup)",
+        help="Specify the basecaller model type (e.g., fast, hac or sup)",
     )
     subparser.add_argument(
-        "--basecall-model-version", help="specify the version of the basecaller"
+        "--basecall-model-version", help="Specify basecaller model version"
     )
     subparser.add_argument(
         "--modified-bases",
         nargs="+",
-        help="specify the modified base models you are interested in",
+        help="Specify the modified base(s)",
     )
     subparser.add_argument(
         "--remora-model-type",
-        help="specify the motif or context that the remora model has been "
-        "trained on",
+        help="Specify model motif (sequence context)",
     )
     subparser.add_argument(
-        "--remora-model-version", help="specify the remora model version"
+        "--remora-model-version", help="Specify Remora model version"
     )
     subparser.set_defaults(func=run_list_pretrained)
 
@@ -775,23 +764,22 @@ def register_model_download(parser):
     subparser.add_argument("--pore", help="specify pore type")
     subparser.add_argument(
         "--basecall-model-type",
-        help="specify the basecaller model type (e.g., fast, hac or sup)",
+        help="Specify the basecaller model type (e.g., fast, hac or sup)",
     )
     subparser.add_argument(
-        "--basecall-model-version", help="specify the version of the basecaller"
+        "--basecall-model-version", help="Specify basecaller model version"
     )
     subparser.add_argument(
         "--modified-bases",
         nargs="+",
-        help="specify the modified base models you are interested in",
+        help="Specify the modified base(s)",
     )
     subparser.add_argument(
         "--remora-model-type",
-        help="specify the motif or context that the remora model has been "
-        "trained on",
+        help="Specify model motif (sequence context)",
     )
     subparser.add_argument(
-        "--remora-model-version", help="specify the remora model version"
+        "--remora-model-version", help="Specify Remora model version"
     )
     subparser.set_defaults(func=run_download)
 
@@ -892,8 +880,8 @@ def register_infer_from_pod5_and_bam(parser):
     )
     mdl_grp.add_argument(
         "--remora-model-type",
-        help="Choose the specific motif of the model you want to load. "
-        "If None, load CG model.",
+        help="""Choose the specific motif of the model you want to load.
+        If None, load CG model.""",
     )
     mdl_grp.add_argument(
         "--remora-model-version",
@@ -911,8 +899,8 @@ def register_infer_from_pod5_and_bam(parser):
     data_grp.add_argument(
         "--reference-anchored",
         action="store_true",
-        help="Infer per-read modified bases against reference bases instead "
-        "of basecalls.",
+        help="""Infer per-read modified bases against reference bases instead
+        of basecalls.""",
     )
 
     comp_grp = subparser.add_argument_group("Compute Arguments")
@@ -925,26 +913,26 @@ def register_infer_from_pod5_and_bam(parser):
         "--num-extract-alignment-workers",
         type=int,
         default=1,
-        help="Number of signal extraction workers. Default: %(default)d",
+        help="Number of signal extraction workers.",
     )
     comp_grp.add_argument(
         "--num-prepare-batch-workers",
         type=int,
         default=1,
-        help="Number of batch preparation workers. Default: %(default)d",
+        help="Number of batch preparation workers.",
     )
     comp_grp.add_argument(
         "--num-infer-workers",
         type=int,
         default=1,
-        help="Number of chunk extraction workers. If performing signal "
-        "refinement this should be increased. Default: %(default)d",
+        help="""Number of chunk extraction workers. If performing signal
+        refinement this should be increased.""",
     )
     comp_grp.add_argument(
         "--batch-size",
         default=constants.DEFAULT_BATCH_SIZE,
         type=int,
-        help="Number of input units per batch. Default: %(default)d",
+        help="Number of input units per batch.",
     )
 
     subparser.set_defaults(func=run_infer_from_pod5_and_bam)
@@ -970,21 +958,21 @@ def register_infer_duplex_from_pod5_and_bam(parser):
     )
     subparser.add_argument(
         "duplex_bam",
-        help="BAM file containing duplex base called sequences (and optional "
-        "reference mappings). Record names may either be the template read_id "
-        "or template<delim>complement. The value of <delim> can be set with "
-        f"{duplex_delim_flag}.",
+        help=f"""BAM file containing duplex base called sequences (and optional
+        reference mappings). Record names may either be the template read_id
+        or template<delim>complement. The value of <delim> can be set with
+        {duplex_delim_flag}.""",
     )
     subparser.add_argument(
         "duplex_read_pairs",
-        help="Whitespace separated plain text file containing read ID pairs, no"
-        "header.",
+        help="""Whitespace separated plain text file containing read ID pairs,
+        no header.""",
     )
     subparser.add_argument(
         duplex_delim_flag,
-        help="deliminator string between template and complement read "
-        "ids in the duplex BAM",
         default=";",
+        help="""Deliminator string between template and complement read
+        ids in the duplex BAM""",
     )
 
     out_grp = subparser.add_argument_group("Output Arguments")
@@ -1004,8 +992,8 @@ def register_infer_duplex_from_pod5_and_bam(parser):
     )
     mdl_grp.add_argument(
         "--pore",
-        help="Choose the type of pore the Remora model has been trained on "
-        "(e.g. dna_r10.4_e8.1)",
+        help="""Choose the type of pore the Remora model has been trained on
+        (e.g. dna_r10.4_e8.1)""",
     )
     mdl_grp.add_argument(
         "--basecall-model-type",
@@ -1034,7 +1022,6 @@ def register_infer_duplex_from_pod5_and_bam(parser):
     data_grp = subparser.add_argument_group("Data Arguments")
     data_grp.add_argument(
         "--num-reads",
-        default=None,
         type=int,
         help="Number of reads.",
     )
@@ -1049,21 +1036,20 @@ def register_infer_duplex_from_pod5_and_bam(parser):
         "--num-extract-alignment-workers",
         type=int,
         default=1,
-        help="Number of IO extraction workers. Default: %(default)d",
+        help="Number of IO extraction workers.",
     )
     comp_grp.add_argument(
         "--num-duplex-prep-workers",
         type=int,
         default=1,
-        help="Number of duplex prep workers (tends to bottleneck). Default:"
-        "%(default)d",
+        help="Number of duplex prep workers (tends to bottleneck).",
     )
     comp_grp.add_argument(
         "--num-infer-workers",
         type=int,
         default=1,
-        help="Number of chunk extraction workers. If performing signal "
-        "refinement this should be increased. Default: %(default)d",
+        help="""Number of chunk extraction workers. If performing signal
+        refinement this should be increased.""",
     )
 
     subparser.set_defaults(func=run_infer_from_pod5_and_bam_duplex)
@@ -1192,8 +1178,8 @@ def register_validate_from_modbams(parser):
     subparser.add_argument(
         "--name",
         default="sample",
-        help="Name of this sample/comparison. Useful when tabulating "
-        "several runs.",
+        help="""Name of this sample/comparison. Useful when tabulating
+        several runs.""",
     )
     subparser.add_argument(
         "--pct-filt",
@@ -1209,8 +1195,7 @@ def register_validate_from_modbams(parser):
     subparser.add_argument(
         "--max-sites-per-read",
         type=int,
-        help="Maxiumum number of sites to extract from a single read. "
-        "Default: %(default)s",
+        help="Maxiumum number of sites to extract from a single read.",
     )
     subparser.add_argument(
         "--seed",
@@ -1318,7 +1303,7 @@ def register_validate_from_remora_dataset(parser):
         "--batch-size",
         default=constants.DEFAULT_BATCH_SIZE,
         type=int,
-        help="Number of input units per batch. Default: %(default)d",
+        help="Number of input units per batch.",
     )
     comp_grp.add_argument(
         "--device",
@@ -1454,32 +1439,32 @@ def register_plot_ref_region(parser):
     refine_grp = subparser.add_argument_group("Signal Mapping Refine Arguments")
     refine_grp.add_argument(
         "--refine-kmer-level-table",
-        help="Tab-delimited file containing no header and two fields: "
-        "1. string k-mer sequence and 2. float expected normalized level. "
-        "All k-mers must be the same length and all combinations of the bases "
-        "'ACGT' must be present in the file.",
+        help="""Tab-delimited file containing no header and two fields:
+        1. string k-mer sequence and 2. float expected normalized level.
+        All k-mers must be the same length and all combinations of the bases
+        'ACGT' must be present in the file.""",
     )
     refine_grp.add_argument(
         "--refine-rough-rescale",
         action="store_true",
-        help="Apply a rough rescaling using quantiles of signal+move table "
-        "and levels.",
+        help="""Apply a rough rescaling using quantiles of signal+move table
+        and levels.""",
     )
     refine_grp.add_argument(
         "--refine-scale-iters",
         default=0,
         type=int,
-        help="Number of iterations of signal mapping refinement and signal "
-        "re-scaling to perform. Set to 0 (default) in order to perform signal "
-        "mapping refinement, but skip re-scaling. Set to -1 to skip signal "
-        "mapping (potentially using levels for rough rescaling).",
+        help="""Number of iterations of signal mapping refinement and signal
+        re-scaling to perform. Set to 0 (default) in order to perform signal
+        mapping refinement, but skip re-scaling. Set to -1 to skip signal
+        mapping (potentially using levels for rough rescaling).""",
     )
     refine_grp.add_argument(
         "--refine-half-bandwidth",
         default=constants.DEFAULT_REFINE_HBW,
         type=int,
-        help="Half bandwidth around signal mapping over which to search for "
-        "new path.",
+        help="""Half bandwidth around signal mapping over which to search for
+        new path.""",
     )
     refine_grp.add_argument(
         "--refine-algo",
@@ -1493,9 +1478,8 @@ def register_plot_ref_region(parser):
         type=float,
         nargs=3,
         metavar=("TARGET", "LIMIT", "WEIGHT"),
-        help="Short dwell penalty refiner parameters. Dwells shorter than "
-        "LIMIT will be penalized a value of `WEIGHT * (dwell - TARGET)^2`. "
-        "Default: %(default)s",
+        help="""Short dwell penalty refiner parameters. Dwells shorter than
+        LIMIT will be penalized a value of `WEIGHT * (dwell - TARGET)^2`.""",
     )
 
     plt_grp = subparser.add_argument_group("Plot Arguments")
@@ -1604,16 +1588,16 @@ def register_estimate_kmer_levels(parser):
     refine_grp = subparser.add_argument_group("Signal Mapping Refine Arguments")
     refine_grp.add_argument(
         "--refine-kmer-level-table",
-        help="Tab-delimited file containing no header and two fields: "
-        "1. string k-mer sequence and 2. float expected normalized level. "
-        "All k-mers must be the same length and all combinations of the bases "
-        "'ACGT' must be present in the file.",
+        help="""Tab-delimited file containing no header and two fields:
+        1. string k-mer sequence and 2. float expected normalized level.
+        All k-mers must be the same length and all combinations of the bases
+        'ACGT' must be present in the file.""",
     )
     refine_grp.add_argument(
         "--refine-rough-rescale",
         action="store_true",
-        help="Apply a rough rescaling using quantiles of signal+move table "
-        "and levels.",
+        help="""Apply a rough rescaling using quantiles of signal+move table
+        and levels.""",
     )
     refine_grp.add_argument(
         "--refine-scale-iters",
@@ -1644,9 +1628,8 @@ def register_estimate_kmer_levels(parser):
         type=float,
         nargs=3,
         metavar=("TARGET", "LIMIT", "WEIGHT"),
-        help="Short dwell penalty refiner parameters. Dwells shorter than "
-        "LIMIT will be penalized a value of `WEIGHT * (dwell - TARGET)^2`. "
-        "Default: %(default)s",
+        help="""Short dwell penalty refiner parameters. Dwells shorter than
+        LIMIT will be penalized a value of `WEIGHT * (dwell - TARGET)^2`.""",
     )
 
     data_grp = subparser.add_argument_group("Data Arguments")
