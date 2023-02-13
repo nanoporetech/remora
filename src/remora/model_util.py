@@ -205,7 +205,7 @@ def export_model_dorado(ckpt, model, save_dir):
     if len(ckpt["motifs"]) > 1:
         raise RemoraError("Dorado only supports models with a single motif")
 
-    for (motif, motif_offset) in ckpt["motifs"]:
+    for motif, motif_offset in ckpt["motifs"]:
         modbases["motif"] = motif
         modbases["motif_offset"] = motif_offset
 

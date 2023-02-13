@@ -47,7 +47,6 @@ class plotter:
         return (trn_results, val_results), folder
 
     def plot_results(self, args):
-
         folders = []
         fig, axs = plt.subplots(1, 3, figsize=(25, 15), constrained_layout=True)
 
@@ -90,7 +89,6 @@ class plotter:
         fig.savefig(os.path.join(args.out_path, "results.pdf"), format="pdf")
 
     def plot_conf_mat(self, args):
-
         folders = []
         fig, ax = plt.subplots(figsize=(7.5, 7.5))
         for i, arg in enumerate(args.paths):
@@ -124,7 +122,6 @@ class plotter:
 
 
 if __name__ == "__main__":
-
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--paths",
