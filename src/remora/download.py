@@ -10,7 +10,6 @@ LOGGER = log.get_logger()
 
 
 class ModelDownload:
-
     __url__ = "https://nanoporetech.box.com/shared/static/"
 
     def __init__(self, path, force=False):

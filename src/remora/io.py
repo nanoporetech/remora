@@ -209,8 +209,8 @@ class ReadIndexedBam:
                 yield read
 
     def compute_read_index(self):
-        bam_opened = self.bam_fh is not None
-        if not bam_opened:
+        bam_was_closed = self.bam_fh is None
+        if bam_was_closed:
             self.open()
         self._bam_idx = defaultdict(list)
         pbar = tqdm(
@@ -249,7 +249,7 @@ class ReadIndexedBam:
             self.num_records += 1
             self._bam_idx[index_read_id].append(read_ptr)
         # close bam if it was closed at start of function call
-        if bam_opened:
+        if bam_was_closed:
             self.close()
         pbar.close()
         # convert defaultdict to dict
@@ -267,7 +267,17 @@ class ReadIndexedBam:
             raise RemoraError(f"Could not find {read_id} in {self.bam_path}")
         for read_ptr in read_ptrs:
             self.bam_fh.seek(read_ptr)
-            bam_read = next(self.bam_fh)
+            try:
+                bam_read = next(self.bam_fh)
+            except OSError:
+                LOGGER.debug(
+                    f"Could not extract {read_id} from {self.bam_path} "
+                    f"at {read_ptr}"
+                )
+                raise RemoraError(
+                    "Could not extract BAM read. Ensure BAM file object was "
+                    "closed before spawning process."
+                )
             assert bam_read.query_name == read_id, (
                 f"Read ID {read_id} does not match extracted BAM record "
                 f"{bam_read.query_name} at {read_ptr}. ReadIndexedBam may "
@@ -396,6 +406,8 @@ def extract_alignments(read_err, bam_idx):
             read_alignments.append(tuple((align_read, None)))
     except KeyError:
         return [tuple((None, "Read id not found in BAM file"))]
+    except RemoraError as e:
+        return [tuple((None, str(e)))]
     return read_alignments
 
 

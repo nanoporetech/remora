@@ -23,7 +23,6 @@ def extract_scores(dirs):
 
 
 def plot_scores(scores, out_path):
-
     chunk_sizes = [50, 100, 250]
     legend = []
     for i in scores.keys():
@@ -39,7 +38,6 @@ def plot_scores(scores, out_path):
 
 
 if __name__ == "__main__":
-
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--paths",
