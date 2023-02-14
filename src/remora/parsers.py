@@ -411,11 +411,18 @@ def register_dataset_merge(parser):
         action="store_true",
         help="Automatically balance classes when merging",
     )
+    subparser.add_argument(
+        "--log-filename",
+        help="Log filename. (default: Don't output log file)",
+    )
     subparser.set_defaults(func=run_dataset_merge)
 
 
 def run_dataset_merge(args):
     from remora.data_chunks import merge_datasets
+
+    if args.log_filename is not None:
+        log.init_logger(args.log_filename)
 
     input_datasets = [
         (ds_path, int(num_chunks)) for ds_path, num_chunks in args.input_dataset
