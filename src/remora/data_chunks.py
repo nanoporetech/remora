@@ -13,7 +13,6 @@ from remora import constants, log, RemoraError, util, encoded_kmers
 
 LOGGER = log.get_logger()
 
-DEFAULT_BATCH_SIZE = 1024
 DATASET_VERSION = 2
 MISMATCH_ARRS = {
     0: np.array([1, 2, 3]),
