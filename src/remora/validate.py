@@ -105,6 +105,7 @@ def _validate_model(
     dataset,
     filt_frac=constants.DEFAULT_FILT_FRAC,
     full_results_fh=None,
+    disable_pbar=False,
 ):
     device = next(model.parameters()).device
     unmodeled_labels = np.array(
@@ -124,6 +125,8 @@ def _validate_model(
     all_outputs = []
     all_loss = []
 
+    if os.environ.get("LOG_SAFE", False):
+        disable_pbar = True
     for (
         (sigs, seqs, seq_maps, seq_lens),
         labels,
@@ -132,7 +135,7 @@ def _validate_model(
         dataset,
         smoothing=0,
         desc="Batches",
-        disable=os.environ.get("LOG_SAFE", False),
+        disable=disable_pbar,
     ):
         all_labels.append(labels)
         enc_kmers = encoded_kmers.compute_encoded_kmer_batch(
@@ -283,6 +286,7 @@ class ValidationLogger:
         val_type="val",
         nepoch=0,
         niter=0,
+        disable_pbar=False,
     ):
         ms = _validate_model(
             model,
@@ -291,6 +295,7 @@ class ValidationLogger:
             dataset,
             filt_frac,
             full_results_fh=self.full_results_fh,
+            disable_pbar=disable_pbar,
         )
         self.fp.write(
             f"{val_type}\t{nepoch}\t{niter}\t"
