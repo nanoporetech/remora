@@ -122,13 +122,13 @@ def train_model(
 
     np.random.seed(seed)
     torch.manual_seed(seed)
-    if torch.cuda.is_available() and device is not None:
-        torch.cuda.manual_seed_all(seed)
-        torch.cuda.set_device(device)
-    elif device is not None:
-        LOGGER.warning(
-            "Device option specified, but CUDA is not available from torch."
-        )
+    if device is not None:
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+            device = torch.cuda.device(device)
+            torch.cuda.set_device(device)
+        else:
+            LOGGER.warning("Device option specified, but CUDA not available.")
 
     LOGGER.info("Loading dataset from Remora file")
     dataset = RemoraDataset.load_from_file(
@@ -198,7 +198,7 @@ def train_model(
 
     LOGGER.info("Preparing training settings")
     criterion = torch.nn.CrossEntropyLoss()
-    if torch.cuda.is_available():
+    if device is not None and device.type == "cuda":
         model = model.cuda()
         criterion = criterion.cuda()
     opt = load_optimizer(optimizer, model, lr, weight_decay)
@@ -317,34 +317,36 @@ def train_model(
                 )
             )
             labels = torch.from_numpy(labels)
-            if torch.cuda.is_available():
+            if device is not None and device.type == "cuda":
                 sigs = sigs.cuda()
                 enc_kmers = enc_kmers.cuda()
-                labels = labels.cuda()
             outputs = model(sigs, enc_kmers)
 
-            if high_conf_incorrect_thr_frac is not None:
-                nr_to_skip = int(len(labels) * high_conf_incorrect_thr_frac[1])
-                mask = torch.arange(0, outputs.shape[0])
-                preds = torch.nn.functional.softmax(outputs, dim=1)
-                highest_preds, high_conf_cl = torch.max(preds, dim=1)
-                cl_missmatch = labels != high_conf_cl
-                high_confs = highest_preds > high_conf_incorrect_thr_frac[0]
-                high_confs_miss = high_confs.logical_and(cl_missmatch)
-                high_conf_inds = torch.argsort(
-                    highest_preds[high_confs_miss], descending=True
-                )
-                if sum(high_confs_miss) < nr_to_skip:
-                    nr_to_skip = sum(high_confs_miss)
-                if sum(high_confs_miss):
-                    skips = high_conf_inds[:nr_to_skip]
-                    inds_to_skip = mask[high_confs_miss][skips]
-                    mask = np.delete(mask, inds_to_skip)
-                    loss = criterion(outputs[mask], labels[mask])
-                else:
-                    loss = criterion(outputs, labels)
-            else:
+            if high_conf_incorrect_thr_frac is None:
+                if device is not None and device.type == "cuda":
+                    labels = labels.cuda()
                 loss = criterion(outputs, labels)
+            else:
+                batch_size = outputs.shape[0]
+                conf_thresh, max_frac_skip = high_conf_incorrect_thr_frac
+                max_nr_skip = int(np.floor(batch_size * max_frac_skip))
+                preds = (
+                    torch.nn.functional.softmax(outputs, dim=1).detach().cpu()
+                )
+                highest_preds, high_conf_cl = torch.max(preds, dim=1)
+                cl_match = labels == high_conf_cl
+                # if there are more mismatches than the maximum number allowed
+                # to be skipped, set confidence threshold to allow no more than
+                # max_nr_skip items be skipped
+                if batch_size - cl_match.sum() > max_nr_skip:
+                    mm_preds = highest_preds[~cl_match]
+                    mm_preds.sort(descending=True)
+                    conf_thresh = max(conf_thresh, mm_preds[max_nr_skip])
+                mask = cl_match.logical_or(highest_preds < conf_thresh)
+                # avoid sending labels to device until after above computations
+                if device is not None and device.type == "cuda":
+                    labels = labels.cuda()
+                loss = criterion(outputs[mask], labels[mask])
 
             opt.zero_grad()
             loss.backward()
@@ -353,10 +355,10 @@ def train_model(
                 f"{(epoch * len(trn_ds)) + epoch_i}\t"
                 f"{loss.detach().cpu():.6f}"
             )
-            if high_conf_incorrect_thr_frac is not None:
-                batch_fp.write(f"\t{len(inds_to_skip)}\n")
-            else:
+            if high_conf_incorrect_thr_frac is None:
                 batch_fp.write("\n")
+            else:
+                batch_fp.write(f"\t{batch_size - mask.sum()}\n")
 
             pbar.update()
             pbar.refresh()
@@ -370,6 +372,7 @@ def train_model(
             filt_frac,
             nepoch=epoch + 1,
             niter=niter,
+            disable_pbar=True,
         )
         trn_metrics = val_fp.validate_model(
             model,
@@ -380,6 +383,7 @@ def train_model(
             "trn",
             nepoch=epoch + 1,
             niter=niter,
+            disable_pbar=True,
         )
 
         scheduler.step()
@@ -422,6 +426,7 @@ def train_model(
                     f"e_val_{e_set_idx}",
                     nepoch=epoch + 1,
                     niter=niter,
+                    disable_pbar=True,
                 )
                 if e_val_metrics.acc <= best_alt_val_accs[e_set_idx]:
                     continue

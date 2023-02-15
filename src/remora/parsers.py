@@ -609,8 +609,7 @@ def register_model_train(parser):
     comp_grp = subparser.add_argument_group("Compute Arguments")
     comp_grp.add_argument(
         "--device",
-        type=int,
-        help="ID of GPU that is used for training. Default: Use CPU.",
+        help="Device for neural network processing. See torch.device.",
     )
 
     subparser.set_defaults(func=run_model_train)
@@ -618,6 +617,13 @@ def register_model_train(parser):
 
 def run_model_train(args):
     from remora.train_model import train_model
+
+    # convert int devices for legacy settings
+    device = args.device
+    try:
+        device = int(device)
+    except (ValueError, TypeError):
+        pass
 
     out_path = Path(args.output_path)
     if args.overwrite:
@@ -631,7 +637,7 @@ def run_model_train(args):
     log.init_logger(os.path.join(out_path, "log.txt"))
     train_model(
         args.seed,
-        args.device,
+        device,
         out_path,
         args.remora_dataset_path,
         args.chunk_context,
