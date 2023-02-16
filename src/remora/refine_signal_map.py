@@ -250,6 +250,15 @@ class SigMapRefiner:
             and self.algo == REFINE_ALGO_DWELL_PEN_NAME
         ):
             LOGGER.debug(f"Refine short dwell penalty array: {self.sd_arr}")
+        if (
+            self.is_loaded
+            and not self.do_rough_rescale
+            and self.scale_iters < 0
+        ):
+            LOGGER.warning(
+                "K-mer table provided, but not used. "
+                "See rough rescaling options."
+            )
 
     def extract_levels(self, int_seq):
         return extract_levels(

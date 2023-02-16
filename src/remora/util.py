@@ -1,13 +1,14 @@
-import array
-import multiprocessing as mp
-import platform
-import queue
 import re
+import array
+import queue
+import platform
 import traceback
 from time import sleep
+import multiprocessing as mp
 from threading import Thread
 from os.path import realpath, expanduser
 
+import torch
 import numpy as np
 
 from remora import log, RemoraError
@@ -44,6 +45,20 @@ NP_COMP_BASES = np.array([3, 2, 1, 0], dtype=np.uintp)
 U_TO_T_BASES = {ord("U"): ord("T")}
 
 DEFAULT_QUEUE_SIZE = 10_000
+
+
+def parse_device(device):
+    if device is None:
+        return None
+    # convert int devices for legacy settings
+    try:
+        device = int(device)
+    except (ValueError, TypeError):
+        pass
+    device = torch.device(device)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        LOGGER.warning("Device option specified, but CUDA not available.")
+    return device
 
 
 def iter_motif_hits(int_seq, motif):

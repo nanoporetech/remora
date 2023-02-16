@@ -108,6 +108,7 @@ def register_dataset_prepare(parser):
         default=constants.DEFAULT_CHUNK_CONTEXT,
         type=int,
         nargs=2,
+        metavar=("NUM_BEFORE", "NUM_AFTER"),
         help="""Number of context signal points to select around the central
         position.""",
     )
@@ -123,6 +124,7 @@ def register_dataset_prepare(parser):
         nargs=2,
         default=constants.DEFAULT_KMER_CONTEXT_BASES,
         type=int,
+        metavar=("BASES_BEFORE", "BASES_AFTER"),
         help="""Definition of k-mer (derived from the reference) passed into
         the model along with each signal position.""",
     )
@@ -397,9 +399,11 @@ def register_dataset_merge(parser):
     subparser.add_argument(
         "--input-dataset",
         nargs=2,
+        metavar=("PATH", "NUM_CHUNKS"),
         action="append",
         help="""1) Remora training dataset path and 2) max number of chunks
-        to extract from this dataset.""",
+        to extract from this dataset. Second argument can be "all" to use all
+        chunks from a dataset""",
     )
     subparser.add_argument(
         "--output-dataset",
@@ -409,7 +413,7 @@ def register_dataset_merge(parser):
     subparser.add_argument(
         "--balance",
         action="store_true",
-        help="Automatically balance classes when merging",
+        help="Automatically balance classes after merging",
     )
     subparser.add_argument(
         "--log-filename",
@@ -425,7 +429,8 @@ def run_dataset_merge(args):
         log.init_logger(args.log_filename)
 
     input_datasets = [
-        (ds_path, int(num_chunks)) for ds_path, num_chunks in args.input_dataset
+        (ds_path, None if num_chunks == "all" else int(num_chunks))
+        for ds_path, num_chunks in args.input_dataset
     ]
     output_dataset = merge_datasets(input_datasets, args.balance)
     output_dataset.save(args.output_dataset)
@@ -483,6 +488,7 @@ def register_model_train(parser):
         "--chunk-context",
         type=int,
         nargs=2,
+        metavar=("NUM_BEFORE", "NUM_AFTER"),
         help="""Override chunk context from data prep. Number of context signal
         points to select around the central position.""",
     )
@@ -490,6 +496,7 @@ def register_model_train(parser):
         "--kmer-context-bases",
         nargs=2,
         type=int,
+        metavar=("BASES_BEFORE", "BASES_AFTER"),
         help="""Override kmer context bases from data prep. Definition of
         k-mer (derived from the reference) passed into the model along with
         each signal position.""",
@@ -616,14 +623,8 @@ def register_model_train(parser):
 
 
 def run_model_train(args):
+    from remora.util import parse_device
     from remora.train_model import train_model
-
-    # convert int devices for legacy settings
-    device = args.device
-    try:
-        device = int(device)
-    except (ValueError, TypeError):
-        pass
 
     out_path = Path(args.output_path)
     if args.overwrite:
@@ -637,7 +638,7 @@ def run_model_train(args):
     log.init_logger(os.path.join(out_path, "log.txt"))
     train_model(
         args.seed,
-        device,
+        parse_device(args.device),
         out_path,
         args.remora_dataset_path,
         args.chunk_context,
@@ -1069,6 +1070,8 @@ def register_infer_duplex_from_pod5_and_bam(parser):
 
 
 def _unpack_model_kw_args(args) -> dict:
+    from remora.util import parse_device
+
     if args.model and not os.path.exists(args.model):
         raise ValueError(f"didn't find model file at {args.model}")
 
@@ -1080,7 +1083,7 @@ def _unpack_model_kw_args(args) -> dict:
         "modified_bases": args.modified_bases,
         "remora_model_type": args.remora_model_type,
         "remora_model_version": args.remora_model_version,
-        "device": args.device,
+        "device": parse_device(args.device),
     }
     return model_kwargs
 
@@ -1330,6 +1333,7 @@ def register_validate_from_remora_dataset(parser):
 def run_validate_from_remora_dataset(args):
     import torch
 
+    from remora.util import parse_device
     from remora.model_util import load_model
     from remora.validate import ValidationLogger
     from remora.data_chunks import RemoraDataset
@@ -1351,7 +1355,7 @@ def run_validate_from_remora_dataset(args):
         modified_bases=args.modified_bases,
         remora_model_type=args.remora_model_type,
         remora_model_version=args.remora_model_version,
-        device=args.device,
+        device=parse_device(args.device),
     )
 
     dataset.trim_kmer_context_bases(model_metadata["kmer_context_bases"])
@@ -1500,6 +1504,7 @@ def register_plot_ref_region(parser):
         "--figsize",
         nargs=2,
         type=int,
+        metavar=("HEIGHT", "WIDTH"),
         default=constants.DEFAULT_PLOT_FIG_SIZE,
         help="Figure size",
     )
@@ -1507,6 +1512,7 @@ def register_plot_ref_region(parser):
         "--ylim",
         nargs=2,
         type=int,
+        metavar=("MIN", "MAX"),
         help="Signal plotting limits",
     )
 
@@ -1657,6 +1663,7 @@ def register_estimate_kmer_levels(parser):
         nargs=2,
         default=(2, 2),
         type=int,
+        metavar=("BASES_BEFORE", "BASES_AFTER"),
         help="""Definition of k-mer by the number of bases before and after the
         assigned signal position""",
     )

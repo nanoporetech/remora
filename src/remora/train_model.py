@@ -122,13 +122,9 @@ def train_model(
 
     np.random.seed(seed)
     torch.manual_seed(seed)
-    if device is not None:
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
-            device = torch.cuda.device(device)
-            torch.cuda.set_device(device)
-        else:
-            LOGGER.warning("Device option specified, but CUDA not available.")
+    if device is not None and device.type == "cuda":
+        torch.cuda.manual_seed_all(seed)
+        torch.cuda.set_device(device)
 
     LOGGER.info("Loading dataset from Remora file")
     dataset = RemoraDataset.load_from_file(
@@ -198,9 +194,8 @@ def train_model(
 
     LOGGER.info("Preparing training settings")
     criterion = torch.nn.CrossEntropyLoss()
-    if device is not None and device.type == "cuda":
-        model = model.cuda()
-        criterion = criterion.cuda()
+    model = model.to(device)
+    criterion = criterion.to(device)
     opt = load_optimizer(optimizer, model, lr, weight_decay)
 
     scheduler = select_scheduler(scheduler_name, opt, lr_sched_kwargs)
@@ -317,14 +312,12 @@ def train_model(
                 )
             )
             labels = torch.from_numpy(labels)
-            if device is not None and device.type == "cuda":
-                sigs = sigs.cuda()
-                enc_kmers = enc_kmers.cuda()
+            sigs = sigs.to(device)
+            enc_kmers = enc_kmers.to(device)
             outputs = model(sigs, enc_kmers)
 
             if high_conf_incorrect_thr_frac is None:
-                if device is not None and device.type == "cuda":
-                    labels = labels.cuda()
+                labels = labels.to(device)
                 loss = criterion(outputs, labels)
             else:
                 batch_size = outputs.shape[0]
@@ -344,8 +337,7 @@ def train_model(
                     conf_thresh = max(conf_thresh, mm_preds[max_nr_skip])
                 mask = cl_match.logical_or(highest_preds < conf_thresh)
                 # avoid sending labels to device until after above computations
-                if device is not None and device.type == "cuda":
-                    labels = labels.cuda()
+                labels = labels.to(device)
                 loss = criterion(outputs[mask], labels[mask])
 
             opt.zero_grad()
