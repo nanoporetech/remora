@@ -372,7 +372,7 @@ def load_torchscript_model(model_filename, device=None, quiet=False):
 
     Args:
         model_filename (str): Model path
-        device (int): GPU device ID
+        device (torch.device): Torch device (or None)
         quiet (bool): Print model info to debug
 
     Returns:
@@ -391,7 +391,7 @@ def load_torchscript_model(model_filename, device=None, quiet=False):
         model = torch.jit.load(
             model_filename,
             _extra_files=extra_files,
-            map_location=torch.device(device),
+            map_location=device,
         )
     model_metadata = json.loads(extra_files["meta.txt"])
     add_derived_metadata(model_metadata)

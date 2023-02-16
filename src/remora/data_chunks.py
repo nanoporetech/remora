@@ -1348,7 +1348,7 @@ def merge_datasets(input_datasets, balance=False, quiet=False):
             shuffle_on_iter=False,
             drop_last=False,
         )
-        if num_chunks < dataset.nchunks:
+        if num_chunks is not None and num_chunks < dataset.nchunks:
             dataset.shuffle()
         else:
             num_chunks = dataset.nchunks
