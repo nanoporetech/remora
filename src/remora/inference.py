@@ -217,7 +217,7 @@ def prepare_batches(read_errs, model_metadata, batch_size, ref_anchored):
         if len(remora_read.batches) == 0:
             out_read_errs.append((None, None, "No mod calls"))
             continue
-        out_read_errs.append((copy(io_read), remora_read, None))
+        out_read_errs.append((io_read, remora_read, None))
     return out_read_errs
 
 
@@ -261,7 +261,7 @@ def run_model(read_errs, model, model_metadata, ref_anchored):
             io_read.full_align["cigar"] = f"{len(io_read.ref_seq)}M"
             io_read.full_align["seq"] = (
                 io_read.ref_seq
-                if io_read.ref_pos.strand == "+"
+                if io_read.ref_reg.strand == "+"
                 else revcomp(io_read.ref_seq)
             )
             io_read.full_align["qual"] = "*"
@@ -288,9 +288,9 @@ def infer_from_pod5_and_bam(
     model_metadata,
     out_bam_path,
     num_reads=None,
+    queue_max=1_000,
     num_extract_alignment_workers=1,
     num_prep_batch_workers=1,
-    num_infer_workers=1,
     batch_size=constants.DEFAULT_BATCH_SIZE,
     skip_non_primary=True,
     ref_anchored=False,
@@ -304,6 +304,7 @@ def infer_from_pod5_and_bam(
         args=(pod5_path, num_reads, read_ids),
         name="ExtractSignal",
         use_process=True,
+        q_maxsize=queue_max,
     )
     reads = MultitaskMap(
         extract_alignments,
@@ -312,6 +313,7 @@ def infer_from_pod5_and_bam(
         args=(bam_idx,),
         name="AddAlignments",
         use_process=True,
+        q_maxsize=queue_max,
     )
     reads = MultitaskMap(
         prepare_batches,
@@ -320,19 +322,7 @@ def infer_from_pod5_and_bam(
         args=(model_metadata, batch_size, ref_anchored),
         name="PrepBatches",
         use_process=True,
-    )
-
-    use_process = True
-    if isinstance(model, RecursiveScriptModule):
-        use_process = next(model.parameters()).device.type == "cpu"
-
-    mod_reads_mappings = MultitaskMap(
-        run_model,
-        reads,
-        num_workers=num_infer_workers,
-        args=(model, model_metadata, ref_anchored),
-        name="InferMods",
-        use_process=use_process,
+        q_maxsize=queue_max,
     )
 
     errs = defaultdict(int)
@@ -349,17 +339,22 @@ def infer_from_pod5_and_bam(
             desc="Inferring mods",
             disable=os.environ.get("LOG_SAFE", False),
         )
-        for read_errs in mod_reads_mappings:
+        # TODO add a batch -> run_model -> unbatch function here to run model
+        # more efficiently on larger batch size
+        for read_errs in reads:
             pbar.update()
             if len(read_errs) == 0:
                 errs["No valid mappings"] += 1
                 continue
 
             sig_called += sum(
-                read.dacs.size for read, _ in read_errs if read is not None
+                read.dacs.size for read, _, _ in read_errs if read is not None
             )
             msps = sig_called / 1_000_000 / pbar.format_dict["elapsed"]
             pbar.set_postfix_str(f"{msps:.2f} Msamps/s", refresh=False)
+            read_errs = run_model(
+                read_errs, model, model_metadata, ref_anchored
+            )
 
             for io_read, err in read_errs:
                 if io_read is None:
