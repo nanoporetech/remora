@@ -924,6 +924,12 @@ def register_infer_from_pod5_and_bam(parser):
         help="ID of GPU that is used for inference. Default: CPU only",
     )
     comp_grp.add_argument(
+        "--queue-max",
+        type=int,
+        default=1_000,
+        help="Maximum number of reads to store in each multiprocessing queue.",
+    )
+    comp_grp.add_argument(
         "--num-extract-alignment-workers",
         type=int,
         default=1,
@@ -934,13 +940,6 @@ def register_infer_from_pod5_and_bam(parser):
         type=int,
         default=1,
         help="Number of batch preparation workers.",
-    )
-    comp_grp.add_argument(
-        "--num-infer-workers",
-        type=int,
-        default=1,
-        help="""Number of chunk extraction workers. If performing signal
-        refinement this should be increased.""",
     )
     comp_grp.add_argument(
         "--batch-size",
@@ -1104,9 +1103,9 @@ def run_infer_from_pod5_and_bam(args):
         model_metadata=model_metadata,
         out_bam_path=args.out_bam,
         num_reads=args.num_reads,
+        queue_max=args.queue_max,
         num_extract_alignment_workers=args.num_extract_alignment_workers,
         num_prep_batch_workers=args.num_prepare_batch_workers,
-        num_infer_workers=args.num_infer_workers,
         batch_size=args.batch_size,
         ref_anchored=args.reference_anchored,
     )
