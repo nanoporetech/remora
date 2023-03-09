@@ -507,6 +507,12 @@ def register_model_train(parser):
         help="Path(s) to the external validation Remora datasets.",
     )
     data_grp.add_argument(
+        "--ext-val-names",
+        nargs="+",
+        help="""Names for external datasets. If provided must match length of
+        [--ext-val] argument""",
+    )
+    data_grp.add_argument(
         "--balance",
         action="store_true",
         help="Balance classes exactly prior to training",
@@ -656,6 +662,7 @@ def run_model_train(args):
         args.early_stopping,
         args.filter_fraction,
         args.ext_val,
+        args.ext_val_names,
         args.lr_sched_kwargs,
         args.balance,
         args.balanced_batch,
