@@ -108,6 +108,7 @@ def train_model(
     early_stopping,
     filt_frac,
     ext_val,
+    ext_val_names,
     lr_sched_kwargs,
     balance,
     balanced_batch,
@@ -164,10 +165,14 @@ def train_model(
     LOGGER.info(f"Model structure:\n{model}")
 
     if ext_val:
+        if ext_val_names is None:
+            ext_val_names = [f"e_val_{idx}" for idx in range(len(ext_val))]
+        else:
+            assert len(ext_val_names) == len(ext_val)
         ext_sets = []
-        for path in ext_val:
+        for e_name, e_path in zip(ext_val_names, ext_val):
             ext_val_set = RemoraDataset.load_from_file(
-                path.strip(),
+                e_path.strip(),
                 batch_size=batch_size,
                 shuffle_on_iter=False,
                 drop_last=False,
@@ -178,7 +183,7 @@ def train_model(
                 )
             ext_val_set.trim_kmer_context_bases(kmer_context_bases)
             ext_val_set.trim_chunk_context(chunk_context)
-            ext_sets.append(ext_val_set)
+            ext_sets.append((e_name, ext_val_set))
 
     kmer_dim = int((sum(dataset.kmer_context_bases) + 1) * 4)
     test_input_sig = torch.randn(batch_size, 1, sum(dataset.chunk_context))
@@ -236,15 +241,15 @@ def train_model(
     )
 
     if ext_val:
-        best_alt_val_accs = [0] * len(ext_sets)
-        for e_set_idx in range(len(ext_sets)):
+        best_alt_val_accs = dict((e_name, 0) for e_name, _ in ext_sets)
+        for e_name, e_set in ext_sets:
             val_fp.validate_model(
                 model,
                 dataset.mod_bases,
                 criterion,
-                ext_sets[e_set_idx],
+                e_set,
                 filt_frac,
-                f"e_val_{e_set_idx}",
+                e_name,
             )
 
     LOGGER.info("Start training")
@@ -408,25 +413,25 @@ def train_model(
             early_stop_epochs += 1
 
         if ext_val:
-            for e_set_idx in range(len(ext_sets)):
+            for e_name, e_set in ext_sets:
                 e_val_metrics = val_fp.validate_model(
                     model,
                     dataset.mod_bases,
                     criterion,
-                    ext_sets[e_set_idx],
+                    e_set,
                     filt_frac,
-                    f"e_val_{e_set_idx}",
+                    e_name,
                     nepoch=epoch + 1,
                     niter=niter,
                     disable_pbar=True,
                 )
-                if e_val_metrics.acc <= best_alt_val_accs[e_set_idx]:
+                if e_val_metrics.acc <= best_alt_val_accs[e_name]:
                     continue
-                best_alt_val_accs[e_set_idx] = e_val_metrics.acc
+                best_alt_val_accs[e_name] = e_val_metrics.acc
                 early_stop_epochs = 0
                 LOGGER.debug(
-                    f"Saving best model based on e_val_{e_set_idx} "
-                    f"validation sets after {epoch + 1} epochs "
+                    f"Saving best model based on {e_name} "
+                    f"validation set after {epoch + 1} epochs "
                     f"with val_acc {e_val_metrics.acc}"
                 )
                 save_model(
@@ -435,8 +440,8 @@ def train_model(
                     out_path,
                     epoch,
                     opt,
-                    model_name=f"model_e_val_{e_set_idx}_best.checkpoint",
-                    model_name_torchscript=f"model_e_val_{e_set_idx}_best.pt",
+                    model_name=f"model_ext_val_{e_name}_best.checkpoint",
+                    model_name_torchscript=f"model_ext_val_{e_name}_best.pt",
                 )
 
         if int(epoch + 1) % save_freq == 0:
