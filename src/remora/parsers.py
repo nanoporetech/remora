@@ -806,9 +806,10 @@ def register_model_download(parser):
 
 
 def run_download(args):
-    from remora.model_util import get_pretrained_models
-    from remora.download import ModelDownload
     import pkg_resources
+
+    from remora.download import ModelDownload
+    from remora.model_util import get_pretrained_models
 
     models, header = get_pretrained_models(
         args.pore,

@@ -1,16 +1,15 @@
 import os
-import re
 
 import requests
 from tqdm import tqdm
 
-from remora import log
+from remora import log, RemoraError
 
 LOGGER = log.get_logger()
 
 
 class ModelDownload:
-    __url__ = "https://nanoporetech.box.com/shared/static/"
+    __url__ = "https://cdn.oxfordnanoportal.com/software/analysis/remora/"
 
     def __init__(self, path, force=False):
         self.path = path
@@ -23,15 +22,15 @@ class ModelDownload:
         return os.path.exists(self.location(filename))
 
     def download(self, url_frag):
-        url = f"{self.__url__}{url_frag}.pt"
+        filename = f"{url_frag}.pt"
+        url = f"{self.__url__}{filename}"
         req = requests.get(url, stream=True)
         total = int(req.headers.get("content-length", 0))
-        f_name = re.findall(
-            'filename="([^"]+)', req.headers["content-disposition"]
-        )[0]
 
-        if self.exists(f_name) and not self.force:
-            LOGGER.info(f"Model already exists, skipping download of {f_name}")
+        if self.exists(filename) and not self.force:
+            LOGGER.info(
+                f"Model already exists, skipping download of {filename}"
+            )
             return
 
         with tqdm(
@@ -39,21 +38,17 @@ class ModelDownload:
             unit="iB",
             ncols=100,
             unit_scale=True,
-            leave=False,
             disable=os.environ.get("LOG_SAFE", False),
         ) as t:
             try:
-                with open(self.location(f_name), "wb") as f:
+                with open(self.location(filename), "wb") as f:
                     for data in req.iter_content(1024):
                         f.write(data)
                         t.update(len(data))
             except OSError as e:
-                LOGGER.error(
+                raise RemoraError(
                     "File-system was unable to write download model. "
                     f"URL is {url} and intended download path was "
-                    f"{self.location(f_name)}.\nFull error message: {e}"
+                    f"{self.location(filename)}.\nFull error message: {e}"
                 )
-            else:
-                LOGGER.info(
-                    f"Model {f_name} downloaded to {self.location(f_name)}"
-                )
+        LOGGER.info(f"Model {filename} downloaded to {self.location(filename)}")

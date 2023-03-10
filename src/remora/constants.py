@@ -39,46 +39,41 @@ The default model is the first key at every level after the pore and mod.
 E.g. for "dna_r10.4.1_e8.2_400bps" and "5mc" the default model is
 CG_sup_v3.5.1_2.
 """
-MODEL_DICT = {
-    "dna_r9.4.1_e8": {
-        "5mc": {
-            "CG": {
-                "sup": {"v3.5.1": {0: "qedo6lilt29haqtdd97tic83lxoribfr"}},
-                "hac": {"v3.5.1": {0: "icimz7z06ijdme9zkfletxl323nveunh"}},
-                "fast": {"v3.5.1": {0: "ogtg6odxf9elj0mqjqxpx7xw82j5finz"}},
-            }
-        },
+_R9_5mc_CG_models = {
+    "sup": {"v3.5.1": {0: "dna_r9.4.1_e8_sup_v3.5.1_5mc_CG_v0"}},
+    "hac": {"v3.5.1": {0: "dna_r9.4.1_e8_hac_v3.5.1_5mc_CG_v0"}},
+    "fast": {"v3.5.1": {0: "dna_r9.4.1_e8_fast_v3.5.1_5mc_CG_v0"}},
+}
+_kit14_5mc_CG_models = {
+    "sup": {"v3.5.1": {2: "dna_r10.4.1_e8.2_400bps_sup_v3.5.1_5mc_CG_v2"}},
+    "hac": {"v3.5.1": {2: "dna_r10.4.1_e8.2_400bps_hac_v3.5.1_5mc_CG_v2"}},
+    "fast": {"v3.5.1": {2: "dna_r10.4.1_e8.2_400bps_fast_v3.5.1_5mc_CG_v2"}},
+}
+_kit14_5hmc_5mc_CG_models = {
+    "sup": {"v4.0.0": {2: "dna_r10.4.1_e8.2_400bps_sup_v4.0.0_5hmc_5mc_CG_v2"}},
+    "hac": {"v4.0.0": {2: "dna_r10.4.1_e8.2_400bps_hac_v4.0.0_5hmc_5mc_CG_v2"}},
+    "fast": {
+        "v4.0.0": {2: "dna_r10.4.1_e8.2_400bps_fast_v4.0.0_5hmc_5mc_CG_v2"}
     },
-    "dna_r10.4.1_e8.2_400bps": {
-        "5mc": {
-            "CG": {
-                "sup": {
-                    "v3.5.1": {
-                        2: "6zo86p9z4me6hl4di12cimbqjd9n7p25",
-                    }
-                },
-                "hac": {
-                    "v3.5.1": {
-                        2: "aub3do2tzhgzrhu2o100lg80d8yv9t91",
-                    }
-                },
-                "fast": {
-                    "v3.5.1": {
-                        2: "e8zczcd15rhhs6eppuwmkehwubo848nu",
-                    }
-                },
-            }
-        },
-        "5hmc_5mc": {
-            "CG": {
-                "sup": {"v4.0.0": {2: "whlux6wohu5fwyg4mreg5mz0a8iaugxk"}},
-                "hac": {"v4.0.0": {2: "o1ah5qgd77l393gjnyrv44jt4wp6wxcl"}},
-                "fast": {"v4.0.0": {2: "hms1t8ledf09p8ta9katj90l29uz2qll"}},
-            }
-        },
+}
+_kit14_260bps_5hmc_5mc_CG_models = {
+    "sup": {"v4.0.0": {2: "dna_r10.4.1_e8.2_260bps_sup_v4.0.0_5hmc_5mc_CG_v2"}},
+    "hac": {"v4.0.0": {2: "dna_r10.4.1_e8.2_260bps_hac_v4.0.0_5hmc_5mc_CG_v2"}},
+    "fast": {
+        "v4.0.0": {2: "dna_r10.4.1_e8.2_260bps_fast_v4.0.0_5hmc_5mc_CG_v2"}
     },
 }
 
+MODEL_DICT = {
+    "dna_r9.4.1_e8": {"5mc": {"CG": _R9_5mc_CG_models}},
+    "dna_r10.4.1_e8.2_400bps": {
+        "5mc": {"CG": _kit14_5mc_CG_models},
+        "5hmc_5mc": {"CG": _kit14_5hmc_5mc_CG_models},
+    },
+    "dna_r10.4.1_e8.2_260bps": {
+        "5hmc_5mc": {"CG": _kit14_260bps_5hmc_5mc_CG_models},
+    },
+}
 
 DEFAULT_REFINE_SHORT_DWELL_PARAMS = (4, 3, 0.5)
 REFINE_ALGO_VIT_NAME = "Viterbi"
