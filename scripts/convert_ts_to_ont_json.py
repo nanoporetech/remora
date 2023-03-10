@@ -4,10 +4,10 @@ import json
 import base64
 import argparse
 
-import numpy as np
 import torch
+import numpy as np
 from torch.nn.utils.fusion import fuse_conv_bn_eval
-import copy
+
 from remora.model_util import continue_from_checkpoint, load_torchscript_model
 
 
@@ -48,12 +48,12 @@ def _translate_metadata(md_dict):
     if int(md_dict.get("num_motifs", 0)) > 1:
         raise ValueError(
             "Conversion to Guppy format not currently compatible with "
-            f"multiple motifs. Found {metadata_props['num_motifs']}"
+            f"multiple motifs. Found {md_dict['num_motifs']}"
         )
     if int(md_dict.get("refine_scale_iters", -1)) != -1:
         raise ValueError(
             "Conversion to Guppy format not currently compatible with "
-            f"refine_scale_iters. Found {metadata_props['refine_scale_iters']}"
+            f"refine_scale_iters. Found {md_dict['refine_scale_iters']}"
         )
     numeric_values = {
         "refine_kmer_center_idx",
@@ -64,12 +64,6 @@ def _translate_metadata(md_dict):
     bool_values = {
         "refine_do_rough_rescale",
     }
-    string_values = {
-        "mod_bases",
-        "mod_long_names_0",
-        "motif_0",
-        "motif_offset_0",
-    }
     metadata = {}
     metadata["kmer_context_bases_0"] = md_dict["kmer_context_bases"][0]
     metadata["kmer_context_bases_1"] = md_dict["kmer_context_bases"][1]
@@ -77,6 +71,12 @@ def _translate_metadata(md_dict):
     metadata["chunk_context_1"] = md_dict["chunk_context"][1]
     metadata["motif"] = md_dict["motif"][0]
     metadata["motif_offset"] = md_dict["motif"][1]
+    # modified base specification
+    metadata["mod_bases"] = md_dict["mod_bases"]
+    for mod_idx in range(len(md_dict["mod_bases"])):
+        metadata[f"mod_long_names_{mod_idx}"] = md_dict[
+            f"mod_long_names_{mod_idx}"
+        ]
     for kv_key in md_dict:
         if kv_key in numeric_values:
             metadata[kv_key] = int(md_dict[kv_key])
@@ -94,8 +94,6 @@ def _translate_metadata(md_dict):
                     md_dict[kv_key].encode("cp437"), dtype=np.float32
                 )
             metadata[kv_key + "_binary"] = base64.b64encode(value).decode()
-        elif kv_key in string_values:
-            metadata[kv_key] = md_dict[kv_key]
     return metadata
 
 
