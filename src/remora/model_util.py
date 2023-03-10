@@ -14,9 +14,9 @@ import pandas as pd
 from torch import nn
 from torch.nn.utils.fusion import fuse_conv_bn_eval
 
+from remora.download import ModelDownload
 from remora import log, RemoraError, constants
 from remora.refine_signal_map import SigMapRefiner
-from remora.download import ModelDownload
 
 LOGGER = log.get_logger()
 
