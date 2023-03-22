@@ -1490,19 +1490,26 @@ class Read:
         try:
             self.ref_seq = alignment_record.get_reference_sequence().upper()
         except ValueError:
+            LOGGER.debug(
+                "Reference sequence requested, but could not be extracted. "
+                "Do reads contain MD tags?"
+            )
             self.ref_seq = None
         self.cigar = alignment_record.cigartuples
         if alignment_record.is_reverse:
-            self.ref_seq = util.revcomp(self.ref_seq)
+            if self.ref_seq is not None:
+                self.ref_seq = util.revcomp(self.ref_seq)
             self.cigar = self.cigar[::-1]
-        if self.ref_reg.ctg is not None:
+        if self.ref_reg.ctg is not None and self.ref_seq is not None:
             self.ref_to_signal = DC.compute_ref_to_signal(
                 query_to_signal=self.query_to_signal,
                 cigar=self.cigar,
-                query_seq=self.seq,
-                ref_seq=self.ref_seq,
             )
-            assert self.ref_to_signal.size == len(self.ref_seq) + 1
+            # +1 because knots include the end position of the last base
+            assert self.ref_to_signal.size == len(self.ref_seq) + 1, (
+                "discordant ref seq lengths: move+cigar:"
+                f"{self.ref_to_signal.size} ref_seq:{len(self.ref_seq)}"
+            )
             self.ref_reg.end = self.ref_reg.start + self.ref_to_signal.size - 1
 
     @classmethod
@@ -1536,8 +1543,10 @@ class Read:
                 self.ref_to_signal = DC.compute_ref_to_signal(
                     self.query_to_signal,
                     self.cigar,
-                    query_seq=self.seq,
-                    ref_seq=self.ref_seq,
+                )
+                assert self.ref_to_signal.size == len(self.ref_seq) + 1, (
+                    "discordant ref seq lengths: move+cigar:"
+                    f"{self.ref_to_signal.size} ref_seq:{len(self.ref_seq)}"
                 )
 
             trim_dacs = self.dacs[
@@ -1649,9 +1658,7 @@ class Read:
         )
         # mapping of reference sequence positions to base call sequence
         # positions
-        mapping = DC.make_sequence_coordinate_mapping(
-            cigar=self.cigar, read_seq=self.seq, ref_seq=self.ref_seq
-        )
+        mapping = DC.make_sequence_coordinate_mapping(self.cigar).astype(int)
 
         reference_motif_positions = (
             util.find_focus_bases_in_int_sequence(reference_int_seq, motifs)

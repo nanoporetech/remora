@@ -98,20 +98,14 @@ class SimplexDuplexMapping:
 def map_simplex_to_duplex(*, simplex_seq: str, duplex_seq: str):
     pairwise_alignment = parasail_align(query=simplex_seq, ref=duplex_seq)
 
-    trimmed_simplex = simplex_seq[
-        pairwise_alignment.query_start : pairwise_alignment.query_end
-    ]
     trimmed_duplex = duplex_seq[
         pairwise_alignment.ref_start : pairwise_alignment.ref_end
     ]
-    duplex_to_simplex_mapping = DC.make_sequence_coordinate_mapping(
-        pairwise_alignment.cigar,
-        read_seq=trimmed_simplex,
-        ref_seq=trimmed_duplex,
-    )
-
     duplex_to_simplex_mapping = (
-        duplex_to_simplex_mapping + pairwise_alignment.query_start
+        DC.make_sequence_coordinate_mapping(
+            pairwise_alignment.cigar,
+        ).astype(int)
+        + pairwise_alignment.query_start
     )
 
     return SimplexDuplexMapping(

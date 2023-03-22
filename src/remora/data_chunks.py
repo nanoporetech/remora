@@ -25,7 +25,6 @@ MATCH_OPS = np.array(
     [True, False, False, False, False, False, False, True, True]
 )
 QUERY_OPS = np.array([True, True, False, False, True, False, False, True, True])
-#                    ["M", "I",   "D",   "N", "S",   "H",    "P", "=", "X"]
 REF_OPS = np.array([True, False, True, True, False, False, False, True, True])
 CIGAR_CODES = ["M", "I", "D", "N", "S", "H", "P", "=", "X"]
 CODE_TO_OP = {
@@ -69,27 +68,28 @@ def map_ref_to_signal(*, query_to_signal, ref_to_query_knots):
     ).astype(int)
 
 
-def make_sequence_coordinate_mapping(cigar, *, read_seq, ref_seq):
-    """Maps an element in `read_seq` to every element in `ref_seq` using
+def make_sequence_coordinate_mapping(cigar):
+    """Maps an element in reference to every element in basecalls using
     alignment in `cigar`.
 
     Args:
         cigar (list): "cigartuples" representing alignment
-        read_seq (str): a.k.a. query sequence
-        ref_seq (str): "aligned-to" reference sequence
 
     Returns:
-        array shape (len(ref_seq),). [x_0, x_1, ..., x_(len(ref_seq))]
-             such that read_seq[x_i] <> ref_seq[i]
+        array shape (ref_len,). [x_0, x_1, ..., x_(ref_len)]
+            such that read_seq[x_i] <> ref_seq[i]. Note that ref_len is derived
+            from the cigar input.
     """
     ops, lens = map(np.array, zip(*cigar))
-    ref_len = len(ref_seq)
-    read_len = len(read_seq)
+    assert ops.min() >= 0 and ops.max() <= 8, "invalid cigar op(s)"
+    assert lens.min() >= 0, "cigar lengths may not be negative"
 
     is_match = MATCH_OPS[ops]
     match_counts = lens[is_match]
     offsets = np.array([match_counts, np.ones_like(match_counts)])
 
+    # TODO remove knots around ambiguous indels (e.g. left justified HPs)
+    # note this requires the ref and query sequences
     ref_knots = np.cumsum(np.where(REF_OPS[ops], lens, 0))
     ref_knots = np.concatenate(
         [[0], (ref_knots[is_match] - offsets).T.flatten(), [ref_knots[-1]]]
@@ -98,24 +98,16 @@ def make_sequence_coordinate_mapping(cigar, *, read_seq, ref_seq):
     query_knots = np.concatenate(
         [[0], (query_knots[is_match] - offsets).T.flatten(), [query_knots[-1]]]
     )
-    knots = np.interp(np.arange(ref_len + 1), ref_knots, query_knots).astype(
-        int
-    )
-
-    # +1 because knots include the end position of the last base
-    assert knots.shape[0] == ref_len + 1, "knots should be len(ref_seq) + 1"
-    assert (
-        np.max(knots[:-1]) < read_len
-    ), "knots map to position not contained in read"
-
-    assert np.min(knots) >= 0, "knots cannot be negative"
+    knots = np.interp(np.arange(ref_knots[-1] + 1), ref_knots, query_knots)
 
     return knots
 
 
-def compute_ref_to_signal(query_to_signal, cigar, *, query_seq, ref_seq):
-    ref_to_read_knots = make_sequence_coordinate_mapping(
-        cigar=cigar, read_seq=query_seq, ref_seq=ref_seq
+def compute_ref_to_signal(query_to_signal, cigar):
+    ref_to_read_knots = make_sequence_coordinate_mapping(cigar)
+    assert query_to_signal.size == ref_to_read_knots[-1].astype(int) + 1, (
+        "discordant implied basecall lengths: move_table:"
+        f"{query_to_signal.size} cigar:{ref_to_read_knots[-1]}"
     )
     return map_ref_to_signal(
         query_to_signal=query_to_signal, ref_to_query_knots=ref_to_read_knots

@@ -54,8 +54,10 @@ def extract_chunks(
             io_read.ref_to_signal = compute_ref_to_signal(
                 io_read.query_to_signal,
                 io_read.cigar,
-                query_seq=io_read.seq,
-                ref_seq=io_read.ref_seq,
+            )
+            assert io_read.ref_to_signal.size == len(io_read.ref_seq) + 1, (
+                "discordant ref seq lengths: move+cigar:"
+                f"{io_read.ref_to_signal.size} ref_seq:{len(io_read.ref_seq)}"
             )
             trim_dacs = io_read.dacs[
                 io_read.ref_to_signal[0] : io_read.ref_to_signal[-1]
