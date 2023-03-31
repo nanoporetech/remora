@@ -55,7 +55,7 @@ def compute_metrics(probs, labels, filt_frac):
     # if all values would be filtered make filter threshold slightly smaller
     if conf_thr == pred_probs.max():
         conf_thr *= 0.999999
-    LOGGER.debug(f"Confidence threshold: {conf_thr}")
+    LOGGER.info(f"Confidence threshold: {conf_thr}")
     conf_chunks = pred_probs > conf_thr
     filt_labels = labels[conf_chunks]
     filt_acc = correctly_labeled[conf_chunks].sum() / filt_labels.size
@@ -426,7 +426,7 @@ def parse_mod_read(
 
 def check_mod_strand(read, bam_path, alphabet, do_warn_mod, do_warn_strand):
     if read.modified_bases is None:
-        LOGGER.debug(f"Not modified bases found in {read.query_name}")
+        LOGGER.debug(f"No modified bases found in {read.query_name}")
         return do_warn_mod, do_warn_strand, False
 
     valid_mods = False
