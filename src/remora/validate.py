@@ -27,6 +27,7 @@ VAL_METRICS = namedtuple(
         "filt_frac",
         "filt_acc",
         "filt_conf_mat",
+        "filt_thresh",
     ),
 )
 
@@ -51,18 +52,17 @@ def compute_metrics(probs, labels, filt_frac):
     pred_probs = np.take_along_axis(
         probs, np.expand_dims(pred_labels, -1), -1
     ).squeeze(-1)
-    conf_thr = np.quantile(pred_probs, filt_frac)
+    filt_thr = np.quantile(pred_probs, filt_frac)
     # if all values would be filtered make filter threshold slightly smaller
-    if conf_thr == pred_probs.max():
-        conf_thr *= 0.999999
-    LOGGER.info(f"Confidence threshold: {conf_thr}")
-    conf_chunks = pred_probs > conf_thr
+    if filt_thr == pred_probs.max():
+        filt_thr *= 0.999999
+    conf_chunks = pred_probs > filt_thr
     filt_labels = labels[conf_chunks]
     filt_acc = correctly_labeled[conf_chunks].sum() / filt_labels.size
     filt_conf_mat = confusion_matrix(filt_labels, pred_labels[conf_chunks])
     filt_frac = 1 - (filt_labels.size / labels.size)
 
-    return acc, conf_mat, filt_frac, filt_acc, filt_conf_mat
+    return acc, conf_mat, filt_frac, filt_acc, filt_conf_mat, filt_thr
 
 
 def add_unmodeled_labels(output, unmodeled_labels):
@@ -164,9 +164,14 @@ def _validate_model(
     if is_torch_model:
         torch.set_grad_enabled(True)
     all_probs = softmax_axis1(all_outputs)
-    acc, conf_mat, filt_frac, filt_acc, filt_conf_mat = compute_metrics(
-        all_probs, all_labels, filt_frac
-    )
+    (
+        acc,
+        conf_mat,
+        filt_frac,
+        filt_acc,
+        filt_conf_mat,
+        filt_thr,
+    ) = compute_metrics(all_probs, all_labels, filt_frac)
     return VAL_METRICS(
         loss=np.mean(all_loss),
         acc=acc,
@@ -175,6 +180,7 @@ def _validate_model(
         filt_frac=filt_frac,
         filt_acc=filt_acc,
         filt_conf_mat=filt_conf_mat,
+        filt_thresh=filt_thr,
     )
 
 
@@ -201,9 +207,14 @@ def process_mods_probs(probs, labels, allow_unbalanced, pct_filt, name):
             ]
             labels[lab_idx * min_size : (lab_idx + 1) * min_size] = lab_idx
 
-    acc, conf_mat, filt_frac, filt_acc, filt_conf_mat = compute_metrics(
-        probs, labels, pct_filt / 100
-    )
+    (
+        acc,
+        conf_mat,
+        filt_frac,
+        filt_acc,
+        filt_conf_mat,
+        filt_thr,
+    ) = compute_metrics(probs, labels, pct_filt / 100)
     ms = VAL_METRICS(
         loss=np.NAN,
         acc=acc,
@@ -212,13 +223,14 @@ def process_mods_probs(probs, labels, allow_unbalanced, pct_filt, name):
         filt_frac=filt_frac,
         filt_acc=filt_acc,
         filt_conf_mat=filt_conf_mat,
+        filt_thresh=filt_thr,
     )
     val_output = (
         f"\n{ValidationLogger.HEADER}\n"
         f"{name}\t0\t0\t"
         f"{ms.acc:.6f}\t{mat_to_str(ms.conf_mat)}\t"
         f"NAN\t{ms.num_calls}\t{ms.filt_frac:.4f}\t"
-        f"{ms.filt_acc:.6f}\t{mat_to_str(ms.filt_conf_mat)}\n"
+        f"{ms.filt_acc:.6f}\t{mat_to_str(ms.filt_conf_mat)}\t{ms.filt_thresh}\n"
     )
     LOGGER.info(val_output)
 
@@ -265,6 +277,7 @@ class ValidationLogger:
             "Filtered_Fraction",
             "Filtered_Accuracy",
             "Filtered_Confusion_Matrix",
+            "Filtered_Threshold",
         )
     )
 
@@ -301,7 +314,8 @@ class ValidationLogger:
             f"{val_type}\t{nepoch}\t{niter}\t"
             f"{ms.acc:.6f}\t{mat_to_str(ms.conf_mat)}\t"
             f"{ms.loss:.6f}\t{ms.num_calls}\t{ms.filt_frac:.4f}\t"
-            f"{ms.filt_acc:.6f}\t{mat_to_str(ms.filt_conf_mat)}\n"
+            f"{ms.filt_acc:.6f}\t{mat_to_str(ms.filt_conf_mat)}\t"
+            f"{ms.filt_thresh}\n"
         )
         return ms
 
