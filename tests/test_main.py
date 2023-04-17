@@ -39,7 +39,6 @@ def test_prep_can(can_chunks):
     dataset = RemoraDataset.load_from_file(
         str(can_chunks),
         batch_size=10,
-        balanced_batch=False,
     )
     assert dataset.nchunks == EXPECTED_CAN_CHUNKS
     assert dict(dataset.get_label_counts()) == {0: EXPECTED_CAN_CHUNKS}
@@ -51,7 +50,6 @@ def test_prep_mod(mod_chunks):
     dataset = RemoraDataset.load_from_file(
         str(mod_chunks),
         batch_size=10,
-        balanced_batch=False,
     )
     assert dataset.nchunks == EXPECTED_MOD_CHUNKS
     assert dict(dataset.get_label_counts()) == {1: EXPECTED_MOD_CHUNKS}
@@ -63,7 +61,6 @@ def test_remora_dataset(chunks):
     dataset = RemoraDataset.load_from_file(
         str(chunks),
         batch_size=10,
-        balanced_batch=False,
     )
     assert len(dataset.get_label_counts()) > 1, "label counts should be > 1"
     assert dataset.nchunks == EXPECTED_CAN_CHUNKS + EXPECTED_MOD_CHUNKS
