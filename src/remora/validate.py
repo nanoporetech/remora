@@ -590,7 +590,7 @@ def validate_modbams(
         all_mods.update(extra_bases)
     can_base = all_mods.intersection("ACGTU")
     if len(can_base) > 1:
-        raise RemoraError("More than one canonical base found: {can_base}")
+        raise RemoraError(f"More than one canonical base found: {can_base}")
     if len(can_base) == 0:
         raise RemoraError("No canonical bases found in ground truth.")
     mod_bases = all_mods.difference("ACGTU")

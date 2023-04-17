@@ -177,7 +177,7 @@ def get_read_ids(bam_idx, pod5_fh, num_reads):
         num_reads (int): Maximum number of reads, or None for no max
     """
     LOGGER.info("Extracting read IDs from POD5")
-    pod5_read_ids = set((str(read.read_id) for read in pod5_fh.reads()))
+    pod5_read_ids = set(pod5_fh.read_ids)
     num_pod5_reads = len(pod5_read_ids)
     # pod5 will raise when it cannot find a "selected" read id, so we make
     # sure they're all present before starting
