@@ -659,12 +659,13 @@ class RemoraDataset:
         batch_size (int): Size of batches to be produced
         shuffle_on_iter (bool): Shuffle data before each iteration over batches
         drop_last (bool): Drop the last batch of each iteration
-        balanced_batch (bool): Balances each training batch
+        batch_label_props (np.array): Select proportion of each label
         sig_map_refiner (remora.refine_signal_map.SigMapRefiner): Signal
             mapping refiner
         base_start_justify (bool): Extract chunk centered on start of base
         offset (int): Extract chunk centered on base offset from base of
             interest
+        drop_read_attrs (bool): Drop read id and read focus positions
 
     Yields:
         Batches of data for training or inference
@@ -693,7 +694,7 @@ class RemoraDataset:
     batch_size: int = constants.DEFAULT_BATCH_SIZE
     shuffle_on_iter: bool = True
     drop_last: bool = True
-    balanced_batch: bool = False
+    batch_label_props: np.ndarray = None
 
     # signal mapping refinement params
     sig_map_refiner: SigMapRefiner = None
@@ -701,6 +702,9 @@ class RemoraDataset:
     # chunk extraction attributes
     base_start_justify: bool = False
     offset: int = 0
+
+    # extra attributes
+    drop_read_attrs: bool = False
 
     def set_nbatches(self):
         self.nbatches, remainder = divmod(self.nchunks, self.batch_size)
@@ -725,6 +729,11 @@ class RemoraDataset:
             self.motifs = sorted(set(self.motifs))
         self.set_nbatches()
         self.shuffled = False
+        if self.drop_read_attrs:
+            self.read_ids = None
+            self.read_focus_bases = None
+            gc.collect()
+        self._class_ordered_indices = None
 
     def add_chunk(self, chunk):
         if self.nchunks >= self.labels.size:
@@ -740,8 +749,9 @@ class RemoraDataset:
         ] = chunk.seq_to_sig_map
         self.seq_lens[self.nchunks] = chunk.seq_len
         self.labels[self.nchunks] = chunk.label
-        self.read_ids[self.nchunks] = chunk.read_id
-        self.read_focus_bases[self.nchunks] = chunk.read_focus_base
+        if not self.drop_read_attrs:
+            self.read_ids[self.nchunks] = chunk.read_id
+            self.read_focus_bases[self.nchunks] = chunk.read_focus_base
         self.nchunks += 1
 
     def add_batch(
@@ -757,8 +767,9 @@ class RemoraDataset:
         self.seq_mappings[b_st:b_en] = b_ss_map
         self.seq_lens[b_st:b_en] = b_seq_lens
         self.labels[b_st:b_en] = b_labels
-        self.read_ids[b_st:b_en] = b_rids
-        self.read_focus_bases[b_st:b_en] = b_rfbs
+        if not self.drop_read_attrs:
+            self.read_ids[b_st:b_en] = b_rids
+            self.read_focus_bases[b_st:b_en] = b_rfbs
         self.nchunks += batch_size
 
     def clip_chunks(self):
@@ -772,8 +783,9 @@ class RemoraDataset:
         self.seq_mappings = self.seq_mappings[: self.nchunks]
         self.seq_lens = self.seq_lens[: self.nchunks]
         self.labels = self.labels[: self.nchunks]
-        self.read_ids = self.read_ids[: self.nchunks]
-        self.read_focus_bases = self.read_focus_bases[: self.nchunks]
+        if not self.drop_read_attrs:
+            self.read_ids = self.read_ids[: self.nchunks]
+            self.read_focus_bases = self.read_focus_bases[: self.nchunks]
         # reset nbatches after clipping dataset
         self.set_nbatches()
 
@@ -816,17 +828,118 @@ class RemoraDataset:
             )
         raise NotImplementedError("Cannot currently trim chunk context.")
 
+    def get_label_nchunks(self, target_nchunks):
+        """Get the number of chunks for each label most closely matching
+        specified batch_label_props,
+        """
+        if self.batch_label_props is None:
+            raise RemoraError("Must set batch_label_props to get label nchunks")
+        lab_nchunks = np.floor(target_nchunks * self.batch_label_props).astype(
+            int
+        )
+        while lab_nchunks.sum() < target_nchunks:
+            lab_nchunks[
+                np.argmin(
+                    (lab_nchunks / lab_nchunks.sum()) - self.batch_label_props
+                )
+            ] += 1
+        return lab_nchunks
+
+    def reorder_chunks(self, indices):
+        """Re-order chunks via specified indices"""
+        for attr in (
+            "sig_tensor",
+            "seq_array",
+            "seq_mappings",
+            "seq_lens",
+            "labels",
+        ):
+            setattr(self, attr, getattr(self, attr)[indices])
+            gc.collect()
+        if not self.drop_read_attrs:
+            self.read_ids = self.read_ids[indices]
+            self.read_focus_bases = self.read_focus_bases[indices]
+        gc.collect()
+
+    def order_chunks_by_batch_labels(self):
+        """Order chunks such that each slice of size self.batch_size includes
+        the specified proportion of each label. Also store the indices
+        cooresponding to each label to facilitate shuffling within each label
+        while maintaining specified batch balance.
+
+        Note that "extra" chunks are stored at the end of the dataset and will
+        be shuffled into the used portion of the dataset at each call to
+        shuffle_by_batch_labels.
+        """
+        class_indices = [
+            np.where(self.labels == class_label)[0]
+            for class_label in range(self.num_labels)
+        ]
+        batch_nchunks = self.get_label_nchunks(self.batch_size)
+        class_nbatches = [
+            ci.size // bnc for ci, bnc in zip(class_indices, batch_nchunks)
+        ]
+        # set to number of batches given smallest class size
+        self.nbatches = min(class_nbatches)
+        if self.nbatches < 1:
+            raise RemoraError("Ordering by batch labels produced no batches")
+        # set indices for each label within each batch
+        idx_starts = np.concatenate([[0], np.cumsum(batch_nchunks)])
+        class_extras = [
+            ci.size - (bnc * self.nbatches)
+            for ci, bnc in zip(class_indices, batch_nchunks)
+        ]
+        LOGGER.debug("Computing class order indices")
+        # store indcies for each class to order all chunks and save to shuffle
+        # within class each epoch
+        self._class_ordered_indices = []
+        extras_index = self.batch_size * self.nbatches
+        for lab in range(self.num_labels):
+            lab_b_rng = np.arange(idx_starts[lab], idx_starts[lab + 1])
+            self._class_ordered_indices.append(
+                np.concatenate(
+                    [
+                        lab_b_rng + (bn * self.batch_size)
+                        for bn in range(self.nbatches)
+                    ]
+                    + [
+                        np.arange(
+                            extras_index, extras_index + class_extras[lab]
+                        )
+                    ]
+                )
+            )
+            extras_index += class_extras[lab]
+        global_ordered_indices = np.empty(self.nchunks, dtype=int)
+        for ci, coi in zip(class_indices, self._class_ordered_indices):
+            global_ordered_indices[coi] = ci
+        gc.collect()
+        LOGGER.debug("Reordering chunks")
+        # order each tensor to batch ordering
+        self.reorder_chunks(global_ordered_indices)
+
+    def shuffle_by_batch_labels(self):
+        if self._class_ordered_indices is None:
+            raise RemoraError(
+                "Must run order_chunks_by_batch_labels before "
+                "shuffle_by_batch_labels"
+            )
+        global_ordered_indices = np.empty(self.nchunks, dtype=int)
+        for coi in self._class_ordered_indices:
+            global_ordered_indices[coi] = np.random.permutation(coi)
+        self.reorder_chunks(global_ordered_indices)
+        self.shuffled = True
+
     def shuffle(self):
         if not self.is_clipped:
             raise RemoraError("Cannot shuffle an unclipped dataset.")
+        if self.batch_label_props is not None:
+            raise RemoraError(
+                "Cannot shuffle dataset with batch_label_props. "
+                "Use shuffle_by_batch_labels"
+            )
         shuf_idx = np.random.permutation(self.nchunks)
-        self.sig_tensor = self.sig_tensor[shuf_idx]
-        self.seq_array = self.seq_array[shuf_idx]
-        self.seq_mappings = self.seq_mappings[shuf_idx]
-        self.seq_lens = self.seq_lens[shuf_idx]
-        self.labels = self.labels[shuf_idx]
-        self.read_ids = self.read_ids[shuf_idx]
-        self.read_focus_bases = self.read_focus_bases[shuf_idx]
+        self.reorder_chunks(shuf_idx)
         self.shuffled = True
 
     def head(
@@ -834,28 +947,37 @@ class RemoraDataset:
     ):
         if nchunks is None:
             nchunks = int(prop * self.nchunks)
+        read_ids = read_focus_bases = None
+        if not self.drop_read_attrs:
+            read_ids = self.read_ids[:nchunks].copy()
+            read_focus_bases = self.read_focus_bases[:nchunks].copy()
         return RemoraDataset(
             self.sig_tensor[:nchunks].copy(),
             self.seq_array[:nchunks].copy(),
             self.seq_mappings[:nchunks].copy(),
             self.seq_lens[:nchunks].copy(),
             self.labels[:nchunks].copy(),
-            self.read_ids[:nchunks].copy(),
-            self.read_focus_bases[:nchunks].copy(),
+            read_ids,
+            read_focus_bases,
             shuffle_on_iter=shuffle_on_iter,
             drop_last=drop_last,
+            drop_read_attrs=self.drop_read_attrs,
             **self.clone_metadata(),
         )
 
     def copy(self):
+        read_ids = read_focus_bases = None
+        if not self.drop_read_attrs:
+            read_ids = self.read_ids.copy()
+            read_focus_bases = self.read_focus_bases.copy()
         return RemoraDataset(
             self.sig_tensor.copy(),
             self.seq_array.copy(),
             self.seq_mappings.copy(),
             self.seq_lens.copy(),
             self.labels.copy(),
-            self.read_ids.copy(),
-            self.read_focus_bases.copy(),
+            read_ids,
+            read_focus_bases,
             shuffle_on_iter=self.shuffle_on_iter,
             drop_last=self.drop_last,
             **self.clone_metadata(),
@@ -877,7 +999,9 @@ class RemoraDataset:
         }
 
     def __iter__(self):
-        if self.shuffle_on_iter:
+        if self.batch_label_props is not None:
+            self.shuffle_by_batch_labels()
+        elif self.shuffle_on_iter:
             self.shuffle()
         self._batch_i = 0
         return self
@@ -886,45 +1010,25 @@ class RemoraDataset:
         if self._batch_i >= self.nbatches:
             raise StopIteration
         self._batch_i += 1
-        if self.balanced_batch:
-            batch_ids = []
-            for class_label in range(self.num_labels):
-                class_indices = np.where(self.labels == class_label)[0]
-                size = int(self.batch_size / self.num_labels)
-                bi = np.random.choice(
-                    len(class_indices), size=size, replace=False
-                )
-                batch_ids.extend(class_indices[bi])
-            return (
-                (
-                    self.sig_tensor[batch_ids],
-                    self.seq_array[batch_ids],
-                    self.seq_mappings[batch_ids],
-                    self.seq_lens[batch_ids],
-                ),
-                self.labels[batch_ids],
-                (
-                    self.read_ids[batch_ids],
-                    self.read_focus_bases[batch_ids],
-                ),
-            )
-
-        else:
-            b_st = (self._batch_i - 1) * self.batch_size
-            b_en = b_st + self.batch_size
-            return (
-                (
-                    self.sig_tensor[b_st:b_en],
-                    self.seq_array[b_st:b_en],
-                    self.seq_mappings[b_st:b_en],
-                    self.seq_lens[b_st:b_en],
-                ),
-                self.labels[b_st:b_en],
-                (
-                    self.read_ids[b_st:b_en],
-                    self.read_focus_bases[b_st:b_en],
-                ),
-            )
+        b_st = (self._batch_i - 1) * self.batch_size
+        b_en = b_st + self.batch_size
+        read_ids = read_focus_bases = None
+        if not self.drop_read_attrs:
+            read_ids = self.read_ids[b_st:b_en]
+            read_focus_bases = self.read_focus_bases[b_st:b_en]
+        return (
+            (
+                self.sig_tensor[b_st:b_en],
+                self.seq_array[b_st:b_en],
+                self.seq_mappings[b_st:b_en],
+                self.seq_lens[b_st:b_en],
+            ),
+            self.labels[b_st:b_en],
+            (
+                read_ids,
+                read_focus_bases,
+            ),
+        )
 
     def __len__(self):
         return self.nbatches
@@ -964,22 +1068,8 @@ class RemoraDataset:
         if not self.shuffled:
             self.shuffle()
 
-        if self.balanced_batch:
-            val_indices = []
-            trn_indices = []
-            class_counts = np.unique(self.labels, return_counts=True)
-            min_class_id = np.argmin(class_counts[1])
-            for class_label in range(self.num_labels):
-                class_indices = np.where(self.labels == class_label)[0]
-                if class_indices.size == 0:
-                    continue
-                np.random.shuffle(class_indices)
-                cls_val_idx = int(
-                    class_counts[1][min_class_id] * val_num / self.nchunks
-                )
-                val_indices.extend(class_indices[:cls_val_idx])
-                trn_indices.extend(class_indices[cls_val_idx:])
-        elif stratified:
+        if stratified:
+            LOGGER.debug("Performing stratified split")
             val_indices = []
             trn_indices = []
             for class_label in range(self.num_labels):
@@ -997,29 +1087,41 @@ class RemoraDataset:
             val_indices = np.arange(0, val_num)
             trn_indices = np.arange(val_num, self.sig_tensor.shape[0])
 
+        LOGGER.debug("Extracting validation dataset")
+        val_read_ids = val_read_focus_bases = None
+        if not self.drop_read_attrs:
+            val_read_ids = self.read_ids[val_indices]
+            val_read_focus_bases = self.read_focus_bases[val_indices]
         val_ds = RemoraDataset(
             self.sig_tensor[val_indices],
             self.seq_array[val_indices],
             self.seq_mappings[val_indices],
             self.seq_lens[val_indices],
             self.labels[val_indices],
-            self.read_ids[val_indices],
-            self.read_focus_bases[val_indices],
+            val_read_ids,
+            val_read_focus_bases,
             shuffle_on_iter=False,
             drop_last=False,
+            drop_read_attrs=self.drop_read_attrs,
             **self.clone_metadata(),
         )
+        LOGGER.debug("Extracting train dataset")
+        trn_read_ids = trn_read_focus_bases = None
+        if not self.drop_read_attrs:
+            trn_read_ids = self.read_ids[trn_indices]
+            trn_read_focus_bases = self.read_focus_bases[trn_indices]
         trn_ds = RemoraDataset(
             self.sig_tensor[trn_indices],
             self.seq_array[trn_indices],
             self.seq_mappings[trn_indices],
             self.seq_lens[trn_indices],
             self.labels[trn_indices],
-            self.read_ids[trn_indices],
-            self.read_focus_bases[trn_indices],
+            trn_read_ids,
+            trn_read_focus_bases,
             shuffle_on_iter=True,
             drop_last=False,
-            balanced_batch=self.balanced_batch,
+            drop_read_attrs=self.drop_read_attrs,
+            batch_label_props=self.batch_label_props,
             **self.clone_metadata(),
         )
         return trn_ds, val_ds
@@ -1041,8 +1143,12 @@ class RemoraDataset:
                         self.seq_mappings[label_indices],
                         self.seq_lens[label_indices],
                         self.labels[label_indices],
-                        self.read_ids[label_indices],
-                        self.read_focus_bases[label_indices],
+                        None
+                        if self.drop_read_attrs
+                        else self.read_ids[label_indices],
+                        None
+                        if self.drop_read_attrs
+                        else self.read_focus_bases[label_indices],
                         shuffle_on_iter=False,
                         drop_last=False,
                         **self.clone_metadata(),
@@ -1075,8 +1181,10 @@ class RemoraDataset:
             seq_mappings=self.seq_mappings[choices],
             seq_lens=self.seq_lens[choices],
             labels=self.labels[choices],
-            read_ids=self.read_ids[choices],
-            read_focus_bases=self.read_focus_bases[choices],
+            read_ids=None if self.drop_read_attrs else self.read_ids[choices],
+            read_focus_bases=None
+            if self.drop_read_attrs
+            else self.read_focus_bases[choices],
             nchunks=outs * min_class_len,
             **self.clone_metadata(),
         )
@@ -1092,8 +1200,8 @@ class RemoraDataset:
             self.seq_mappings[indices],
             self.seq_lens[indices],
             self.labels[indices],
-            self.read_ids[indices],
-            self.read_focus_bases[indices],
+            None if self.drop_read_attrs else self.read_ids[indices],
+            None if self.drop_read_attrs else self.read_focus_bases[indices],
             shuffle_on_iter=False,
             drop_last=False,
             **self.clone_metadata(),
@@ -1122,8 +1230,10 @@ class RemoraDataset:
             seq_mappings=self.seq_mappings,
             seq_lens=self.seq_lens,
             labels=self.labels,
-            read_ids=self.read_ids,
-            read_focus_bases=self.read_focus_bases,
+            read_ids=None if self.drop_read_attrs else self.read_ids,
+            read_focus_bases=None
+            if self.drop_read_attrs
+            else self.read_focus_bases,
             chunk_context=self.chunk_context,
             kmer_context_bases=self.kmer_context_bases,
             base_pred=self.base_pred,

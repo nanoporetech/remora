@@ -111,7 +111,7 @@ def train_model(
     ext_val_names,
     lr_sched_kwargs,
     balance,
-    balanced_batch,
+    batch_label_weights,
     high_conf_incorrect_thr_frac,
 ):
     seed = (
@@ -131,7 +131,7 @@ def train_model(
     dataset = RemoraDataset.load_from_file(
         remora_dataset_path,
         batch_size=batch_size,
-        balanced_batch=balanced_batch,
+        drop_read_attrs=True,
     )
     LOGGER.info(f"Dataset loaded with labels: {dataset.get_label_counts()}")
     if balance:
@@ -176,6 +176,7 @@ def train_model(
                 batch_size=batch_size,
                 shuffle_on_iter=False,
                 drop_last=False,
+                drop_read_attrs=True,
             )
             if ext_val_set.mod_long_names != dataset.mod_long_names:
                 ext_val_set.add_fake_base(
@@ -212,11 +213,18 @@ def train_model(
             "One or fewer output labels found. Ensure --focus-offset and "
             "--mod are specified correctly"
         )
+    LOGGER.debug("Splitting dataset")
     trn_ds, val_ds = dataset.split_data(val_prop=val_prop, stratified=True)
-    trn_ds.shuffle()
+    LOGGER.debug("Extracting head of train dataset")
     val_trn_ds = trn_ds.head(
         prop=val_prop, shuffle_on_iter=False, drop_last=False
     )
+    if batch_label_weights is not None:
+        LOGGER.debug("Applying batch label proportions")
+        trn_ds.batch_label_props = np.array(batch_label_weights) / sum(
+            batch_label_weights
+        )
+        trn_ds.order_chunks_by_batch_labels()
     LOGGER.info(f"Train label distribution: {trn_ds.get_label_counts()}")
     LOGGER.info(
         f"Held-out validation label distribution: {val_ds.get_label_counts()}"

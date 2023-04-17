@@ -603,9 +603,10 @@ def register_model_train(parser):
         metavar=("NAME", "VALUE", "TYPE"),
     )
     train_grp.add_argument(
-        "--balanced-batch",
-        action="store_true",
-        help="Balance classes exactly for each batch in training",
+        "--batch-label-weights",
+        type=float,
+        nargs="+",
+        help="Select batch labels with specified weights",
     )
     train_grp.add_argument(
         "--high-conf-incorrect-thr-frac",
@@ -665,7 +666,7 @@ def run_model_train(args):
         args.ext_val_names,
         args.lr_sched_kwargs,
         args.balance,
-        args.balanced_batch,
+        args.batch_label_weights,
         args.high_conf_incorrect_thr_frac,
     )
 
