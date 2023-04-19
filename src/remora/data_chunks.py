@@ -943,11 +943,44 @@ class RemoraDataset:
         self.shuffled = True
 
     def head(
-        self, nchunks=None, prop=0.01, shuffle_on_iter=False, drop_last=False
+        self,
+        nchunks=None,
+        prop=0.01,
+        shuffle_on_iter=False,
+        drop_last=False,
+        stratified=False,
     ):
         if nchunks is None:
             nchunks = int(prop * self.nchunks)
         read_ids = read_focus_bases = None
+        if stratified:
+            LOGGER.debug("Performing stratified head")
+            head_indices = []
+            for class_label in range(self.num_labels):
+                class_indices = np.where(self.labels == class_label)[0]
+                if class_indices.size == 0:
+                    continue
+                cls_val_idx = int(class_indices.size * nchunks / self.nchunks)
+                head_indices.append(class_indices[:cls_val_idx])
+
+            head_indices = np.concatenate(head_indices)
+            if not self.drop_read_attrs:
+                read_ids = self.read_ids[head_indices].copy()
+                read_focus_bases = self.read_focus_bases[head_indices].copy()
+            return RemoraDataset(
+                self.sig_tensor[head_indices].copy(),
+                self.seq_array[head_indices].copy(),
+                self.seq_mappings[head_indices].copy(),
+                self.seq_lens[head_indices].copy(),
+                self.labels[head_indices].copy(),
+                read_ids,
+                read_focus_bases,
+                shuffle_on_iter=shuffle_on_iter,
+                drop_last=drop_last,
+                drop_read_attrs=self.drop_read_attrs,
+                **self.clone_metadata(),
+            )
+
         if not self.drop_read_attrs:
             read_ids = self.read_ids[:nchunks].copy()
             read_focus_bases = self.read_focus_bases[:nchunks].copy()
