@@ -217,7 +217,7 @@ def train_model(
     trn_ds, val_ds = dataset.split_data(val_prop=val_prop, stratified=True)
     LOGGER.debug("Extracting head of train dataset")
     val_trn_ds = trn_ds.head(
-        prop=val_prop, shuffle_on_iter=False, drop_last=False
+        prop=val_prop, shuffle_on_iter=False, drop_last=False, stratified=True
     )
     if batch_label_weights is not None:
         LOGGER.debug("Applying batch label proportions")
