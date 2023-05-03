@@ -43,6 +43,7 @@ SEQ_TO_INT_ARR[19] = 3
 COMP_BASES = dict(zip(map(ord, "ACGT"), map(ord, "TGCA")))
 NP_COMP_BASES = np.array([3, 2, 1, 0], dtype=np.uintp)
 U_TO_T_BASES = {ord("U"): ord("T")}
+T_TO_U_BASES = {ord("T"): ord("U")}
 
 DEFAULT_QUEUE_SIZE = 10_000
 
@@ -108,6 +109,10 @@ def revcomp_np(np_seq):
 
 def u_to_t(seq):
     return seq.translate(U_TO_T_BASES)
+
+
+def t_to_u(seq):
+    return seq.translate(T_TO_U_BASES)
 
 
 def seq_to_int(seq):

@@ -158,6 +158,12 @@ def register_dataset_prepare(parser):
         help="""Make dataset from basecall sequence instead of aligned
         reference sequence""",
     )
+    data_grp.add_argument(
+        "--reverse-signal",
+        action="store_true",
+        help="""Is nanopore signal 3' to 5' orientation? Primarily for direct
+        RNA""",
+    )
 
     refine_grp = subparser.add_argument_group("Signal Mapping Refine Arguments")
     refine_grp.add_argument(
@@ -289,6 +295,7 @@ def run_dataset_prepare(args):
         args.num_extract_alignment_workers,
         args.num_extract_chunks_workers,
         basecall_anchor=args.basecall_anchor,
+        rev_sig=args.reverse_signal,
     )
 
 
@@ -1405,7 +1412,7 @@ def register_analyze(parser):
         formatter_class=SubcommandHelpFormatter,
     )
     ssubparser = subparser.add_subparsers(title="Analyze commands")
-    register_estimate_kmer_levels(ssubparser)
+    # register_estimate_kmer_levels(ssubparser)
     # Since `plot` has several sub-commands, print help as default
     subparser.set_defaults(func=lambda x: subparser.print_help())
     # Register analyze sub commands

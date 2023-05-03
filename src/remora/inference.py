@@ -301,7 +301,12 @@ def infer_from_pod5_and_bam(
 
     signals = BackgroundIter(
         iter_signal,
-        args=(pod5_path, num_reads, read_ids),
+        args=(pod5_path,),
+        kwargs={
+            "num_reads": num_reads,
+            "read_ids": read_ids,
+            "rev_sig": model_metadata["reverse_signal"],
+        },
         name="ExtractSignal",
         use_process=True,
         q_maxsize=queue_max,
@@ -310,7 +315,7 @@ def infer_from_pod5_and_bam(
         extract_alignments,
         signals,
         num_workers=num_extract_alignment_workers,
-        args=(bam_idx,),
+        args=(bam_idx, model_metadata["reverse_signal"]),
         name="AddAlignments",
         use_process=True,
         q_maxsize=queue_max,

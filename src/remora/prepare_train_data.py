@@ -132,6 +132,7 @@ def extract_chunk_dataset(
     num_extract_chunks_threads,
     skip_non_primary=True,
     basecall_anchor=False,
+    rev_sig=False,
 ):
     bam_idx = ReadIndexedBam(bam_fn, skip_non_primary)
     with pod5.Reader(Path(pod5_path)) as pod5_fh:
@@ -154,6 +155,7 @@ def extract_chunk_dataset(
         mod_bases=[] if mod_base_control else [mod_base[0]],
         mod_long_names=[] if mod_base_control else [mod_base[1]],
         motifs=[mot.to_tuple() for mot in motifs],
+        reverse_signal=rev_sig,
         sig_map_refiner=sig_map_refiner,
         base_start_justify=base_start_justify,
         offset=offset,
@@ -162,7 +164,12 @@ def extract_chunk_dataset(
     LOGGER.info("Processing reads")
     signals = BackgroundIter(
         iter_signal,
-        args=(pod5_path, num_reads, read_ids),
+        args=(pod5_path,),
+        kwargs={
+            "num_reads": num_reads,
+            "read_ids": read_ids,
+            "rev_sig": rev_sig,
+        },
         name="ExtractSignal",
         use_process=True,
     )
@@ -170,7 +177,7 @@ def extract_chunk_dataset(
         extract_alignments,
         signals,
         num_workers=num_extract_alignment_threads,
-        args=(bam_idx,),
+        args=(bam_idx, rev_sig),
         name="AddAlignments",
         use_process=True,
     )

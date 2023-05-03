@@ -39,6 +39,7 @@ def export_model_torchscript(ckpt, model, save_filename):
     for ckpt_key in (
         "base_pred",
         "mod_bases",
+        "reverse_signal",
         "refine_kmer_center_idx",
         "refine_do_rough_rescale",
         "refine_scale_iters",
@@ -190,6 +191,7 @@ def export_model_dorado(ckpt, model, save_dir):
     for ckpt_key in (
         "mod_bases",
         "offset",
+        "reverse_signal",
     ):
         modbases[ckpt_key] = ckpt[ckpt_key]
 
@@ -247,7 +249,11 @@ def continue_from_checkpoint(ckp_path, model_path=None):
 
 
 def add_derived_metadata(model_metadata):
-    model_metadata["base_pred"] = model_metadata["base_pred"] == "True"
+    if "reverse_signal" not in model_metadata:
+        LOGGER.warning(
+            "reverse signal attribute not found in model. Assuming False"
+        )
+        model_metadata["reverse_signal"] = False
     if model_metadata["mod_bases"] == "None":
         model_metadata["mod_bases"] = None
         model_metadata["mod_long_names"] = None
@@ -330,11 +336,6 @@ def add_derived_metadata(model_metadata):
             half_bandwidth=int(model_metadata["refine_half_bandwidth"]),
             sd_arr=refine_sd_arr,
         )
-
-        model_metadata["base_start_justify"] = (
-            model_metadata["base_start_justify"] == "True"
-        )
-        model_metadata["offset"] = int(model_metadata["offset"])
     else:
         # handle original models without sig_map_refiner
         model_metadata["sig_map_refiner"] = SigMapRefiner()
