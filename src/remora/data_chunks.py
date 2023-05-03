@@ -120,7 +120,8 @@ class RemoraRead:
     inference.
 
     Args:
-        dacs (np.ndarray): Unnormalized DAC signal
+        dacs (np.ndarray): Unnormalized DAC signal. `dacs` should be reversed
+            already for reverse_signal data types.
         shift (float): Shift from dac to normalized signal. via formula:
             norm = (dac - shift) / scale
         scale (float): Scale from dac to normalized signal
@@ -656,6 +657,8 @@ class RemoraDataset:
         mod_long_names (list): Modified base long names represented by labels
         motifs (list): Tuples containing sequence motifs and relative position.
             E.g. ("N", 0) for all-contexts or ("CG", 0) for CG-contexts.
+        reverse_signal (bool): Is nanopore signal 3' to 5' orientation?
+            Primarily for directRNA
         batch_size (int): Size of batches to be produced
         shuffle_on_iter (bool): Shuffle data before each iteration over batches
         drop_last (bool): Drop the last batch of each iteration
@@ -689,6 +692,7 @@ class RemoraDataset:
     mod_bases: str = ""
     mod_long_names: list = None
     motifs: list = None
+    reverse_signal: bool = False
 
     # batch attributes (defaults set for training)
     batch_size: int = constants.DEFAULT_BATCH_SIZE
@@ -942,6 +946,22 @@ class RemoraDataset:
         self.reorder_chunks(shuf_idx)
         self.shuffled = True
 
+    def clone_metadata(self):
+        return {
+            "chunk_context": self.chunk_context,
+            "max_seq_len": self.max_seq_len,
+            "kmer_context_bases": self.kmer_context_bases,
+            "base_pred": self.base_pred,
+            "mod_bases": self.mod_bases,
+            "mod_long_names": self.mod_long_names,
+            "motifs": self.motifs,
+            "reverse_signal": self.reverse_signal,
+            "batch_size": self.batch_size,
+            "sig_map_refiner": self.sig_map_refiner,
+            "offset": self.offset,
+            "base_start_justify": self.base_start_justify,
+        }
+
     def head(
         self,
         nchunks=None,
@@ -1015,21 +1035,6 @@ class RemoraDataset:
             drop_last=self.drop_last,
             **self.clone_metadata(),
         )
-
-    def clone_metadata(self):
-        return {
-            "chunk_context": self.chunk_context,
-            "max_seq_len": self.max_seq_len,
-            "kmer_context_bases": self.kmer_context_bases,
-            "base_pred": self.base_pred,
-            "mod_bases": self.mod_bases,
-            "mod_long_names": self.mod_long_names,
-            "motifs": self.motifs,
-            "batch_size": self.batch_size,
-            "sig_map_refiner": self.sig_map_refiner,
-            "offset": self.offset,
-            "base_start_justify": self.base_start_justify,
-        }
 
     def __iter__(self):
         if self.batch_label_props is not None:
@@ -1274,6 +1279,7 @@ class RemoraDataset:
             mod_long_names=self.mod_long_names,
             motifs=[mot[0] for mot in self.motifs],
             motif_offset=[mot[1] for mot in self.motifs],
+            reverse_signal=int(self.reverse_signal),
             base_start_justify=int(self.base_start_justify),
             offset=self.offset,
             version=DATASET_VERSION,
@@ -1317,6 +1323,8 @@ class RemoraDataset:
             ]
         sig_map_refiner = SigMapRefiner.load_from_np_savez(data)
         base_start_justify = bool(int(data["base_start_justify"].item()))
+        # default to reverse_signal=False for datasets without this attribute
+        reverse_signal = bool(int(data.get("reverse_signal", 0)))
         offset = int(data["offset"].item())
         return cls(
             data["sig_tensor"],
@@ -1332,6 +1340,7 @@ class RemoraDataset:
             mod_bases=mod_bases,
             mod_long_names=mod_long_names,
             motifs=motifs,
+            reverse_signal=reverse_signal,
             sig_map_refiner=sig_map_refiner,
             base_start_justify=base_start_justify,
             offset=offset,
@@ -1414,6 +1423,7 @@ class RemoraDataset:
             f"       kmer_context_bases : {self.kmer_context_bases}\n"
             f"            chunk_context : {self.chunk_context}\n"
             f"                   motifs : {self.motifs}\n"
+            f"           reverse_signal : {self.reverse_signal}\n"
             f" chunk_extract_base_start : {self.base_start_justify}\n"
             f"     chunk_extract_offset : {self.offset}\n"
             f"          sig_map_refiner : {self.sig_map_refiner}\n"
@@ -1495,6 +1505,7 @@ def merge_datasets(input_datasets, balance=False, quiet=False):
     motifs = set(dataset.motifs)
     sig_map_refiner = dataset.sig_map_refiner
     base_start_justify = dataset.base_start_justify
+    reverse_signal = dataset.reverse_signal
     offset = dataset.offset
     raw_mod_long_names = []
     raw_mod_bases = []
@@ -1558,6 +1569,7 @@ def merge_datasets(input_datasets, balance=False, quiet=False):
         mod_bases=all_mod_bases,
         mod_long_names=all_mod_long_names,
         motifs=motifs,
+        reverse_signal=reverse_signal,
         sig_map_refiner=sig_map_refiner,
         base_start_justify=base_start_justify,
         offset=offset,

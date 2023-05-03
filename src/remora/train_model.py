@@ -298,6 +298,7 @@ def train_model(
         "fixed_seq_len_chunks": model._variable_width_possible,
         "motifs": dataset.motifs,
         "num_motifs": dataset.num_motifs,
+        "reverse_signal": dataset.reverse_signal,
         "mod_bases": dataset.mod_bases,
         "mod_long_names": dataset.mod_long_names,
         "base_pred": dataset.base_pred,

@@ -34,6 +34,7 @@ BASE_COLORS = {
     "C": "#0000CC",
     "G": "#FFB300",
     "T": "#CC0000",
+    "U": "#CC0000",
     "N": "#FFFFFF",
 }
 
@@ -304,11 +305,15 @@ class ReadIndexedBam:
         return list(self._bam_idx.keys())
 
 
-def parse_move_tag(mv_tag, sig_len, seq_len=None, check=True):
+def parse_move_tag(
+    mv_tag, sig_len, seq_len=None, check=True, reverse_signal=False
+):
     stride = mv_tag[0]
     mv_table = np.array(mv_tag[1:])
     query_to_signal = np.nonzero(mv_table)[0] * stride
     query_to_signal = np.concatenate([query_to_signal, [sig_len]])
+    if reverse_signal:
+        query_to_signal = sig_len - query_to_signal[::-1]
     if check and seq_len is not None and query_to_signal.size - 1 != seq_len:
         LOGGER.debug(
             f"Move table (num moves: {query_to_signal.size - 1}) discordant "
@@ -355,13 +360,14 @@ def iter_pod5_reads(pod5_path, num_reads=None, read_ids=None):
     LOGGER.debug("Completed pod5 signal worker")
 
 
-def iter_signal(pod5_path, num_reads=None, read_ids=None):
+def iter_signal(pod5_path, num_reads=None, read_ids=None, rev_sig=False):
     """Iterate io Read objects loaded from Pod5
 
     Args:
         pod5_path (str): Path to POD5 file
         num_reads (int): Maximum number of reads to iterate
         read_ids (iterable): Read IDs to extract
+        rev_sig (bool): Should signal be reversed on reading
 
     Yields:
         2-tuple:
@@ -371,9 +377,10 @@ def iter_signal(pod5_path, num_reads=None, read_ids=None):
     for pod5_read in iter_pod5_reads(
         pod5_path=pod5_path, num_reads=num_reads, read_ids=read_ids
     ):
+        dacs = pod5_read.signal[::-1] if rev_sig else pod5_read.signal
         read = Read(
             read_id=str(pod5_read.read_id),
-            dacs=pod5_read.signal,
+            dacs=dacs,
             shift_dacs_to_pa=pod5_read.calibration.offset,
             scale_dacs_to_pa=pod5_read.calibration.scale,
         )
@@ -394,7 +401,7 @@ if _SIG_PROF_FN:
         return retval
 
 
-def extract_alignments(read_err, bam_idx):
+def extract_alignments(read_err, bam_idx, rev_sig=False):
     io_read, err = read_err
     if io_read is None:
         return [read_err]
@@ -402,7 +409,7 @@ def extract_alignments(read_err, bam_idx):
     try:
         for bam_read in bam_idx.get_alignments(io_read.read_id):
             align_read = io_read.copy()
-            align_read.add_alignment(bam_read)
+            align_read.add_alignment(bam_read, reverse_signal=rev_sig)
             read_alignments.append(tuple((align_read, None)))
     except KeyError:
         return [tuple((None, "Read id not found in BAM file"))]
@@ -652,7 +659,7 @@ def get_pod5_reads(pod5_fh, read_ids):
     )
 
 
-def get_io_reads(bam_reads, pod5_fh, missing_ok=False):
+def get_io_reads(bam_reads, pod5_fh, reverse_signal=False, missing_ok=False):
     pod5_reads = get_pod5_reads(
         pod5_fh, [bam_read.query_name for bam_read in bam_reads]
     )
@@ -662,6 +669,7 @@ def get_io_reads(bam_reads, pod5_fh, missing_ok=False):
             io_read = Read.from_pod5_and_alignment(
                 pod5_read_record=pod5_reads[bam_read.query_name],
                 alignment_record=bam_read,
+                reverse_signal=reverse_signal,
             )
         except Exception:
             if missing_ok:
@@ -678,6 +686,7 @@ def get_reads_reference_regions(
     sig_map_refiner=None,
     skip_sig_map_refine=False,
     max_reads=50,
+    reverse_signal=False,
 ):
     all_bam_reads = []
     samples_read_ref_regs = []
@@ -688,7 +697,7 @@ def get_reads_reference_regions(
         if max_reads is not None and len(sample_bam_reads) > max_reads:
             sample_bam_reads = random.sample(sample_bam_reads, max_reads)
         all_bam_reads.append(sample_bam_reads)
-        io_reads = get_io_reads(sample_bam_reads, pod5_fh)
+        io_reads = get_io_reads(sample_bam_reads, pod5_fh, reverse_signal)
         if sig_map_refiner is not None and not skip_sig_map_refine:
             for io_read in io_reads:
                 io_read.set_refine_signal_mapping(
@@ -707,10 +716,11 @@ def get_ref_reg_sample_metrics(
     metric,
     sig_map_refiner,
     skip_sig_map_refine=False,
+    reverse_signal=False,
     ref_orient=True,
     **kwargs,
 ):
-    io_reads = get_io_reads(bam_reads, pod5_fh)
+    io_reads = get_io_reads(bam_reads, pod5_fh, reverse_signal)
     if sig_map_refiner is not None and not skip_sig_map_refine:
         for io_read in io_reads:
             io_read.set_refine_signal_mapping(sig_map_refiner, ref_mapping=True)
@@ -741,8 +751,9 @@ def get_ref_reg_samples_metrics(
     pod5_and_bam_fhs,
     sig_map_refiner=None,
     skip_sig_map_refine=False,
-    metric="dwell_trimmean",
     max_reads=None,
+    reverse_signal=False,
+    metric="dwell_trimmean",
     **kwargs,
 ):
     all_bam_reads = []
@@ -761,6 +772,7 @@ def get_ref_reg_samples_metrics(
             metric,
             sig_map_refiner,
             skip_sig_map_refine,
+            reverse_signal,
             **kwargs,
         )
         if sample_metrics is not None:
@@ -784,6 +796,7 @@ def get_region_kmers(
     end_trim=2,
     dict_bam_reads=False,
     bam_header=None,
+    reverse_signal=False,
 ):
     reg, bam_reads = reg_and_bam_reads
     if dict_bam_reads:
@@ -799,6 +812,7 @@ def get_region_kmers(
         start_trim=start_trim,
         end_trim=end_trim,
         ref_orient=False,
+        reverse_signal=reverse_signal,
     )
     seq = get_ref_seq_from_reads(
         reg.adjust(
@@ -844,6 +858,7 @@ def get_site_kmer_levels(
     start_trim=1,
     end_trim=1,
     num_workers=1,
+    reverse_signal=False,
 ):
     regs_bam_reads = util.BackgroundIter(
         iter_covered_regions,
@@ -869,6 +884,7 @@ def get_site_kmer_levels(
             "end_trim": start_trim,
             "dict_bam_reads": True,
             "bam_header": bam_header,
+            "reverse_signal": reverse_signal,
         },
         name="GetKmers",
     )
@@ -903,6 +919,7 @@ def plot_on_signal_coords(
     sig_lw=8,
     levels_lw=8,
     ylim=None,
+    t_as_u=False,
 ):
     """Plot a single read on signal coordinates.
 
@@ -917,6 +934,7 @@ def plot_on_signal_coords(
         sig_lw (int): Linewidth for signal lines
         levels_lw (int): Linewidth for level lines (if applicable)
         ylim (tuple): 2-tuple with y-axis limits
+        t_as_u (bool): Plot T bases as U (RNA)
 
     Returns:
         matplotlib axis
@@ -956,6 +974,8 @@ def plot_on_signal_coords(
                 lw=levels_lw,
             )
     # plot bases
+    if t_as_u:
+        seq = util.t_to_u(seq)
     for b_st, b_en, base in zip(seq_to_sig_map[:-1], seq_to_sig_map[1:], seq):
         ax.text(
             (b_en + b_st) / 2,
@@ -985,6 +1005,7 @@ def plot_on_base_coords(
     sig_lw=8,
     levels_lw=8,
     ylim=None,
+    t_as_u=False,
 ):
     """Plot a single read on base/sequence coordinates.
 
@@ -1000,6 +1021,7 @@ def plot_on_base_coords(
         sig_lw (int): Linewidth for signal lines
         levels_lw (int): Linewidth for level lines (if applicable)
         ylim (tuple): 2-tuple with y-axis limits
+        t_as_u (bool): Plot T bases as U (RNA)
 
     Returns:
         matplotlib axis
@@ -1037,6 +1059,8 @@ def plot_on_base_coords(
                 lw=levels_lw,
             )
     # plot bases
+    if t_as_u:
+        seq = util.t_to_u(seq)
     for b_num, base in enumerate(seq):
         ax.text(
             start_base + b_num + 0.5,
@@ -1067,6 +1091,7 @@ def plot_ref_region_reads(
     levels_lw=6,
     ylim=None,
     highlight_ranges=None,
+    t_as_u=False,
 ):
     # start plotting
     if fig_ax is None:
@@ -1112,6 +1137,8 @@ def plot_ref_region_reads(
         ylim = (sig_min - sig_diff * 0.01, sig_max + sig_diff * 0.01)
     base_text_loc = ylim[0] + ((ylim[1] - ylim[0]) * 0.02)
     rotation = 0 if ref_reg.strand == "+" else 180
+    if t_as_u:
+        seq = util.t_to_u(seq)
     for b_num, base in enumerate(seq):
         ax.text(
             ref_reg.start + b_num + 0.5,
@@ -1143,6 +1170,8 @@ def plot_signal_at_ref_region(
     sig_map_refiner=None,
     skip_sig_map_refine=False,
     max_reads=50,
+    reverse_signal=False,
+    t_as_u=False,
     fig_ax=None,
     figsize=DEFAULT_PLOT_FIG_SIZE,
     sig_lw=2,
@@ -1160,6 +1189,8 @@ def plot_signal_at_ref_region(
         sig_map_refiner (SigMapRefiner): For signal mapping and level extract
         skip_sig_map_refine (bool): Skip signal mapping refinement
         max_reads (int): Maximum reads to plot (TODO: add overplotting options)
+        reverse_signal (bool): Is nanopore signal 3'>5' orientation?
+        t_as_u (bool): Plot T bases as U (RNA)
         fig_ax (tuple): If None, new figure/axes will be opened
         figsize (tuple): option to pass to plt.subplots if ax is None
         sig_lw (int): Linewidth for signal lines
@@ -1177,6 +1208,7 @@ def plot_signal_at_ref_region(
         sig_map_refiner=sig_map_refiner,
         skip_sig_map_refine=skip_sig_map_refine,
         max_reads=max_reads,
+        reverse_signal=reverse_signal,
     )
     seq, levels = get_ref_seq_and_levels_from_reads(
         ref_reg, chain(*reg_bam_reads), sig_map_refiner
@@ -1192,6 +1224,7 @@ def plot_signal_at_ref_region(
         levels_lw=levels_lw,
         ylim=ylim,
         highlight_ranges=highlight_ranges,
+        t_as_u=t_as_u,
     )
     return fig_ax
 
@@ -1199,13 +1232,12 @@ def plot_signal_at_ref_region(
 def plot_ref_region_metrics(
     ref_reg,
     samples_metrics,
-    seq,
-    levels,
     fig_axs=None,
     fig_width=DEFAULT_PLOT_FIG_SIZE[0],
     facet_height=DEFAULT_PLOT_FIG_SIZE[1],
     highlight_ranges=None,
     sample_names=None,
+    t_as_u=False,
 ):
     metric_names = list(samples_metrics[0].keys())
     if fig_axs is None:
@@ -1268,6 +1300,8 @@ def plot_metric_at_ref_region(
     sig_map_refiner=None,
     skip_sig_map_refine=False,
     max_reads=None,
+    reverse_signal=False,
+    t_as_u=False,
     fig_axs=None,
     fig_width=DEFAULT_PLOT_FIG_SIZE[0],
     facet_height=DEFAULT_PLOT_FIG_SIZE[1],
@@ -1285,6 +1319,8 @@ def plot_metric_at_ref_region(
         sig_map_refiner (SigMapRefiner): For signal mapping and level extract
         skip_sig_map_refine (bool): Skip signal mapping refinement
         max_reads (int): Maximum reads to plot
+        reverse_signal (bool): Is nanopore signal 3'>5' orientation?
+        t_as_u (bool): Plot T bases as U (RNA)
         fig_axs (tuple): If None, new figure/axes will be opened. Should be
             same length as the number of metrics computed.
         fig_width (float): Figure width
@@ -1299,23 +1335,20 @@ def plot_metric_at_ref_region(
         ref_reg,
         pod5_and_bam_fhs,
         metric=metric,
-        max_reads=max_reads,
         sig_map_refiner=sig_map_refiner,
         skip_sig_map_refine=skip_sig_map_refine,
+        max_reads=max_reads,
+        reverse_signal=reverse_signal,
         **kwargs,
-    )
-    seq, levels = get_ref_seq_and_levels_from_reads(
-        ref_reg, chain(*all_bam_reads), sig_map_refiner
     )
     fig_axs = plot_ref_region_metrics(
         ref_reg,
         samples_metrics,
-        seq,
-        levels,
         fig_axs=fig_axs,
         fig_width=fig_width,
         facet_height=facet_height,
         highlight_ranges=highlight_ranges,
+        t_as_u=t_as_u,
     )
     plt.tight_layout()
     return fig_axs
@@ -1433,7 +1466,9 @@ class Read:
         read.ref_reg = None
         return read, simplex_duplex_mapping.duplex_offset
 
-    def add_alignment(self, alignment_record, parse_ref_align=True):
+    def add_alignment(
+        self, alignment_record, parse_ref_align=True, reverse_signal=False
+    ):
         """Add alignment to read object
 
         Args:
@@ -1461,6 +1496,7 @@ class Read:
                 tags["mv"],
                 sig_len=self.dacs.size,
                 seq_len=len(alignment_record.query_sequence),
+                reverse_signal=reverse_signal,
             )
         except KeyError:
             self.query_to_signal = self.mv_table = self.stride = None
@@ -1513,20 +1549,25 @@ class Read:
             self.ref_reg.end = self.ref_reg.start + self.ref_to_signal.size - 1
 
     @classmethod
-    def from_pod5_and_alignment(cls, pod5_read_record, alignment_record):
+    def from_pod5_and_alignment(
+        cls, pod5_read_record, alignment_record, reverse_signal=False
+    ):
         """Initialize read from pod5 and pysam records
 
         Args:
             pod5_read_record (pod5.ReadRecord)
             alignment_record (pysam.AlignedSegment)
         """
+        dacs = pod5_read_record.signal
+        if reverse_signal:
+            dacs = dacs[::-1]
         read = Read(
             read_id=str(pod5_read_record.read_id),
-            dacs=pod5_read_record.signal,
+            dacs=dacs,
             shift_dacs_to_pa=pod5_read_record.calibration.offset,
             scale_dacs_to_pa=pod5_read_record.calibration.scale,
         )
-        read.add_alignment(alignment_record)
+        read.add_alignment(alignment_record, reverse_signal=reverse_signal)
         return read
 
     def into_remora_read(self, use_reference_anchor):

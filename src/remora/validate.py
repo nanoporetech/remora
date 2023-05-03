@@ -338,7 +338,11 @@ def parse_mod_read(
     ctg_gt = gt_sites.get((read.reference_name, strand))
     ctg_gt_range = gt_ranges.get((read.reference_name, strand))
 
-    aligned_pairs = read.get_aligned_pairs(with_seq=True)
+    try:
+        aligned_pairs = read.get_aligned_pairs(with_seq=True)
+    except ValueError:
+        LOGGER.debug(f"Read missing MD tag {read.query_name}")
+        return [], []
     r_align = "".join([b.upper() if b else "-" for _, _, b in aligned_pairs])
     q_align = "".join(
         [
