@@ -16,27 +16,25 @@ class network(nn.Module):
     ):
         super().__init__()
         self.sig_conv1 = nn.Conv1d(1, 4, 5)
+        self.sig_bn1 = nn.BatchNorm1d(4)
         self.sig_conv2 = nn.Conv1d(4, 16, 5)
+        self.sig_bn2 = nn.BatchNorm1d(16)
         self.sig_conv3 = nn.Conv1d(16, size, 9, 3)
+        self.sig_bn3 = nn.BatchNorm1d(size)
 
         self.seq_conv1 = nn.Conv1d(kmer_len * 4, 16, 5)
+        self.seq_bn1 = nn.BatchNorm1d(16)
         self.seq_conv2 = nn.Conv1d(16, size, 13, 3)
+        self.seq_bn2 = nn.BatchNorm1d(size)
 
         self.merge_conv1 = nn.Conv1d(size * 2, size, 5)
+        self.merge_bn = nn.BatchNorm1d(size)
         self.lstm1 = nn.LSTM(size, size, 1)
         self.lstm2 = nn.LSTM(size, size, 1)
 
         self.fc = nn.Linear(size, num_out)
 
         self.dropout = nn.Dropout(p=0.3)
-        self.sig_bn1 = nn.BatchNorm1d(4)
-        self.sig_bn2 = nn.BatchNorm1d(16)
-        self.sig_bn3 = nn.BatchNorm1d(size)
-
-        self.seq_bn1 = nn.BatchNorm1d(16)
-        self.seq_bn2 = nn.BatchNorm1d(size)
-
-        self.merge_bn = nn.BatchNorm1d(size)
 
     def forward(self, sigs, seqs):
         # inputs are BFT (batch, feature, time)

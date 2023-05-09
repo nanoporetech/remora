@@ -17,33 +17,30 @@ class network(nn.Module):
     ):
         super().__init__()
         self.sig_conv1 = nn.Conv1d(1, 4, 11)
-        self.sig_conv2 = nn.Conv1d(4, 16, 11)
-        self.sig_conv3 = nn.Conv1d(16, size, 9, 3)
-
-        self.seq_conv1 = nn.Conv1d(kmer_len * 4, 16, 11)
-        self.seq_conv2 = nn.Conv1d(16, 32, 11)
-        self.seq_conv3 = nn.Conv1d(32, size, 9, 3)
-
-        self.merge_conv1 = nn.Conv1d(size * 2, size, 5)
-        self.merge_conv2 = nn.Conv1d(size, size, 5)
-
-        self.merge_conv3 = nn.Conv1d(size, size, 3, stride=2)
-        self.merge_conv4 = nn.Conv1d(size, size, 3, stride=2)
-
-        self.fc = nn.Linear(size * 3, num_out)
-
         self.sig_bn1 = nn.BatchNorm1d(4)
+        self.sig_conv2 = nn.Conv1d(4, 16, 11)
         self.sig_bn2 = nn.BatchNorm1d(16)
+        self.sig_conv3 = nn.Conv1d(16, size, 9, 3)
         self.sig_bn3 = nn.BatchNorm1d(size)
 
+        self.seq_conv1 = nn.Conv1d(kmer_len * 4, 16, 11)
         self.seq_bn1 = nn.BatchNorm1d(16)
+        self.seq_conv2 = nn.Conv1d(16, 32, 11)
         self.seq_bn2 = nn.BatchNorm1d(32)
+        self.seq_conv3 = nn.Conv1d(32, size, 9, 3)
         self.seq_bn3 = nn.BatchNorm1d(size)
 
+        self.merge_conv1 = nn.Conv1d(size * 2, size, 5)
         self.merge_bn1 = nn.BatchNorm1d(size)
+        self.merge_conv2 = nn.Conv1d(size, size, 5)
         self.merge_bn2 = nn.BatchNorm1d(size)
+
+        self.merge_conv3 = nn.Conv1d(size, size, 3, stride=2)
         self.merge_bn3 = nn.BatchNorm1d(size)
+        self.merge_conv4 = nn.Conv1d(size, size, 3, stride=2)
         self.merge_bn4 = nn.BatchNorm1d(size)
+
+        self.fc = nn.Linear(size * 3, num_out)
 
     def forward(self, sigs, seqs):
         sigs_x = swish(self.sig_bn1(self.sig_conv1(sigs)))
