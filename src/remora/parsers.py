@@ -626,6 +626,16 @@ def register_model_train(parser):
         "predictions to filter during training. Filtering up to this value, "
         "but might be lower.",
     )
+    train_grp.add_argument(
+        "--finetune-path",
+        help="Path to the torch checkpoint for the model to be fine tuned.",
+    )
+    train_grp.add_argument(
+        "--freeze-num-layers",
+        default=0,
+        type=int,
+        help="Number of layers to be frozen for finetuning.",
+    )
 
     comp_grp = subparser.add_argument_group("Compute Arguments")
     comp_grp.add_argument(
@@ -675,6 +685,8 @@ def run_model_train(args):
         args.balance,
         args.batch_label_weights,
         args.high_conf_incorrect_thr_frac,
+        args.finetune_path,
+        args.freeze_num_layers,
     )
 
 

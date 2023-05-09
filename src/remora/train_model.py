@@ -113,6 +113,8 @@ def train_model(
     balance,
     batch_label_weights,
     high_conf_incorrect_thr_frac,
+    finetune_path,
+    freeze_num_layers,
 ):
     seed = (
         np.random.randint(0, np.iinfo(np.uint32).max, dtype=np.uint32)
@@ -163,6 +165,43 @@ def train_model(
     }
     model = model_util._load_python_model(copy_model_path, **model_params)
     LOGGER.info(f"Model structure:\n{model}")
+
+    if finetune_path:
+        ckpt, model = model_util.continue_from_checkpoint(
+            finetune_path, copy_model_path
+        )
+        if freeze_num_layers:
+            for freeze_iter, (p_name, param) in enumerate(
+                model.named_parameters()
+            ):
+                LOGGER.debug(f"Freezing layer for training: {p_name}")
+                param.requires_grad = False
+                if freeze_iter >= freeze_num_layers:
+                    break
+
+        if ckpt["model_params"]["num_out"] != num_out:
+            in_feat = model.fc.in_features
+            model.fc = torch.nn.Linear(in_feat, num_out)
+        if ckpt["model_params"]["size"] != size:
+            LOGGER.warning(
+                "Size mismatch between pretrained model and selected size. "
+                "Using pretrained model size."
+            )
+        if dataset.chunk_context != ckpt["chunk_context"]:
+            raise RemoraError(
+                "The chunk context of the pre-trained model and the dataset "
+                "do not match."
+            )
+        if dataset.kmer_context_bases != ckpt["kmer_context_bases"]:
+            raise RemoraError(
+                "The kmer context bases of the pre-trained model and "
+                "the dataset do not match."
+            )
+        if dataset.base_pred != ckpt["base_pred"]:
+            raise RemoraError(
+                "The base_pred flag does not match between the pre-trained "
+                "model and the dataset."
+            )
 
     if ext_val:
         if ext_val_names is None:
