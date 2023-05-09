@@ -187,6 +187,7 @@ def train_model(
                 "Size mismatch between pretrained model and selected size. "
                 "Using pretrained model size."
             )
+            model_params["size"] = ckpt["model_params"]["size"]
         if dataset.chunk_context != ckpt["chunk_context"]:
             raise RemoraError(
                 "The chunk context of the pre-trained model and the dataset "
