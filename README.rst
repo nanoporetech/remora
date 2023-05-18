@@ -237,8 +237,7 @@ Raw Signal Analysis
 The new metrics API allows access to these per-read, per-site metrics for more advanced statistical analysis.
 This is API is primarily accessed via the ``remora.io.Read`` object.
 
-The iPython notebooks included in this repository exemplify some common analyses.
-[TODO add notebooks to repo]
+The iPython notebooks (see ``notebooks`` directory) included in this repository exemplify some common analyses.
 
 Terms and Licence
 -----------------
