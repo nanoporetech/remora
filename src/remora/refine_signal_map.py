@@ -241,6 +241,12 @@ class SigMapRefiner:
             self.determine_dominant_pos()
             if self.do_fix_guage:
                 self.fix_gauge()
+        if not self.is_loaded and (
+            self.do_rough_rescale or self.scale_iters >= 0
+        ):
+            raise RemoraError(
+                "Signal re-scaling is requested without levels table."
+            )
 
         if self.sd_params is not None:
             self.sd_arr = compute_dwell_pen_array(*self.sd_params)
