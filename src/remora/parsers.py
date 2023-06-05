@@ -1116,6 +1116,8 @@ def _unpack_model_kw_args(args) -> dict:
 
 
 def run_infer_from_pod5_and_bam(args):
+    import torch
+
     from remora.model_util import load_model
     from remora.inference import infer_from_pod5_and_bam
 
@@ -1123,7 +1125,10 @@ def run_infer_from_pod5_and_bam(args):
         log.init_logger(args.log_filename)
     # test that model can be loaded in parent process
     model_kwargs = _unpack_model_kw_args(args)
-    model, model_metadata = load_model(**model_kwargs, quiet=False)
+    model, model_metadata = load_model(
+        **model_kwargs, quiet=False, eval_only=True
+    )
+    torch.set_grad_enabled(False)
     infer_from_pod5_and_bam(
         pod5_path=args.pod5,
         in_bam_path=args.in_bam,
@@ -1140,13 +1145,18 @@ def run_infer_from_pod5_and_bam(args):
 
 
 def run_infer_from_pod5_and_bam_duplex(args):
+    import torch
+
     from remora.model_util import load_model
     from remora.inference import infer_duplex
 
     if args.log_filename is not None:
         log.init_logger(args.log_filename)
     model_kwargs = _unpack_model_kw_args(args)
-    model, model_metadata = load_model(**model_kwargs, quiet=False)
+    model, model_metadata = load_model(
+        **model_kwargs, quiet=False, eval_only=True
+    )
+    torch.set_grad_enabled(False)
 
     if not os.path.exists(args.pod5):
         raise ValueError(f"didn't find pod5 at {args.pod5}")
@@ -1383,7 +1393,9 @@ def run_validate_from_remora_dataset(args):
         remora_model_type=args.remora_model_type,
         remora_model_version=args.remora_model_version,
         device=parse_device(args.device),
+        eval_only=True,
     )
+    torch.set_grad_enabled(False)
 
     dataset.trim_kmer_context_bases(model_metadata["kmer_context_bases"])
     dataset.trim_chunk_context(model_metadata["chunk_context"])

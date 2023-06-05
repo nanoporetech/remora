@@ -1,6 +1,6 @@
 from collections import deque
-from dataclasses import dataclass
 from typing import List, Tuple
+from dataclasses import dataclass
 
 import parasail
 from numpy import typing as npt

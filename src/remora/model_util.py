@@ -322,9 +322,11 @@ def add_derived_metadata(model_metadata):
             model_metadata["refine_kmer_levels"].encode("cp437"),
             dtype=np.float32,
         )
+        model_metadata["refine_kmer_levels"] = levels_array
         refine_sd_arr = np.frombuffer(
             model_metadata["refine_sd_arr"].encode("cp437"), dtype=np.float32
         )
+        model_metadata["refine_sd_arr"] = refine_sd_arr
         model_metadata["sig_map_refiner"] = SigMapRefiner(
             _levels_array=levels_array,
             center_idx=int(model_metadata["refine_kmer_center_idx"]),
@@ -367,7 +369,9 @@ def repr_model_metadata(metadata):
     )
 
 
-def load_torchscript_model(model_filename, device=None, quiet=False):
+def load_torchscript_model(
+    model_filename, device=None, quiet=False, eval_only=False
+):
     """Load torchscript model. If device is specified load onto specified
     device.
 
@@ -375,6 +379,9 @@ def load_torchscript_model(model_filename, device=None, quiet=False):
         model_filename (str): Model path
         device (torch.device): Torch device (or None)
         quiet (bool): Print model info to debug
+        eval_only (bool): Load model in eval mode and requires_grad=False. Note
+            that torch.set_grad_enabled(False) should be set as well for
+            optimal inference performance.
 
     Returns:
         2-tuple containing:
@@ -399,6 +406,10 @@ def load_torchscript_model(model_filename, device=None, quiet=False):
     if not quiet:
         md_str = repr_model_metadata(model_metadata)
         LOGGER.debug(f"Loaded Remora model attrs\n{md_str}\n")
+    if eval_only:
+        model.eval()
+        for param in model.parameters():
+            param.requires_grad = False
     return model, model_metadata
 
 
@@ -413,6 +424,7 @@ def load_model(
     remora_model_version=None,
     device=None,
     quiet=True,
+    eval_only=False,
 ):
     if model_filename is not None:
         if not isfile(model_filename):
@@ -421,7 +433,9 @@ def load_model(
             )
         try:
             LOGGER.debug("Using torchscript model")
-            return load_torchscript_model(model_filename, device, quiet=quiet)
+            return load_torchscript_model(
+                model_filename, device, quiet=quiet, eval_only=eval_only
+            )
         except (AttributeError, RuntimeError):
             raise RemoraError("Failed loading torchscript model.")
 
@@ -544,7 +558,7 @@ def load_model(
         md = ModelDownload(path)
         md.download(url)
     try:
-        return load_torchscript_model(full_path, device)
+        return load_torchscript_model(full_path, device, eval_only=eval_only)
     except (AttributeError, RuntimeError):
         raise RemoraError("Failed loading torchscript model.")
 
