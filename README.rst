@@ -93,10 +93,12 @@ Data Preparation
 ----------------
 
 Remora data preparation begins from a POD5 file (containing signal data) and a BAM file containing basecalls from the POD5 file.
-Note that the BAM file must contain the move table (default in Bonito and ``--moves_out`` in Guppy).
+Note that the BAM file must contain the move table (default in Bonito and ``--emit-moves`` in Dorado) as well as the MD tag (default in Dorado with mapping and ``--MD`` argument for minimap2).
 
 The following example generates training data from canonical (PCR) and modified (M.SssI treatment) samples in the same fashion as the releasd 5mC CG-context models.
 Example reads and kit14 level table can be found in the Remora respoitory in the  ``test/data/`` directory.
+
+K-mer tables for applicable conditions can be found in the `kmer_models repository <https://github.com/nanoporetech/kmer_models>`_.
 
 .. code-block:: bash
 
@@ -182,7 +184,7 @@ Raw Signal Analysis
 -------------------
 
 As of version 2.1, Remora has made access to raw signal analysis more accessible via two CLI commands and an improved API.
-The ``remora analyze`` command group contains two commands ``plot ref_region`` and ``estimate_kmer_levels``.
+The ``remora analyze`` command group contains the ``plot ref_region`` command.
 Additional commands will be added to this group to produce more useful raw signal analysis tasks.
 
 The ``plot ref_region`` command is useful for gaining intuition into signal attributes and visualize signal shifts around modified bases.
@@ -208,28 +210,6 @@ As an example using the test data, the following command produces the plot below
 .. image:: images/plot_ref_region_rev.png
    :width: 600
    :alt: Plot reference region image (reverse strand)
-
-The ``remora analyze estimate_kmer_levels`` command allows one to estimate the current level for each defined k-mer from the above signal.
-For each read, the mean level at each covered base is computed.
-Then for all reads covering a reference location the median of read levels is taken.
-These are grouped by kmer (defined by ``--kmer-context-bases``) and the median is taken over all occurences of each kmer to produce the output table.
-The following command exemplifies this.
-
-.. code-block:: bash
-
-  remora \
-    analyze estimate_kmer_levels \
-    --pod5-and-bam can_reads.pod5 can_mappings.bam \
-    --refine-kmer-level-table levels.txt \
-    --refine-rough-rescale \
-    --kmer-context-bases 1 1 \
-    --min-coverage 3 \
-    --num-workers 8 \
-    --log-filename log.txt
-
-Note that a reasonable starting kmer table is necessary to obtain reasonable output here.
-This command is only using 14 reads, so in practice ``--min-coverage`` should be >=10.
-This command is also only estimating a 3-mer model (``--kmer-context-bases 1 1``), so this can be increased on larger datasets for a more representative model.
 
 Raw Signal Analysis
 -------------------
