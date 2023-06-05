@@ -28,6 +28,7 @@ tags
 *.eggs/
 .installed.cfg
 *.egg-info
+src/remora/trained_models/*.pt
 
 # Unittest and coverage
 htmlcov/*

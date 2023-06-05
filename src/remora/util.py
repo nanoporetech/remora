@@ -1,3 +1,4 @@
+import os
 import re
 import array
 import queue
@@ -505,7 +506,21 @@ class MultitaskMap:
             ).start()
         # processes take a second to start up on mac
         if platform.system() == "Darwin":
-            sleep(1)
+            wait_time = os.environ.get("MP_WAIT_TIME")
+            if wait_time is None:
+                wait_time = 1
+            else:
+                try:
+                    wait_time = int(wait_time)
+                except ValueError as e:
+                    raise ValueError(
+                        f"failed to interpret MP_WAIT_TIME {wait_time}"
+                    ) from e
+            LOGGER.debug(
+                f"MacOS requires that we wait, set MP_WAIT_TIME to modulate, "
+                f"waiting {wait_time}s before starting {self.name}"
+            )
+            sleep(wait_time)
 
     def __iter__(self):
         try:

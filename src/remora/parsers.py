@@ -888,10 +888,7 @@ def register_infer_from_pod5_and_bam(parser):
     )
 
     out_grp = subparser.add_argument_group("Output Arguments")
-    out_grp.add_argument(
-        "--out-bam",
-        help="Output BAM path.",
-    )
+    out_grp.add_argument("--out-bam", help="Output BAM path.", required=True)
     out_grp.add_argument(
         "--log-filename",
         help="Log filename. Default: Don't output log file.",
