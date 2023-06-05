@@ -507,18 +507,17 @@ class RemoraRead:
         """
         device = next(model.parameters()).device
         read_outputs, read_poss, read_labels = [], [], []
-        with torch.no_grad():
-            for sigs, enc_kmers, labels, read_pos in self.batches:
-                sigs = torch.from_numpy(sigs).to(device)
-                enc_kmers = torch.from_numpy(enc_kmers).to(device)
-                output = model(sigs, enc_kmers).detach().cpu().numpy()
-                read_outputs.append(output)
-                read_labels.append(labels)
-                read_poss.append(read_pos)
-            read_outputs = np.concatenate(read_outputs, axis=0)
-            read_labels = np.concatenate(read_labels)
-            read_poss = np.concatenate(read_poss)
-            return read_outputs, read_labels, read_poss
+        for sigs, enc_kmers, labels, read_pos in self.batches:
+            sigs = torch.from_numpy(sigs).to(device)
+            enc_kmers = torch.from_numpy(enc_kmers).to(device)
+            output = model(sigs, enc_kmers).detach().cpu().numpy()
+            read_outputs.append(output)
+            read_labels.append(labels)
+            read_poss.append(read_pos)
+        read_outputs = np.concatenate(read_outputs, axis=0)
+        read_labels = np.concatenate(read_labels)
+        read_poss = np.concatenate(read_poss)
+        return read_outputs, read_labels, read_poss
 
 
 @dataclass

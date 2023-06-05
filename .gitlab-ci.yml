@@ -46,3 +46,16 @@ unit_test:py310:
     stage: test
     script:
         - pytest -m unit --durations 10
+
+
+format:py311:
+    image: python:3.11
+    stage: format
+    script:
+        - pytest -m format
+
+unit_test:py311:
+    image: python:3.11
+    stage: test
+    script:
+        - pytest -m unit --durations 10

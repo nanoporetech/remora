@@ -1,5 +1,5 @@
 from itertools import product
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from scipy import stats
@@ -116,7 +116,9 @@ class SigMapRefiner:
     sd_params: tuple = None
     do_fix_guage: bool = False
 
-    sd_arr: np.ndarray = DEFAULT_REFINE_SHORT_DWELL_PEN
+    sd_arr: np.ndarray = field(
+        default_factory=lambda: DEFAULT_REFINE_SHORT_DWELL_PEN
+    )
     _levels_array: np.ndarray = None
     str_kmer_levels: dict = None
     kmer_len: int = None
