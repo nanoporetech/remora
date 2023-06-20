@@ -4,9 +4,11 @@ import array
 import queue
 import platform
 import traceback
+from abc import ABC
 from time import sleep
 import multiprocessing as mp
 from threading import Thread
+from reprlib import recursive_repr
 from os.path import realpath, expanduser
 
 import torch
@@ -47,6 +49,15 @@ U_TO_T_BASES = {ord("U"): ord("T")}
 T_TO_U_BASES = {ord("T"): ord("U")}
 
 DEFAULT_QUEUE_SIZE = 10_000
+
+
+def human_format(num):
+    num = float("{:.3g}".format(num))
+    mag = 0
+    while num >= 1000:
+        mag += 1
+        num /= 1000.0
+    return num, ["", "K", "M", "B", "T"][mag]
 
 
 def parse_device(device):
@@ -366,6 +377,61 @@ def format_mm_ml_tags(seq, poss, probs, mod_bases, can_base, strand: str = "+"):
 ###################
 
 
+class AbstractCountingQueue(ABC):
+    def put(self, *args, **kwargs):
+        self.queue.put(*args, **kwargs)
+        with self._size.get_lock():
+            self._size.value += 1
+
+    def get(self, *args, **kwargs):
+        rval = self.queue.get(*args, **kwargs)
+        with self._size.get_lock():
+            self._size.value -= 1
+        return rval
+
+    def qsize(self):
+        qsize = max(0, self._size.value)
+        if self.maxsize is not None:
+            return min(self.maxsize, qsize)
+        return qsize
+
+    def empty(self):
+        return self.qsize() <= 0
+
+    @recursive_repr()
+    def __repr__(self):
+        return (
+            f"{'Queue' if self.name is None else self.name}:{self.qsize()}"
+            f"{'' if self.maxsize is None else '/' + str(self.maxsize)}"
+        )
+
+
+class CountingMPQueue(AbstractCountingQueue):
+    def __init__(self, *args, **kwargs):
+        self._size = mp.Value("i", 0)
+        self.maxsize = None
+        self.name = None
+        if "name" in kwargs:
+            self.name = kwargs["name"]
+            del kwargs["name"]
+        if "maxsize" in kwargs:
+            self.maxsize = kwargs["maxsize"]
+        self.queue = mp.Queue(maxsize=self.maxsize)
+
+
+class CountingQueue(AbstractCountingQueue):
+    def __init__(self, **kwargs):
+        self._size = mp.Value("i", 0)
+        self.maxsize = None
+        self.name = None
+        if "name" in kwargs:
+            self.name = kwargs["name"]
+            del kwargs["name"]
+        if "maxsize" in kwargs:
+            self.maxsize = kwargs["maxsize"]
+        self.queue = queue.Queue(maxsize=self.maxsize)
+
+
 def _put_item(item, out_q):
     """Put item into queue with timeout to handle KeyboardInterrupt"""
     while True:
@@ -477,14 +543,16 @@ class MultitaskMap:
         num_workers=1,
         q_maxsize=DEFAULT_QUEUE_SIZE,
         use_process=False,
+        use_mp_queue=True,
         args=(),
         kwargs={},
         name="MultitaskMap",
     ):
         self.name = name
         self.num_workers = num_workers
-        self.out_q = mp.Queue(q_maxsize)
-        in_q = mp.Queue(q_maxsize)
+        q_cls = CountingMPQueue if use_mp_queue else CountingQueue
+        self.out_q = q_cls(maxsize=q_maxsize, name=f"{name}.out")
+        in_q = q_cls(maxsize=q_maxsize, name=f"{name}.in")
 
         mt_worker = mp.Process if use_process else Thread
         # TODO save workers to self and provide method to watch workers
@@ -536,12 +604,14 @@ class BackgroundIter:
         func,
         q_maxsize=DEFAULT_QUEUE_SIZE,
         use_process=False,
+        use_mp_queue=True,
         args=(),
         kwargs={},
         name="BackgroundIter",
     ):
         self.name = name
-        self.out_q = mp.Queue(q_maxsize)
+        q_cls = CountingMPQueue if use_mp_queue else CountingQueue
+        self.out_q = q_cls(maxsize=q_maxsize, name=f"{name}.out")
 
         mt_worker = mp.Process if use_process else Thread
         mt_worker(

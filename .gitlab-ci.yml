@@ -19,7 +19,7 @@ unit_test:py38:
     image: python:3.8
     stage: test
     script:
-        - pytest -m unit --durations 10
+        - pytest -m unit --durations 10 -s
 
 
 format:py39:
@@ -32,7 +32,7 @@ unit_test:py39:
     image: python:3.9
     stage: test
     script:
-        - pytest -m unit --durations 10
+        - pytest -m unit --durations 10 -s
 
 
 format:py310:
@@ -45,7 +45,7 @@ unit_test:py310:
     image: python:3.10
     stage: test
     script:
-        - pytest -m unit --durations 10
+        - pytest -m unit --durations 10 -s
 
 
 format:py311:
@@ -58,4 +58,4 @@ unit_test:py311:
     image: python:3.11
     stage: test
     script:
-        - pytest -m unit --durations 10
+        - pytest -m unit --durations 10 -s

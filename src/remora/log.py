@@ -57,7 +57,7 @@ def init_logger(log_fn=None, quiet=False):
     """
     log_fp = None
     if log_fn is not None:
-        log_fp = logging.FileHandler(log_fn, mode="a")
+        log_fp = logging.FileHandler(log_fn, mode="w")
         log_fp.setLevel(logging.DEBUG)
         log_fp.setFormatter(CustomFormatter())
     if log_fp is not None:
