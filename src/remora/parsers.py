@@ -967,6 +967,12 @@ def register_infer_from_pod5_and_bam(parser):
         help="Number of batch preparation workers.",
     )
     comp_grp.add_argument(
+        "--num-post-process-workers",
+        type=int,
+        default=1,
+        help="Number of post-processing workers.",
+    )
+    comp_grp.add_argument(
         "--batch-size",
         default=constants.DEFAULT_BATCH_SIZE,
         type=int,
@@ -1136,6 +1142,7 @@ def run_infer_from_pod5_and_bam(args):
         queue_max=args.queue_max,
         num_extract_alignment_workers=args.num_extract_alignment_workers,
         num_prep_batch_workers=args.num_prepare_batch_workers,
+        num_post_process_workers=args.num_post_process_workers,
         batch_size=args.batch_size,
         ref_anchored=args.reference_anchored,
     )
