@@ -10,6 +10,7 @@ from remora.constants import (
     DEFAULT_REFINE_SHORT_DWELL_PARAMS,
     DEFAULT_REFINE_ALGO,
     REFINE_ALGO_DWELL_PEN_NAME,
+    MAX_POINTS_FOR_THEIL_SEN,
 )
 from remora.refine_signal_map_core import (
     seq_banded_dp,
@@ -72,6 +73,47 @@ def rough_rescale_lstsq(dacs, levels, shift, scale, quants):
     new_shift = shift - (scale * shift_est / scale_est)
     new_scale = scale / scale_est
     return new_shift, new_scale
+
+
+def compute_slopes(r_event_means, r_model_means):
+    # despite computing each diff twice this vectorized solution is
+    # about 10X faster than a list comprehension approach
+    delta_event = r_event_means[:, np.newaxis] - r_event_means
+    delta_model = r_model_means[:, np.newaxis] - r_model_means
+    return delta_model[delta_event > 0] / delta_event[delta_event > 0]
+
+
+def theil_sen(dacs, lvls, shift, scale):
+    slope = np.median(compute_slopes(dacs, lvls))
+    inter = np.median(lvls - (slope * dacs))
+    if slope == 0:
+        raise RemoraError(
+            "Read failed sequence-based signal ",
+            "re-scaling parameter estimation.",
+        )
+    scale_corr_factor = 1 / slope
+    shift_corr_factor = -inter / slope
+    new_shift = shift + (shift_corr_factor * scale)
+    new_scale = scale * scale_corr_factor
+    return new_shift, new_scale
+
+
+def rescale_theil_sen(dacs, levels, shift, scale):
+    norm_sig = (dacs - shift) / scale
+    n_points = levels.shape[0]
+    if levels.shape[0] > MAX_POINTS_FOR_THEIL_SEN:
+        n_points = MAX_POINTS_FOR_THEIL_SEN
+        samp_ind = np.random.choice(levels.shape[0], n_points, replace=False)
+        levels = levels[samp_ind]
+        norm_sig = norm_sig[samp_ind]
+    return theil_sen(norm_sig, levels, shift, scale)
+
+
+def rough_rescale_theil_sen(dacs, levels, shift, scale, quants):
+    norm_sig = (dacs - shift) / scale
+    norm_qs = np.quantile(norm_sig, quants)
+    lvl_qs = np.quantile(levels, quants)
+    return theil_sen(norm_qs, lvl_qs, shift, scale)
 
 
 ##########################
@@ -307,6 +349,7 @@ class SigMapRefiner:
         quants=np.arange(0.05, 1, 0.05),
         clip_bases=10,
         use_base_center=True,
+        use_theil_sen=True,
     ):
         """Estimate new scaling parameters base on quantiles of levels and
         quantiles of central signal point in each base.
@@ -327,6 +370,10 @@ class SigMapRefiner:
                 optim_dacs = optim_dacs[clip_bases:-clip_bases]
         else:
             optim_dacs = dacs[seq_to_sig_map[0] : seq_to_sig_map[-1]]
+        if use_theil_sen:
+            return rough_rescale_theil_sen(
+                optim_dacs, levels, shift, scale, quants
+            )
         return rough_rescale_lstsq(optim_dacs, levels, shift, scale, quants)
 
     def rescale(
@@ -340,6 +387,7 @@ class SigMapRefiner:
         min_abs_level=0.2,
         edge_filter_bases=10,
         min_levels=10,
+        use_theil_sen=True,
     ):
         """Estimate new scaling parameters base on current signal mapping to
         estimated levels.
@@ -390,7 +438,8 @@ class SigMapRefiner:
         filt_dacs = dac_means[valid_bases]
         if filt_levels.size < min_levels:
             raise RemoraError("Too few positions")
-
+        if use_theil_sen:
+            return rescale_theil_sen(filt_dacs, filt_levels, shift, scale)
         return rescale_lstsq(filt_dacs, filt_levels, shift, scale)
 
     def refine_sig_map(self, shift, scale, seq_to_sig_map, int_seq, dacs):
