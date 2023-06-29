@@ -6,7 +6,7 @@ from subprocess import check_call
 import pysam
 import pytest
 
-from remora.data_chunks import RemoraDataset
+from remora.data_chunks import RemoraDataset, CoreRemoraDataset
 
 pytestmark = pytest.mark.main
 
@@ -24,8 +24,8 @@ MODEL_PATHS = [
     and str(model_path).find("var_width") == -1
 ]
 
-EXPECTED_CAN_CHUNKS = 205
-EXPECTED_MOD_CHUNKS = 210
+EXPECTED_CAN_SIZE = 205
+EXPECTED_MOD_SIZE = 210
 
 
 @pytest.mark.smoke
@@ -36,38 +36,37 @@ def test_help():
 @pytest.mark.unit
 @pytest.mark.etl
 def test_prep_can(can_chunks):
-    dataset = RemoraDataset.load_from_file(
+    dataset = CoreRemoraDataset(
         str(can_chunks),
         batch_size=10,
     )
-    assert dataset.nchunks == EXPECTED_CAN_CHUNKS
-    assert dict(dataset.get_label_counts()) == {0: EXPECTED_CAN_CHUNKS}
+    assert dataset.size == EXPECTED_CAN_SIZE
+    assert dataset.get_label_counts()[0] == EXPECTED_CAN_SIZE
 
 
 @pytest.mark.unit
 @pytest.mark.etl
 def test_prep_mod(mod_chunks):
-    dataset = RemoraDataset.load_from_file(
+    dataset = CoreRemoraDataset(
         str(mod_chunks),
         batch_size=10,
     )
-    assert dataset.nchunks == EXPECTED_MOD_CHUNKS
-    assert dict(dataset.get_label_counts()) == {1: EXPECTED_MOD_CHUNKS}
+    assert dataset.size == EXPECTED_MOD_SIZE
+    assert dataset.get_label_counts()[1] == EXPECTED_MOD_SIZE
 
 
 @pytest.mark.unit
 @pytest.mark.etl
 def test_remora_dataset(chunks):
-    dataset = RemoraDataset.load_from_file(
+    dataset = RemoraDataset.from_config(
         str(chunks),
         batch_size=10,
     )
-    assert len(dataset.get_label_counts()) > 1, "label counts should be > 1"
-    assert dataset.nchunks == EXPECTED_CAN_CHUNKS + EXPECTED_MOD_CHUNKS
-    assert dict(dataset.get_label_counts()) == {
-        1: EXPECTED_MOD_CHUNKS,
-        0: EXPECTED_CAN_CHUNKS,
-    }
+    label_counts = dataset.get_label_counts()
+    assert label_counts.size == 2, "label counts sie should be 2"
+    assert dataset.size == EXPECTED_CAN_SIZE + EXPECTED_MOD_SIZE
+    assert label_counts[0] == EXPECTED_CAN_SIZE
+    assert label_counts[1] == EXPECTED_MOD_SIZE
 
 
 ##################
@@ -95,7 +94,6 @@ def test_train(model_path, tmpdir_factory, chunks, train_cli_args):
             *train_cli_args,
         ],
     )
-    return out_dir
 
 
 @pytest.mark.unit
@@ -203,9 +201,9 @@ def test_mod_validate_from_dataset(tmpdir_factory, chunks, fw_mod_model_dir):
 @pytest.mark.unit
 def test_mod_validate_from_modbams(
     tmpdir_factory,
-    can_modbam_old_tags,
+    can_modbam,
     can_gt_bed,
-    mod_modbam_old_tags,
+    mod_modbam,
     mod_gt_bed,
 ):
     out_dir = tmpdir_factory.mktemp("remora_tests")
@@ -218,10 +216,10 @@ def test_mod_validate_from_modbams(
             "validate",
             "from_modbams",
             "--bam-and-bed",
-            can_modbam_old_tags,
+            can_modbam,
             can_gt_bed,
             "--bam-and-bed",
-            mod_modbam_old_tags,
+            mod_modbam,
             mod_gt_bed,
             "--full-results-filename",
             full_file,
@@ -232,61 +230,6 @@ def test_mod_validate_from_modbams(
 
     assert full_file.exists()
     assert log_file.exists()
-
-
-###################
-# Base Prediction #
-###################
-
-
-@pytest.mark.skip(reason="Base prediction")
-@pytest.mark.parametrize("model_path", MODEL_PATHS)
-def test_train_base_pred(
-    model_path, tmpdir_factory, can_chunks, train_cli_args
-):
-    """Run `model train` on the command line with base prediction option."""
-    print(f"Running command line `remora train_model` with model {model_path}")
-    out_dir = tmpdir_factory.mktemp("remora_tests") / "train_base_pred_model"
-    print(f"Output file: {out_dir}")
-    check_call(
-        [
-            "remora",
-            "model",
-            "train",
-            str(can_chunks),
-            "--output-path",
-            str(out_dir),
-            "--model",
-            model_path,
-            *train_cli_args,
-        ],
-    )
-    return out_dir
-
-
-@pytest.mark.skip(reason="Base prediction")
-@pytest.mark.unit
-def test_base_pred_validate(tmpdir_factory, can_chunks, fw_base_pred_model_dir):
-    out_dir = tmpdir_factory.mktemp("remora_tests")
-    print(f"Trained validate base pred results output: {out_dir}")
-    out_file = out_dir / "base_pred_validate.txt"
-    full_file = out_dir / "base_pred_validate_full.txt"
-    check_call(
-        [
-            "remora",
-            "validate",
-            "from_remora_dataset",
-            can_chunks,
-            "--model",
-            str(fw_base_pred_model_dir / FINAL_MODEL_FILENAME),
-            "--batch-size",
-            "20",
-            "--out-file",
-            out_file,
-            "--full-results-filename",
-            full_file,
-        ],
-    )
 
 
 ####################
@@ -335,4 +278,3 @@ def test_plot_ref_region(
             log_path,
         ],
     )
-    return out_dir

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from subprocess import check_call
 
@@ -55,9 +56,9 @@ def make_template_and_complement_reads(
     return template_read, complement_read
 
 
-def make_pairs_lut(pairs_fn):
+def make_pairs_lut(pairs_path):
     lut = dict()
-    with open(pairs_fn, "r") as fh:
+    with open(pairs_path, "r") as fh:
         seen_header = False
         for line in fh:
             if not seen_header:
@@ -202,12 +203,12 @@ def pretrain_model_args():
 def duplex_reads(
     simplex_alignments, duplex_mapped_alignments, duplex_reads_and_pairs_pod5
 ):
-    pod5_path, pairs_fn = duplex_reads_and_pairs_pod5
+    pod5_path, pairs_path = duplex_reads_and_pairs_pod5
     raw_reads = load_pod5s(pod5_path)
     simplex_bam_lut = load_alignments(
         simplex_alignments, require_move_table=True
     )
-    pairs_lut = make_pairs_lut(pairs_fn)
+    pairs_lut = make_pairs_lut(pairs_path)
     duplex_alignments = load_alignments(
         duplex_mapped_alignments, require_move_table=False
     )
@@ -252,10 +253,8 @@ def can_chunks(tmpdir_factory, can_pod5, can_mappings):
     """Run `remora dataset prepare` on canonical data."""
     print("\nRunning `remora dataset prepare` canonical")
     out_dir = tmpdir_factory.mktemp("remora_tests")
-    chunks_fn = out_dir / "can_chunks.npz"
-    log_fn = out_dir / "log.txt"
-    print(f"Output file: {chunks_fn}")
-    print(f"Log file: {log_fn}")
+    chunks_path = out_dir / "can_chunks"
+    print(f"Output file: {chunks_path}")
     check_call(
         [
             "remora",
@@ -263,10 +262,8 @@ def can_chunks(tmpdir_factory, can_pod5, can_mappings):
             "prepare",
             str(can_pod5),
             str(can_mappings),
-            "--output-remora-training-file",
-            str(chunks_fn),
-            "--log-filename",
-            str(log_fn),
+            "--output-path",
+            str(chunks_path),
             "--mod-base-control",
             "--motif",
             "CG",
@@ -277,7 +274,7 @@ def can_chunks(tmpdir_factory, can_pod5, can_mappings):
             "1",
         ],
     )
-    return chunks_fn
+    return chunks_path
 
 
 @pytest.fixture(scope="session")
@@ -285,10 +282,8 @@ def mod_chunks(tmpdir_factory, mod_pod5, mod_mappings):
     """Run `remora dataset prepare` on modified data."""
     print("\nRunning `remora dataset prepare` on modified data")
     out_dir = tmpdir_factory.mktemp("remora_tests")
-    chunks_fn = out_dir / "mod_chunks.npz"
-    log_fn = out_dir / "log.txt"
-    print(f"Output file: {chunks_fn}")
-    print(f"Log file: {log_fn}")
+    chunks_path = out_dir / "mod_chunks"
+    print(f"Output file: {chunks_path}")
     check_call(
         [
             "remora",
@@ -296,10 +291,8 @@ def mod_chunks(tmpdir_factory, mod_pod5, mod_mappings):
             "prepare",
             str(mod_pod5),
             str(mod_mappings),
-            "--output-remora-training-file",
-            str(chunks_fn),
-            "--log-filename",
-            str(log_fn),
+            "--output-path",
+            str(chunks_path),
             "--mod-base",
             "m",
             "5mC",
@@ -312,32 +305,18 @@ def mod_chunks(tmpdir_factory, mod_pod5, mod_mappings):
             "1",
         ],
     )
-    return chunks_fn
+    return chunks_path
 
 
 @pytest.fixture(scope="session")
 def chunks(tmpdir_factory, can_chunks, mod_chunks):
     """Run `remora dataset merge`."""
-    print("\nRunning `remora dataset merge`")
+    config = [[str(can_chunks), 0.5], [str(mod_chunks), 0.5]]
     out_dir = tmpdir_factory.mktemp("remora_tests")
-    chunks_fn = out_dir / "chunks.npz"
-    print(f"Output file: {chunks_fn}")
-    check_call(
-        [
-            "remora",
-            "dataset",
-            "merge",
-            "--input-dataset",
-            str(can_chunks),
-            "1000",
-            "--input-dataset",
-            str(mod_chunks),
-            "1000",
-            "--output-dataset",
-            str(chunks_fn),
-        ],
-    )
-    return chunks_fn
+    chunks_path = out_dir / "chunks.cfg"
+    with open(chunks_path, "w") as chunks_fh:
+        json.dump(config, chunks_fh)
+    return chunks_path
 
 
 ########################
@@ -348,16 +327,18 @@ def chunks(tmpdir_factory, can_chunks, mod_chunks):
 @pytest.fixture(scope="session")
 def train_cli_args():
     return [
-        "--val-prop",
-        "0.1",
         "--batch-size",
-        "10",
+        "32",
         "--epochs",
         "3",
         "--size",
         "16",
         "--save-freq",
         "2",
+        "--num-test-chunks",
+        "64",
+        "--chunks-per-epoch",
+        "320",
     ]
 
 
@@ -429,7 +410,7 @@ def fw_mod_model_dir(fw_model_path, tmpdir_factory, chunks, train_cli_args):
 def can_modbam(tmpdir_factory, can_pod5, can_mappings, pretrain_model_args):
     out_dir = tmpdir_factory.mktemp("remora_tests")
     print(f"\nPretrained infer results output: {out_dir}")
-    out_file = out_dir / "can_infer_pretrain.bam"
+    out_path = out_dir / "can_infer_pretrain.bam"
     check_call(
         [
             "remora",
@@ -438,38 +419,18 @@ def can_modbam(tmpdir_factory, can_pod5, can_mappings, pretrain_model_args):
             can_pod5,
             can_mappings,
             "--out-bam",
-            out_file,
+            out_path,
             *pretrain_model_args,
         ],
     )
-    return out_file
-
-
-def revert_tags(old_bam, new_bam):
-    with pysam.AlignmentFile(old_bam, "rb") as in_bam:
-        with pysam.AlignmentFile(new_bam, "wb", template=in_bam) as out_bam:
-            for read in in_bam:
-                read.tags = [
-                    tag if tag[0] != "MM" else (tag[0], tag[1].replace("?", ""))
-                    for tag in read.tags
-                ]
-                out_bam.write(read)
-
-
-@pytest.fixture(scope="session")
-def can_modbam_old_tags(tmpdir_factory, can_modbam):
-    out_dir = tmpdir_factory.mktemp("remora_tests")
-    print(f"\nRevert modbam tags to old version: {out_dir}")
-    out_file = out_dir / "can_old_tags.bam"
-    revert_tags(can_modbam, out_file)
-    return out_file
+    return out_path
 
 
 @pytest.fixture(scope="session")
 def mod_modbam(tmpdir_factory, mod_pod5, mod_mappings, pretrain_model_args):
     out_dir = tmpdir_factory.mktemp("remora_tests")
     print(f"\nPretrained infer results output: {out_dir}")
-    out_file = out_dir / "mod_infer_pretrain.bam"
+    out_path = out_dir / "mod_infer_pretrain.bam"
     check_call(
         [
             "remora",
@@ -478,17 +439,8 @@ def mod_modbam(tmpdir_factory, mod_pod5, mod_mappings, pretrain_model_args):
             mod_pod5,
             mod_mappings,
             "--out-bam",
-            out_file,
+            out_path,
             *pretrain_model_args,
         ],
     )
-    return out_file
-
-
-@pytest.fixture(scope="session")
-def mod_modbam_old_tags(tmpdir_factory, mod_modbam):
-    out_dir = tmpdir_factory.mktemp("remora_tests")
-    print(f"\nRevert modbam tags to old version: {out_dir}")
-    out_file = out_dir / "mod_old_tags.bam"
-    revert_tags(mod_modbam, out_file)
-    return out_file
+    return out_path

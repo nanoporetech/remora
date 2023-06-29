@@ -7,13 +7,12 @@ import torch
 import pysam
 import numpy as np
 import pandas as pd
-from torch import nn
 from tqdm import tqdm
 from sklearn.metrics import confusion_matrix
 
 from remora.io import parse_mods_bed
 from remora.util import softmax_axis1, revcomp
-from remora import RemoraError, constants, encoded_kmers, log
+from remora import RemoraError, constants, log
 
 
 LOGGER = log.get_logger()
@@ -111,58 +110,40 @@ def _validate_model(
     unmodeled_labels = np.array(
         [
             idx + 1
-            for idx, mb in enumerate(dataset.mod_bases)
+            for idx, mb in enumerate(dataset.metadata.mod_bases)
             if mb not in model_mod_bases
         ]
     )
-    is_torch_model = isinstance(model, nn.Module)
-    if is_torch_model:
-        model.eval()
-        torch.set_grad_enabled(False)
+    model.eval()
+    torch.set_grad_enabled(False)
 
-    bb, ab = dataset.kmer_context_bases
+    bb, ab = dataset.metadata.kmer_context_bases
     all_labels = []
     all_outputs = []
     all_loss = []
 
     if os.environ.get("LOG_SAFE", False):
         disable_pbar = True
-    for (
-        (sigs, seqs, seq_maps, seq_lens),
-        labels,
-        (read_ids, read_focus_bases),
-    ) in tqdm(
+    for enc_kmers, sigs, labels in tqdm(
         dataset,
         smoothing=0,
         desc="Batches",
         disable=disable_pbar,
     ):
-        all_labels.append(labels)
-        enc_kmers = encoded_kmers.compute_encoded_kmer_batch(
-            bb, ab, seqs, seq_maps, seq_lens
-        )
-        if is_torch_model:
-            sigs = torch.from_numpy(sigs).to(device)
-            enc_kmers = torch.from_numpy(enc_kmers).to(device)
-            output = model(sigs, enc_kmers).detach().cpu().numpy()
-        else:
-            output = model.run([], {"sig": sigs, "seq": enc_kmers})[0]
+        all_labels.append(labels.cpu().numpy())
+        sigs = sigs.to(device)
+        enc_kmers = enc_kmers.to(device)
+        output = model(sigs, enc_kmers).detach().cpu().numpy()
         output = add_unmodeled_labels(output, unmodeled_labels)
         all_outputs.append(output)
         all_loss.append(
-            criterion(torch.from_numpy(output), torch.from_numpy(labels))
-            .detach()
-            .cpu()
-            .numpy()
+            criterion(torch.from_numpy(output), labels).detach().cpu().numpy()
         )
         if full_results_fh is not None:
-            full_results_fh.write_results(
-                output, labels, read_ids, read_focus_bases
-            )
+            full_results_fh.write_results(output, labels)
     all_outputs = np.concatenate(all_outputs, axis=0)
     all_labels = np.concatenate(all_labels)
-    if is_torch_model:
-        torch.set_grad_enabled(True)
+    torch.set_grad_enabled(True)
     all_probs = softmax_axis1(all_outputs)
     (
         acc,
@@ -250,13 +231,11 @@ class ResultsWriter:
         )
         df.to_csv(self.out_fh, sep=self.sep, index=False)
 
-    def write_results(self, output, labels, read_ids, read_focus_bases):
+    def write_results(self, output, labels):
         class_preds = output.argmax(axis=1)
         str_probs = [",".join(map(str, r)) for r in softmax_axis1(output)]
         pd.DataFrame(
             {
-                "read_id": read_ids,
-                "read_focus_base": read_focus_bases,
                 "label": labels,
                 "class_pred": class_preds,
                 "class_probs": str_probs,

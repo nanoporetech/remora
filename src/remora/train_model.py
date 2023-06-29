@@ -1,19 +1,21 @@
 import os
+import json
 import atexit
 from shutil import copyfile
+from itertools import islice
 
 import torch
 import numpy as np
 from tqdm import tqdm
 from thop import profile
+from torch.utils.data import DataLoader
 
-from remora.data_chunks import RemoraDataset
+from remora.data_chunks import RemoraDataset, dataloader_worker_init
 from remora import (
     constants,
     util,
     log,
     RemoraError,
-    encoded_kmers,
     model_util,
     validate,
 )
@@ -95,7 +97,6 @@ def train_model(
     remora_dataset_path,
     chunk_context,
     kmer_context_bases,
-    val_prop,
     batch_size,
     model_path,
     size,
@@ -104,17 +105,18 @@ def train_model(
     scheduler_name,
     weight_decay,
     epochs,
+    chunks_per_epoch,
+    num_test_chunks,
     save_freq,
     early_stopping,
     filt_frac,
     ext_val,
     ext_val_names,
     lr_sched_kwargs,
-    balance,
-    batch_label_weights,
     high_conf_incorrect_thr_frac,
     finetune_path,
     freeze_num_layers,
+    skip_dataset_hash,
 ):
     seed = (
         np.random.randint(0, np.iinfo(np.uint32).max, dtype=np.uint32)
@@ -129,18 +131,22 @@ def train_model(
         torch.cuda.manual_seed_all(seed)
         torch.cuda.set_device(device)
 
-    LOGGER.info("Loading dataset from Remora file")
-    dataset = RemoraDataset.load_from_file(
+    LOGGER.info("Loading dataset from Remora dataset config")
+    # don't load extra arrays for training
+    override_metadata = {"extra_arrays": {}}
+    if kmer_context_bases is not None:
+        override_metadata["kmer_context_bases"] = kmer_context_bases
+    if chunk_context is not None:
+        override_metadata["chunk_context"] = chunk_context
+    dataset = RemoraDataset.from_config(
         remora_dataset_path,
+        override_metadata=override_metadata,
         batch_size=batch_size,
-        drop_read_attrs=True,
+        skip_hash=skip_dataset_hash,
     )
-    LOGGER.info(f"Dataset loaded with labels: {dataset.get_label_counts()}")
-    if balance:
-        dataset = dataset.balance_classes()
-        LOGGER.info(f"Dataset balanced: {dataset.get_label_counts()}")
-    dataset.trim_kmer_context_bases(kmer_context_bases)
-    dataset.trim_chunk_context(chunk_context)
+    with open(os.path.join(out_path, "dataset_config.jsn"), "w") as ds_cfg_fh:
+        json.dump(dataset.get_config(), ds_cfg_fh)
+    dataset.metadata.write(os.path.join(out_path, "dataset_metadata.jsn"))
     # load attributes from file
     LOGGER.info(f"Dataset summary:\n{dataset.summary}")
 
@@ -157,16 +163,15 @@ def train_model(
     LOGGER.info("Loading model")
     copy_model_path = util.resolve_path(os.path.join(out_path, "model.py"))
     copyfile(model_path, copy_model_path)
-    num_out = 4 if dataset.base_pred else len(dataset.mod_bases) + 1
     model_params = {
         "size": size,
-        "kmer_len": sum(dataset.kmer_context_bases) + 1,
-        "num_out": num_out,
+        "kmer_len": dataset.metadata.kmer_len,
+        "num_out": dataset.metadata.num_labels,
     }
     model = model_util._load_python_model(copy_model_path, **model_params)
     LOGGER.info(f"Model structure:\n{model}")
 
-    if finetune_path:
+    if finetune_path is not None:
         ckpt, model = model_util.continue_from_checkpoint(
             finetune_path, copy_model_path
         )
@@ -179,57 +184,56 @@ def train_model(
                 if freeze_iter >= freeze_num_layers:
                     break
 
-        if ckpt["model_params"]["num_out"] != num_out:
+        if ckpt["model_params"]["num_out"] != dataset.metadata.num_labels:
             in_feat = model.fc.in_features
-            model.fc = torch.nn.Linear(in_feat, num_out)
+            model.fc = torch.nn.Linear(in_feat, dataset.metadata.num_labels)
         if ckpt["model_params"]["size"] != size:
             LOGGER.warning(
                 "Size mismatch between pretrained model and selected size. "
                 "Using pretrained model size."
             )
             model_params["size"] = ckpt["model_params"]["size"]
-        if dataset.chunk_context != ckpt["chunk_context"]:
+        if dataset.metadata.chunk_context != ckpt["chunk_context"]:
             raise RemoraError(
                 "The chunk context of the pre-trained model and the dataset "
                 "do not match."
             )
-        if dataset.kmer_context_bases != ckpt["kmer_context_bases"]:
+        if dataset.metadata.kmer_context_bases != ckpt["kmer_context_bases"]:
             raise RemoraError(
                 "The kmer context bases of the pre-trained model and "
                 "the dataset do not match."
             )
-        if dataset.base_pred != ckpt["base_pred"]:
+        if (
+            dataset.metadata.modified_base_labels
+            != ckpt["modified_base_labels"]
+        ):
             raise RemoraError(
-                "The base_pred flag does not match between the pre-trained "
-                "model and the dataset."
+                "The modified_base_labels flag does not match between the "
+                "pre-trained model and the dataset."
             )
 
-    if ext_val:
+    if ext_val is not None:
         if ext_val_names is None:
             ext_val_names = [f"e_val_{idx}" for idx in range(len(ext_val))]
         else:
             assert len(ext_val_names) == len(ext_val)
         ext_sets = []
         for e_name, e_path in zip(ext_val_names, ext_val):
-            ext_val_set = RemoraDataset.load_from_file(
+            ext_val_set = RemoraDataset.from_config(
                 e_path.strip(),
+                ds_kwargs={"infinite_iter": False},
                 batch_size=batch_size,
-                shuffle_on_iter=False,
-                drop_last=False,
-                drop_read_attrs=True,
+                skip_hash=True,
             )
-            if ext_val_set.mod_long_names != dataset.mod_long_names:
-                ext_val_set.add_fake_base(
-                    dataset.mod_long_names, dataset.mod_bases
-                )
-            ext_val_set.trim_kmer_context_bases(kmer_context_bases)
-            ext_val_set.trim_chunk_context(chunk_context)
+            ext_val_set.update_metadata(dataset)
             ext_sets.append((e_name, ext_val_set))
 
-    kmer_dim = int((sum(dataset.kmer_context_bases) + 1) * 4)
-    test_input_sig = torch.randn(batch_size, 1, sum(dataset.chunk_context))
+    kmer_dim = int(dataset.metadata.kmer_len * 4)
+    test_input_sig = torch.randn(
+        batch_size, 1, sum(dataset.metadata.chunk_context)
+    )
     test_input_seq = torch.randn(
-        batch_size, kmer_dim, sum(dataset.chunk_context)
+        batch_size, kmer_dim, sum(dataset.metadata.chunk_context)
     )
     macs, params = profile(
         model, inputs=(test_input_sig, test_input_seq), verbose=False
@@ -246,54 +250,54 @@ def train_model(
 
     scheduler = select_scheduler(scheduler_name, opt, lr_sched_kwargs)
 
-    label_counts = dataset.get_label_counts()
-    LOGGER.info(f"Label distribution: {label_counts}")
-    if len(label_counts) <= 1:
-        raise RemoraError(
-            "One or fewer output labels found. Ensure --focus-offset and "
-            "--mod are specified correctly"
-        )
     LOGGER.debug("Splitting dataset")
-    trn_ds, val_ds = dataset.split_data(val_prop=val_prop, stratified=True)
+    trn_ds, val_ds = dataset.train_test_split(
+        num_test_chunks,
+        override_metadata=override_metadata,
+    )
+    trn_loader = DataLoader(
+        trn_ds,
+        num_workers=4,
+        batch_size=None,
+        pin_memory=True,
+        persistent_workers=True,
+        worker_init_fn=dataloader_worker_init,
+    )
     LOGGER.debug("Extracting head of train dataset")
     val_trn_ds = trn_ds.head(
-        prop=val_prop, shuffle_on_iter=False, drop_last=False, stratified=True
+        num_test_chunks,
+        override_metadata=override_metadata,
     )
-    if batch_label_weights is not None:
-        LOGGER.debug("Applying batch label proportions")
-        trn_ds.batch_label_props = np.array(batch_label_weights) / sum(
-            batch_label_weights
-        )
-        trn_ds.order_chunks_by_batch_labels()
-    LOGGER.info(f"Train label distribution: {trn_ds.get_label_counts()}")
-    LOGGER.info(
-        f"Held-out validation label distribution: {val_ds.get_label_counts()}"
-    )
-    LOGGER.info(
-        "Training set validation label distribution: "
-        f"{val_trn_ds.get_label_counts()}"
-    )
+    LOGGER.info(f"Dataset loaded with labels: {dataset.label_summary}")
+    LOGGER.info(f"Train labels: {trn_ds.label_summary}")
+    LOGGER.info(f"Held-out validation labels: {val_ds.label_summary}")
+    LOGGER.info(f"Training set validation labels: {val_trn_ds.label_summary}")
 
     LOGGER.info("Running initial validation")
     # assess accuracy before first iteration
     val_metrics = val_fp.validate_model(
-        model, dataset.mod_bases, criterion, val_ds, filt_frac
+        model, dataset.metadata.mod_bases, criterion, val_ds, filt_frac
     )
     trn_metrics = val_fp.validate_model(
         model,
-        dataset.mod_bases,
+        dataset.metadata.mod_bases,
         criterion,
         val_trn_ds,
         filt_frac,
         "trn",
     )
+    batches_per_epoch = int(np.ceil(chunks_per_epoch / batch_size))
+    epoch_summ = trn_ds.epoch_summary(batches_per_epoch)
+    LOGGER.debug(f"Epoch Summary:\n{epoch_summ}")
+    with open(os.path.join(out_path, "epoch_summary.txt"), "w") as summ_fh:
+        summ_fh.write(epoch_summ + "\n")
 
     if ext_val:
         best_alt_val_accs = dict((e_name, 0) for e_name, _ in ext_sets)
         for e_name, e_set in ext_sets:
             val_fp.validate_model(
                 model,
-                dataset.mod_bases,
+                dataset.metadata.mod_bases,
                 criterion,
                 e_set,
                 filt_frac,
@@ -311,7 +315,7 @@ def train_model(
         disable=os.environ.get("LOG_SAFE", False),
     )
     pbar = tqdm(
-        total=len(trn_ds),
+        total=batches_per_epoch,
         desc="Epoch Progress",
         dynamic_ncols=True,
         position=1,
@@ -334,21 +338,20 @@ def train_model(
         "opt": opt.state_dict(),
         "model_path": copy_model_path,
         "model_params": model_params,
-        "chunk_context": dataset.chunk_context,
         "fixed_seq_len_chunks": model._variable_width_possible,
-        "motifs": dataset.motifs,
-        "num_motifs": dataset.num_motifs,
-        "reverse_signal": dataset.reverse_signal,
-        "mod_bases": dataset.mod_bases,
-        "mod_long_names": dataset.mod_long_names,
-        "base_pred": dataset.base_pred,
-        "kmer_context_bases": dataset.kmer_context_bases,
-        "base_start_justify": dataset.base_start_justify,
-        "offset": dataset.offset,
         "model_version": constants.MODEL_VERSION,
-        **dataset.sig_map_refiner.get_save_kwargs(),
+        "chunk_context": dataset.metadata.chunk_context,
+        "motifs": dataset.metadata.motifs,
+        "num_motifs": dataset.metadata.num_motifs,
+        "reverse_signal": dataset.metadata.reverse_signal,
+        "mod_bases": dataset.metadata.mod_bases,
+        "mod_long_names": dataset.metadata.mod_long_names,
+        "modified_base_labels": dataset.metadata.modified_base_labels,
+        "kmer_context_bases": dataset.metadata.kmer_context_bases,
+        "base_start_justify": dataset.metadata.base_start_justify,
+        "offset": dataset.metadata.offset,
+        **dataset.metadata.sig_map_refiner.asdict(),
     }
-    bb, ab = dataset.kmer_context_bases
     best_val_acc = 0
     early_stop_epochs = 0
     breached = False
@@ -356,23 +359,12 @@ def train_model(
         model.train()
         pbar.n = 0
         pbar.refresh()
-        for epoch_i, ((sigs, seqs, seq_maps, seq_lens), labels, _) in enumerate(
-            trn_ds
+        for epoch_i, (enc_kmers, sigs, labels) in enumerate(
+            islice(trn_loader, batches_per_epoch)
         ):
-            sigs = torch.from_numpy(sigs)
-            enc_kmers = torch.from_numpy(
-                encoded_kmers.compute_encoded_kmer_batch(
-                    bb, ab, seqs, seq_maps, seq_lens
-                )
-            )
-            labels = torch.from_numpy(labels)
-            sigs = sigs.to(device)
-            enc_kmers = enc_kmers.to(device)
-            outputs = model(sigs, enc_kmers)
-
+            outputs = model(sigs.to(device), enc_kmers.to(device))
             if high_conf_incorrect_thr_frac is None:
-                labels = labels.to(device)
-                loss = criterion(outputs, labels)
+                loss = criterion(outputs, labels.to(device))
             else:
                 batch_size = outputs.shape[0]
                 conf_thresh, max_frac_skip = high_conf_incorrect_thr_frac
@@ -391,14 +383,13 @@ def train_model(
                     conf_thresh = max(conf_thresh, mm_preds[max_nr_skip])
                 mask = cl_match.logical_or(highest_preds < conf_thresh)
                 # avoid sending labels to device until after above computations
-                labels = labels.to(device)
-                loss = criterion(outputs[mask], labels[mask])
+                loss = criterion(outputs[mask], labels[mask].to(device))
 
             opt.zero_grad()
             loss.backward()
             opt.step()
             batch_fp.write(
-                f"{(epoch * len(trn_ds)) + epoch_i}\t"
+                f"{(epoch * batches_per_epoch) + epoch_i}\t"
                 f"{loss.detach().cpu():.6f}"
             )
             if high_conf_incorrect_thr_frac is None:
@@ -409,26 +400,25 @@ def train_model(
             pbar.update()
             pbar.refresh()
 
-        niter = (epoch + 1) * len(trn_ds)
         val_metrics = val_fp.validate_model(
             model,
-            dataset.mod_bases,
+            dataset.metadata.mod_bases,
             criterion,
             val_ds,
             filt_frac,
             nepoch=epoch + 1,
-            niter=niter,
+            niter=(epoch + 1) * batches_per_epoch,
             disable_pbar=True,
         )
         trn_metrics = val_fp.validate_model(
             model,
-            dataset.mod_bases,
+            dataset.metadata.mod_bases,
             criterion,
             val_trn_ds,
             filt_frac,
             "trn",
             nepoch=epoch + 1,
-            niter=niter,
+            niter=(epoch + 1) * batches_per_epoch,
             disable_pbar=True,
         )
 
@@ -465,13 +455,13 @@ def train_model(
             for e_name, e_set in ext_sets:
                 e_val_metrics = val_fp.validate_model(
                     model,
-                    dataset.mod_bases,
+                    dataset.metadata.mod_bases,
                     criterion,
                     e_set,
                     filt_frac,
                     e_name,
                     nepoch=epoch + 1,
-                    niter=niter,
+                    niter=(epoch + 1) * batches_per_epoch,
                     disable_pbar=True,
                 )
                 if e_val_metrics.acc <= best_alt_val_accs[e_name]:

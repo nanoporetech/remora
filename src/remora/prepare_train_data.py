@@ -9,7 +9,12 @@ from tqdm import tqdm
 from remora import log, RemoraError
 from remora.util import MultitaskMap, BackgroundIter, get_read_ids
 from remora.io import ReadIndexedBam, iter_signal, extract_alignments
-from remora.data_chunks import RemoraRead, RemoraDataset, compute_ref_to_signal
+from remora.data_chunks import (
+    DatasetMetadata,
+    RemoraRead,
+    CoreRemoraDataset,
+    compute_ref_to_signal,
+)
 
 LOGGER = log.get_logger()
 
@@ -28,7 +33,6 @@ def extract_chunks(
     max_chunks_per_read,
     chunk_context,
     kmer_context_bases,
-    base_pred,
     base_start_justify,
     offset,
     basecall_anchor,
@@ -91,7 +95,6 @@ def extract_chunks(
             remora_read.iter_chunks(
                 chunk_context,
                 kmer_context_bases,
-                base_pred,
                 base_start_justify,
                 offset,
                 check_chunks=True,
@@ -112,9 +115,9 @@ def extract_chunks(
 
 
 def extract_chunk_dataset(
-    bam_fn,
+    bam_path,
     pod5_path,
-    out_fn,
+    out_path,
     mod_base,
     mod_base_control,
     motifs,
@@ -123,7 +126,6 @@ def extract_chunk_dataset(
     min_samps_per_base,
     max_chunks_per_read,
     sig_map_refiner,
-    base_pred,
     kmer_context_bases,
     base_start_justify,
     offset,
@@ -133,8 +135,10 @@ def extract_chunk_dataset(
     skip_non_primary=True,
     basecall_anchor=False,
     rev_sig=False,
+    save_every=100_000,
+    skip_shuffle=False,
 ):
-    bam_idx = ReadIndexedBam(bam_fn, skip_non_primary)
+    bam_idx = ReadIndexedBam(bam_path, skip_non_primary)
     with pod5.Reader(Path(pod5_path)) as pod5_fh:
         read_ids, num_reads = get_read_ids(bam_idx, pod5_fh, num_reads)
     if num_reads == 0:
@@ -144,21 +148,31 @@ def extract_chunk_dataset(
         f"Making {'basecall' if basecall_anchor else 'reference'}-"
         f"anchored training data"
     )
-    LOGGER.info("Allocating memory for output tensors")
-    # initialize empty dataset with pre-allocated memory
-    dataset = RemoraDataset.allocate_empty_chunks(
-        num_chunks=max_chunks_per_read * num_reads,
-        chunk_context=chunk_context,
-        kmer_context_bases=kmer_context_bases,
-        min_samps_per_base=min_samps_per_base,
-        base_pred=base_pred,
-        mod_bases=[] if mod_base_control else [mod_base[0]],
-        mod_long_names=[] if mod_base_control else [mod_base[1]],
-        motifs=[mot.to_tuple() for mot in motifs],
-        reverse_signal=rev_sig,
-        sig_map_refiner=sig_map_refiner,
-        base_start_justify=base_start_justify,
-        offset=offset,
+    LOGGER.info("Opening dataset for output")
+    dataset = CoreRemoraDataset(
+        data_path=out_path,
+        mode="w",
+        metadata=DatasetMetadata(
+            allocate_size=max_chunks_per_read * num_reads,
+            max_seq_len=sum(chunk_context) // min_samps_per_base,
+            mod_bases="" if mod_base_control else mod_base[0],
+            mod_long_names=[] if mod_base_control else [mod_base[1]],
+            motif_sequences=[motif.raw_motif for motif in motifs],
+            motif_offsets=[motif.focus_pos for motif in motifs],
+            extra_arrays={
+                "read_ids": ("<U36", "Read identifier"),
+                "read_focus_bases": (
+                    "int64",
+                    "Position within read training sequence",
+                ),
+            },
+            chunk_context=chunk_context,
+            kmer_context_bases=kmer_context_bases,
+            reverse_signal=rev_sig,
+            sig_map_refiner=sig_map_refiner,
+            base_start_justify=base_start_justify,
+            offset=offset,
+        ),
     )
 
     LOGGER.info("Processing reads")
@@ -193,7 +207,6 @@ def extract_chunk_dataset(
             max_chunks_per_read,
             chunk_context,
             kmer_context_bases,
-            base_pred,
             base_start_justify,
             offset,
             basecall_anchor,
@@ -220,18 +233,22 @@ def extract_chunk_dataset(
                 continue
             for chunk in read_align_chunks:
                 try:
-                    dataset.add_chunk(chunk)
+                    dataset.write_chunk(chunk)
+                    if dataset.size % save_every == 0:
+                        dataset.flush()
+                        dataset.write_metadata()
                 except RemoraError as e:
                     errs[str(e)] += 1
 
     if len(errs) > 0:
         err_types = sorted([(num, err) for err, num in errs.items()])[::-1]
         err_str = "\n".join(f"{num:>7} : {err:<80}" for num, err in err_types)
-        LOGGER.info(f"Unsuccessful read/chunk reasons:\n{err_str}")
+        LOGGER.info(f"Unsuccessful read/chunk reasons:\n{err_str:,}")
 
-    dataset.clip_chunks()
-    dataset.shuffle()
-    dataset.save(out_fn)
+    dataset.write_metadata()
 
-    LOGGER.info(f"Extracted {dataset.nchunks} chunks from {num_reads} reads.")
-    LOGGER.info(f"Label distribution: {dataset.get_label_counts()}")
+    LOGGER.info(f"Extracted {dataset.size:,} chunks from {num_reads:,} reads.")
+    LOGGER.info(f"Label distribution: {dataset.label_summary}")
+    if not skip_shuffle:
+        LOGGER.info("Shuffling dataset")
+        dataset.shuffle()

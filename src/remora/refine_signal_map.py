@@ -151,7 +151,7 @@ class SigMapRefiner:
     """
 
     kmer_model_filename: str = None
-    do_rough_rescale: bool = True
+    do_rough_rescale: bool = False
     scale_iters: int = -1
     algo: str = DEFAULT_REFINE_ALGO
     half_bandwidth: int = DEFAULT_REFINE_HBW
@@ -200,6 +200,15 @@ class SigMapRefiner:
     def bases_after(self):
         """Number of bases in k-mer after the central base"""
         return self.kmer_len - self.center_idx - 1
+
+    @property
+    def is_valid(self):
+        """Is this a valid signal mapping refiner? Is this a NULL refiner
+        (no op) or if k-mer table is loaded are re-scaling options specified?"""
+        if self.is_loaded:
+            return self.do_rough_rescale or self.scale_iters >= 0
+        else:
+            return not self.do_rough_rescale and self.scale_iters < 0
 
     def write_kmer_table(self, fh):
         for kmer in product(*["ACGT"] * self.kmer_len):
@@ -289,7 +298,10 @@ class SigMapRefiner:
             self.do_rough_rescale or self.scale_iters >= 0
         ):
             raise RemoraError(
-                "Signal re-scaling is requested without levels table."
+                "Signal re-scaling is requested without levels table. "
+                f"is_loaded: {self.is_loaded} "
+                f"do_rough_rescale: {self.do_rough_rescale} "
+                f"scale_iters: {self.scale_iters}"
             )
 
         if self.sd_params is not None:
@@ -300,11 +312,7 @@ class SigMapRefiner:
             and self.algo == REFINE_ALGO_DWELL_PEN_NAME
         ):
             LOGGER.debug(f"Refine short dwell penalty array: {self.sd_arr}")
-        if (
-            self.is_loaded
-            and not self.do_rough_rescale
-            and self.scale_iters < 0
-        ):
+        if not self.is_valid:
             LOGGER.warning(
                 "K-mer table provided, but not used. "
                 "See rough rescaling options."
@@ -421,7 +429,7 @@ class SigMapRefiner:
         # boundaries for filtering as the lower boundary may be 1)
         dwells = np.diff(seq_to_sig_map)
         dwell_min, dwell_max = np.percentile(dwells, dwell_filter_pctls)
-        edge_filter = np.full(dwells.size, True, dtype=np.bool)
+        edge_filter = np.full(dwells.size, True, dtype=np.bool_)
         if edge_filter_bases > 0:
             edge_filter[:edge_filter_bases] = False
             edge_filter[-edge_filter_bases:] = False
@@ -468,11 +476,11 @@ class SigMapRefiner:
                     break
         return seq_to_sig_map + sig_st, shift, scale
 
-    def get_save_kwargs(self):
+    def asdict(self):
         return {
             "refine_kmer_levels": self._levels_array,
             "refine_kmer_center_idx": self.center_idx,
-            "refine_do_rough_rescale": int(self.do_rough_rescale),
+            "refine_do_rough_rescale": self.do_rough_rescale,
             "refine_scale_iters": self.scale_iters,
             "refine_algo": self.algo,
             "refine_half_bandwidth": self.half_bandwidth,
@@ -480,15 +488,15 @@ class SigMapRefiner:
         }
 
     @classmethod
-    def load_from_np_savez(cls, data):
+    def load_from_metadata(cls, metadata):
         return cls(
-            _levels_array=data["refine_kmer_levels"],
-            center_idx=int(data["refine_kmer_center_idx"].item()),
-            do_rough_rescale=bool(int(data["refine_do_rough_rescale"].item())),
-            scale_iters=int(data["refine_scale_iters"].item()),
-            algo=str(data["refine_algo"].item()),
-            half_bandwidth=int(data["refine_half_bandwidth"].item()),
-            sd_arr=data["refine_sd_arr"],
+            _levels_array=metadata.get("refine_kmer_levels"),
+            center_idx=metadata.get("refine_kmer_center_idx"),
+            do_rough_rescale=metadata.get("refine_do_rough_rescale"),
+            scale_iters=metadata.get("refine_scale_iters"),
+            algo=metadata.get("refine_algo"),
+            half_bandwidth=metadata.get("refine_half_bandwidth"),
+            sd_arr=metadata.get("refine_sd_arr"),
         )
 
     @classmethod
@@ -517,6 +525,30 @@ class SigMapRefiner:
             sd_arr=sd_arr,
             str_kmer_levels=data,
             kmer_len=kmer_len,
+        )
+
+    def __eq__(self, other):
+        if not isinstance(other, SigMapRefiner):
+            return False
+        if self.do_rough_rescale != other.do_rough_rescale:
+            return False
+        if self.scale_iters != other.scale_iters:
+            return False
+        if not self.do_rough_rescale and self.scale_iters < 0:
+            return True
+        if (
+            not np.array_equal(self._levels_array, other._levels_array)
+            or self.center_idx != other.center_idx
+        ):
+            return False
+        if self.scale_iters < 0:
+            return True
+        return all(
+            (
+                self.algo == other.algo,
+                self.half_bandwidth == other.half_bandwidth,
+                self.sd_arr == other.sd_arr,
+            )
         )
 
 

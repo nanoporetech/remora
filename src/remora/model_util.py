@@ -37,7 +37,7 @@ def export_model_torchscript(ckpt, model, save_filename):
 
     # add simple metadata
     for ckpt_key in (
-        "base_pred",
+        "modified_base_labels",
         "mod_bases",
         "reverse_signal",
         "refine_kmer_center_idx",
@@ -67,10 +67,17 @@ def export_model_torchscript(ckpt, model, save_filename):
 
     # store refine arrays as bytes
     meta["refine_kmer_levels"] = (
-        ckpt["refine_kmer_levels"].astype(np.float32).tobytes().decode("cp437")
+        None
+        if ckpt["refine_kmer_levels"] is None
+        else ckpt["refine_kmer_levels"]
+        .astype(np.float32)
+        .tobytes()
+        .decode("cp437")
     )
     meta["refine_sd_arr"] = (
-        ckpt["refine_sd_arr"].astype(np.float32).tobytes().decode("cp437")
+        None
+        if ckpt["refine_sd_arr"] is None
+        else ckpt["refine_sd_arr"].astype(np.float32).tobytes().decode("cp437")
     )
     meta["doc_string"] = "Nanopore Remora model"
     try:
@@ -316,7 +323,10 @@ def add_derived_metadata(model_metadata):
         f"{model_metadata['can_base']}): {mod_str}"
     )
 
-    if "refine_kmer_levels" in model_metadata:
+    if (
+        "refine_kmer_levels" in model_metadata
+        and model_metadata["refine_kmer_levels"] is not None
+    ):
         # load sig_map_refiner
         levels_array = np.frombuffer(
             model_metadata["refine_kmer_levels"].encode("cp437"),
@@ -330,9 +340,7 @@ def add_derived_metadata(model_metadata):
         model_metadata["sig_map_refiner"] = SigMapRefiner(
             _levels_array=levels_array,
             center_idx=int(model_metadata["refine_kmer_center_idx"]),
-            do_rough_rescale=bool(
-                int(model_metadata["refine_do_rough_rescale"])
-            ),
+            do_rough_rescale=model_metadata["refine_do_rough_rescale"],
             scale_iters=int(model_metadata["refine_scale_iters"]),
             algo=model_metadata["refine_algo"],
             half_bandwidth=int(model_metadata["refine_half_bandwidth"]),
@@ -343,6 +351,12 @@ def add_derived_metadata(model_metadata):
         model_metadata["sig_map_refiner"] = SigMapRefiner()
         model_metadata["base_start_justify"] = False
         model_metadata["offset"] = 0
+    for md_name in [
+        md_name
+        for md_name in model_metadata.keys()
+        if md_name.startswith("refine_")
+    ]:
+        del model_metadata[md_name]
 
 
 def repr_model_metadata(metadata):
@@ -357,13 +371,6 @@ def repr_model_metadata(metadata):
                 "kmer_context_bases_",
                 "chunk_context_",
                 "motif_",
-                "refine_kmer_levels",
-                "refine_sd_arr",
-                "refine_kmer_center_idx",
-                "refine_do_rough_rescale",
-                "refine_scale_iters",
-                "refine_algo",
-                "refine_half_bandwidth",
             )
         )
     )
