@@ -15,7 +15,6 @@ import sys
 import atexit
 import argparse
 from pathlib import Path
-from shutil import rmtree
 
 from remora import constants
 from remora import log, RemoraError
@@ -55,8 +54,6 @@ def register_dataset(parser):
     subparser.set_defaults(func=lambda x: subparser.print_help())
     #  Register dataset sub commands
     register_dataset_prepare(ssubparser)
-    register_dataset_split(ssubparser)
-    register_dataset_merge(ssubparser)
     register_dataset_inspect(ssubparser)
 
 
@@ -78,13 +75,15 @@ def register_dataset_prepare(parser):
 
     out_grp = subparser.add_argument_group("Output Arguments")
     out_grp.add_argument(
-        "--output-remora-training-file",
-        default="remora_training_dataset.npz",
-        help="Output Remora training dataset file.",
+        "--output-path",
+        default="remora_training_dataset",
+        help="Output Remora training dataset directory. Cannot exist unless "
+        "--overwrite is specified in which case the directory will be removed.",
     )
     out_grp.add_argument(
-        "--log-filename",
-        help="Log filename. Default: Don't output log file.",
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing output directory if existing.",
     )
 
     data_grp = subparser.add_argument_group("Data Arguments")
@@ -93,10 +92,12 @@ def register_dataset_prepare(parser):
         nargs=2,
         action="append",
         metavar=("MOTIF", "FOCUS_POSITION"),
-        help="""Extract training chunks centered on a defined motif. Argument
-        takes 2 values representing 1) sequence motif and 2) focus position
-        within the motif. For example to restrict to CpG sites use "
-        "--motif CG 0". Default: Any context ("N 0")""",
+        required=True,
+        help="""Motif at which the produced model is applicable. If
+        --focus-reference-positions is not provided chunks will be extracted
+        from motif positions as well. Argument takes 2 values representing
+        1) sequence motif and 2) focus position within the motif. For example
+        to restrict to CpG sites use --motif CG 0".""",
     )
     data_grp.add_argument(
         "--focus-reference-positions",
@@ -164,6 +165,20 @@ def register_dataset_prepare(parser):
         help="""Is nanopore signal 3' to 5' orientation? Primarily for direct
         RNA""",
     )
+    data_grp.add_argument(
+        "--save-every",
+        default=100_000,
+        type=int,
+        help="""Flush dataset data and update dataset size at this interval.
+        Larger values will increase RAM usage, but could increase speed.""",
+    )
+    data_grp.add_argument(
+        "--skip-shuffle",
+        action="store_true",
+        help="""Skip shuffle of completed dataset. Note that shuffling requires
+        loading the entire signal array into memory. If dataset is very large
+        and shuffling is not required specify this flag.""",
+    )
 
     refine_grp = subparser.add_argument_group("Signal Mapping Refine Arguments")
     refine_grp.add_argument(
@@ -223,11 +238,6 @@ def register_dataset_prepare(parser):
         action="store_true",
         help="Is this a modified bases control sample?",
     )
-    label_grp.add_argument(
-        "--base-pred",
-        action="store_true",
-        help="Train to predict bases (SNPs) and not mods.",
-    )
 
     comp_grp = subparser.add_argument_group("Compute Arguments")
     comp_grp.add_argument(
@@ -248,24 +258,22 @@ def register_dataset_prepare(parser):
 
 
 def run_dataset_prepare(args):
-    from remora.util import Motif
     from remora.io import parse_bed
+    from remora.util import Motif, prepare_out_dir
     from remora.refine_signal_map import SigMapRefiner
     from remora.prepare_train_data import extract_chunk_dataset
 
-    if args.log_filename is not None:
-        log.init_logger(args.log_filename)
+    prepare_out_dir(args.output_path, args.overwrite)
     if args.mod_base is None and not args.mod_base_control:
         LOGGER.error("Must specify either --mod-base or --mod-base-control")
         sys.exit(1)
-    motifs = [("N", 0)] if args.motif is None else args.motif
-    motifs = [Motif(*mo) for mo in motifs]
+
+    motifs = [Motif(*mo) for mo in args.motif]
     focus_ref_pos = (
         None
         if args.focus_reference_positions is None
         else parse_bed(args.focus_reference_positions)
     )
-
     sig_map_refiner = SigMapRefiner(
         kmer_model_filename=args.refine_kmer_level_table,
         do_rough_rescale=args.refine_rough_rescale,
@@ -275,100 +283,31 @@ def run_dataset_prepare(args):
         sd_params=args.refine_short_dwell_parameters,
         do_fix_guage=True,
     )
+    if not sig_map_refiner.is_valid:
+        raise RemoraError("Invalid signal mappnig refiner settings.")
     extract_chunk_dataset(
-        args.bam,
-        args.pod5,
-        args.output_remora_training_file,
-        args.mod_base,
-        args.mod_base_control,
-        motifs,
-        focus_ref_pos,
-        args.chunk_context,
-        args.min_samples_per_base,
-        args.max_chunks_per_read,
-        sig_map_refiner,
-        args.base_pred,
-        args.kmer_context_bases,
-        args.base_start_justify,
-        args.offset,
-        args.num_reads,
-        args.num_extract_alignment_workers,
-        args.num_extract_chunks_workers,
+        bam_path=args.bam,
+        pod5_path=args.pod5,
+        out_path=args.output_path,
+        mod_base=args.mod_base,
+        mod_base_control=args.mod_base_control,
+        motifs=motifs,
+        focus_ref_pos=focus_ref_pos,
+        chunk_context=args.chunk_context,
+        min_samps_per_base=args.min_samples_per_base,
+        max_chunks_per_read=args.max_chunks_per_read,
+        sig_map_refiner=sig_map_refiner,
+        kmer_context_bases=args.kmer_context_bases,
+        base_start_justify=args.base_start_justify,
+        offset=args.offset,
+        num_reads=args.num_reads,
+        num_extract_alignment_threads=args.num_extract_alignment_workers,
+        num_extract_chunks_threads=args.num_extract_chunks_workers,
         basecall_anchor=args.basecall_anchor,
         rev_sig=args.reverse_signal,
+        save_every=args.save_every,
+        skip_shuffle=args.skip_shuffle,
     )
-
-
-def register_dataset_split(parser):
-    subparser = parser.add_parser(
-        "split",
-        description="Split Remora dataset",
-        help="Split Remora dataset",
-        formatter_class=SubcommandHelpFormatter,
-    )
-    subparser.add_argument(
-        "input_remora_dataset",
-        help="Remora training dataset to be split",
-    )
-    subparser.add_argument(
-        "--output-basename",
-        default="split_remora_dataset",
-        help="Basename for output datasets.",
-    )
-    subparser.add_argument(
-        "--val-prop",
-        type=float,
-        help="""The proportion of data to be split into validation set, where
-        val-prop in [0,0.5).""",
-    )
-    subparser.add_argument(
-        "--val-num",
-        type=int,
-        help="Number of validation chunks to select.",
-    )
-    subparser.add_argument(
-        "--unstratified",
-        action="store_true",
-        help="""For --val-prop split, perform unstratified splitting. Default
-        will perform split stratified over labels.""",
-    )
-    subparser.add_argument(
-        "--by-label",
-        action="store_true",
-        help="Split dataset into one dataset for each unique label.",
-    )
-    subparser.set_defaults(func=run_dataset_split)
-
-
-def run_dataset_split(args):
-    from remora.data_chunks import RemoraDataset
-
-    dataset = RemoraDataset.load_from_file(
-        args.input_remora_dataset,
-        shuffle_on_iter=False,
-        drop_last=False,
-    )
-    LOGGER.info(f"Loaded dataset summary:\n{dataset.summary}")
-
-    if args.by_label:
-        for label, label_dataset in dataset.split_by_label():
-            label_dataset.save(f"{args.output_basename}.{label}.npz")
-            LOGGER.info(
-                f"Wrote {label_dataset.nchunks} chunks to "
-                f"{args.output_basename}.{label}.npz"
-            )
-    else:
-        trn_set, val_set = dataset.split_data(
-            val_prop=args.val_prop,
-            val_num=args.val_num,
-            stratified=not args.unstratified,
-        )
-        LOGGER.info(
-            f"Train set label distribution: {trn_set.get_label_counts()}"
-        )
-        LOGGER.info(f"Val set label distribution: {val_set.get_label_counts()}")
-        trn_set.save(f"{args.output_basename}.split_train.npz")
-        val_set.save(f"{args.output_basename}.split_val.npz")
 
 
 def register_dataset_inspect(parser):
@@ -388,59 +327,8 @@ def register_dataset_inspect(parser):
 def run_dataset_inspect(args):
     from remora.data_chunks import RemoraDataset
 
-    dataset = RemoraDataset.load_from_file(
-        args.remora_dataset_path,
-        shuffle_on_iter=False,
-        drop_last=False,
-    )
+    dataset = RemoraDataset.from_config(args.remora_dataset_path)
     print(f"Dataset summary:\n{dataset.summary}")
-
-
-def register_dataset_merge(parser):
-    subparser = parser.add_parser(
-        "merge",
-        description="Merge Remora datasets",
-        help="Merge Remora datasets",
-        formatter_class=SubcommandHelpFormatter,
-    )
-    subparser.add_argument(
-        "--input-dataset",
-        nargs=2,
-        metavar=("PATH", "NUM_CHUNKS"),
-        action="append",
-        help="""1) Remora training dataset path and 2) max number of chunks
-        to extract from this dataset. Second argument can be "all" to use all
-        chunks from a dataset""",
-    )
-    subparser.add_argument(
-        "--output-dataset",
-        required=True,
-        help="Output path for dataset",
-    )
-    subparser.add_argument(
-        "--balance",
-        action="store_true",
-        help="Automatically balance classes after merging",
-    )
-    subparser.add_argument(
-        "--log-filename",
-        help="Log filename. (default: Don't output log file)",
-    )
-    subparser.set_defaults(func=run_dataset_merge)
-
-
-def run_dataset_merge(args):
-    from remora.data_chunks import merge_datasets
-
-    if args.log_filename is not None:
-        log.init_logger(args.log_filename)
-
-    input_datasets = [
-        (ds_path, None if num_chunks == "all" else int(num_chunks))
-        for ds_path, num_chunks in args.input_dataset
-    ]
-    output_dataset = merge_datasets(input_datasets, args.balance)
-    output_dataset.save(args.output_dataset)
 
 
 ################
@@ -480,12 +368,6 @@ def register_model_train(parser):
 
     data_grp = subparser.add_argument_group("Data Arguments")
     data_grp.add_argument(
-        "--val-prop",
-        default=constants.DEFAULT_VAL_PROP,
-        type=float,
-        help="Proportion of the dataset to be used as validation.",
-    )
-    data_grp.add_argument(
         "--batch-size",
         default=constants.DEFAULT_BATCH_SIZE,
         type=int,
@@ -520,9 +402,9 @@ def register_model_train(parser):
         [--ext-val] argument""",
     )
     data_grp.add_argument(
-        "--balance",
+        "--skip-dataset-hash",
         action="store_true",
-        help="Balance classes exactly prior to training",
+        help="Skip computation of dataset hash.",
     )
 
     out_grp = subparser.add_argument_group("Output Arguments")
@@ -560,6 +442,18 @@ def register_model_train(parser):
         default=constants.DEFAULT_EPOCHS,
         type=int,
         help="Number of training epochs.",
+    )
+    train_grp.add_argument(
+        "--chunks-per-epoch",
+        default=constants.DEFAULT_CHUNKS_PER_EPOCH,
+        type=int,
+        help="Number of chunks per-epoch.",
+    )
+    train_grp.add_argument(
+        "--num-test-chunks",
+        default=constants.DEFAULT_NUM_TEST_CHUNKS,
+        type=int,
+        help="Number of chunks per-epoch.",
     )
     train_grp.add_argument(
         "--optimizer",
@@ -610,12 +504,6 @@ def register_model_train(parser):
         metavar=("NAME", "VALUE", "TYPE"),
     )
     train_grp.add_argument(
-        "--batch-label-weights",
-        type=float,
-        nargs="+",
-        help="Select batch labels with specified weights",
-    )
-    train_grp.add_argument(
         "--high-conf-incorrect-thr-frac",
         nargs=2,
         type=float,
@@ -647,27 +535,17 @@ def register_model_train(parser):
 
 
 def run_model_train(args):
-    from remora.util import parse_device
     from remora.train_model import train_model
+    from remora.util import parse_device, prepare_out_dir
 
-    out_path = Path(args.output_path)
-    if args.overwrite:
-        if out_path.is_dir():
-            rmtree(out_path)
-        elif out_path.exists():
-            out_path.unlink()
-    elif out_path.exists():
-        raise RemoraError("Refusing to overwrite existing training directory.")
-    out_path.mkdir(parents=True, exist_ok=True)
-    log.init_logger(os.path.join(out_path, "log.txt"))
+    prepare_out_dir(args.output_path, args.overwrite)
     train_model(
         args.seed,
         parse_device(args.device),
-        out_path,
+        Path(args.output_path),
         args.remora_dataset_path,
         args.chunk_context,
         args.kmer_context_bases,
-        args.val_prop,
         args.batch_size,
         args.model,
         args.size,
@@ -676,17 +554,18 @@ def run_model_train(args):
         args.scheduler,
         args.weight_decay,
         args.epochs,
+        args.chunks_per_epoch,
+        args.num_test_chunks,
         args.save_freq,
         args.early_stopping,
         args.filter_fraction,
         args.ext_val,
         args.ext_val_names,
         args.lr_sched_kwargs,
-        args.balance,
-        args.batch_label_weights,
         args.high_conf_incorrect_thr_frac,
         args.finetune_path,
         args.freeze_num_layers,
+        args.skip_dataset_hash,
     )
 
 
@@ -1379,14 +1258,6 @@ def run_validate_from_remora_dataset(args):
     from remora.validate import ValidationLogger
     from remora.data_chunks import RemoraDataset
 
-    LOGGER.info("Loading dataset from Remora file")
-    dataset = RemoraDataset.load_from_file(
-        args.remora_dataset_path,
-        batch_size=args.batch_size,
-        shuffle_on_iter=False,
-        drop_last=False,
-    )
-
     LOGGER.info("Loading model")
     model, model_metadata = load_model(
         args.model,
@@ -1401,8 +1272,18 @@ def run_validate_from_remora_dataset(args):
     )
     torch.set_grad_enabled(False)
 
-    dataset.trim_kmer_context_bases(model_metadata["kmer_context_bases"])
-    dataset.trim_chunk_context(model_metadata["chunk_context"])
+    LOGGER.info("Loading Remora dataset")
+    override_metadata = {"extra_arrays": {}}
+    override_metadata["kmer_context_bases"] = model_metadata[
+        "kmer_context_bases"
+    ]
+    override_metadata["chunk_context"] = model_metadata["chunk_context"]
+    dataset = RemoraDataset.from_config(
+        args.remora_dataset_path,
+        override_metadata=override_metadata,
+        batch_size=args.batch_size,
+        ds_kwargs={"infinite_iter": False},
+    )
     LOGGER.info(f"Loaded dataset summary:\n{dataset.summary}")
 
     if args.out_file is None:

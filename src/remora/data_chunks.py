@@ -1,19 +1,23 @@
-import gc
 import re
 import os
-from collections import Counter
-from dataclasses import dataclass
+import gc
+import json
+import hashlib
+import dataclasses
+from glob import glob
+from copy import deepcopy
+from itertools import chain
 
 import torch
 import numpy as np
-from tqdm import tqdm
+from torch.utils.data import IterableDataset
 
 from remora.refine_signal_map import SigMapRefiner
 from remora import constants, log, RemoraError, util, encoded_kmers
 
 LOGGER = log.get_logger()
 
-DATASET_VERSION = 2
+DATASET_VERSION = 3
 MISMATCH_ARRS = {
     0: np.array([1, 2, 3]),
     1: np.array([0, 2, 3]),
@@ -114,7 +118,7 @@ def compute_ref_to_signal(query_to_signal, cigar):
     )
 
 
-@dataclass
+@dataclasses.dataclass
 class RemoraRead:
     """Object to hold information about a read relevant to Remora training and
     inference.
@@ -329,7 +333,6 @@ class RemoraRead:
         chunk_context,
         kmer_context_bases,
         label=-1,
-        base_pred=False,
         read_focus_base=-1,
         check_chunk=False,
     ):
@@ -408,15 +411,12 @@ class RemoraRead:
         )
         if check_chunk:
             chunk.check()
-        if base_pred:
-            chunk.mask_focus_base()
         return chunk
 
     def iter_chunks(
         self,
         chunk_context,
         kmer_context_bases,
-        base_pred=False,
         base_start_justify=False,
         offset=0,
         check_chunks=False,
@@ -441,7 +441,6 @@ class RemoraRead:
                     chunk_context,
                     kmer_context_bases,
                     label=label,
-                    base_pred=base_pred,
                     read_focus_base=focus_base,
                     check_chunk=check_chunks,
                 )
@@ -463,35 +462,40 @@ class RemoraRead:
             self.iter_chunks(
                 model_metadata["chunk_context"],
                 model_metadata["kmer_context_bases"],
-                model_metadata["base_pred"],
                 model_metadata["base_start_justify"],
                 model_metadata["offset"],
             )
         )
         if len(chunks) == 0:
             return
-        dataset = RemoraDataset.allocate_empty_chunks(
-            num_chunks=len(chunks),
-            chunk_context=model_metadata["chunk_context"],
-            max_seq_len=max(c.seq_len for c in chunks),
-            kmer_context_bases=model_metadata["kmer_context_bases"],
-            base_pred=model_metadata["base_pred"],
-            mod_bases=model_metadata["mod_bases"],
-            mod_long_names=model_metadata["mod_long_names"],
-            batch_size=batch_size,
-            shuffle_on_iter=False,
-            drop_last=False,
+        motif_seqs, motif_offsets = zip(*model_metadata["motifs"])
+        # prepare in memory dataset to perform chunk extraction
+        dataset = CoreRemoraDataset(
+            mode="w",
+            metadata=DatasetMetadata(
+                allocate_size=len(chunks),
+                max_seq_len=max(c.seq_len for c in chunks),
+                mod_bases=model_metadata["mod_bases"],
+                mod_long_names=model_metadata["mod_long_names"],
+                motif_sequences=motif_seqs,
+                motif_offsets=motif_offsets,
+                chunk_context=model_metadata["chunk_context"],
+                kmer_context_bases=model_metadata["kmer_context_bases"],
+                extra_arrays={"read_focus_bases": ("int64", "")},
+            ),
+            infinite_iter=False,
         )
         for chunk in chunks:
-            dataset.add_chunk(chunk)
-        dataset.set_nbatches()
-
-        bb, ab = model_metadata["kmer_context_bases"]
-        for (sigs, seqs, seq_maps, seq_lens), labels, (_, read_pos) in dataset:
-            enc_kmers = encoded_kmers.compute_encoded_kmer_batch(
-                bb, ab, seqs, seq_maps, seq_lens
+            dataset.write_chunk(chunk)
+        for batch in dataset:
+            self.batches.append(
+                (
+                    batch["signal"],
+                    batch["enc_kmers"],
+                    batch["labels"],
+                    batch["read_focus_bases"],
+                )
             )
-            self.batches.append((sigs, enc_kmers, labels, read_pos))
 
     def run_model(self, model):
         """Call modified bases on a read.
@@ -520,7 +524,7 @@ class RemoraRead:
         return read_outputs, read_labels, read_poss
 
 
-@dataclass
+@dataclasses.dataclass
 class Chunk:
     """Chunk of signal and associated sequence for training/infering results in
     Remora. Chunks are selected either with a given signal or bases location
@@ -615,1016 +619,1335 @@ class Chunk:
         return self._base_sig_lens
 
 
-@dataclass
-class RemoraDataset:
-    """Remora dataset
+@dataclasses.dataclass
+class DatasetMetadata:
+    """DatasetMetadata contains metadata related to a RemoraDataset or
+    CoreRemoraDataset. This data is transferred to a Remora model at training
+    time to ensure that chunk extraction is performed the same at training data
+    preparation as inference.
 
     Args:
-        sig_tensor (torch.FloatTensor): Signal chunks (dims: nchunks, 1, ntime)
-        seq_array (np.array): Variable width integer encoded sequence chunks
-            dtype : np.byte
-            dims  : nchunks, max_seq_len + sum(kmer_context_bases)
-        seq_mappings (np.array): Mapping from seq positions to signal tensor
-            Note only sequence without kmer_context_bases bases is included in
-            mappings
-            dtype : np.short
-            dims  : nchunks, max_seq_len + 1
-        seq_lens (np.array): Length of sequences (without kmer context bases)
-            dtype : np.short
-            dims  : nchunks
-        labels: (np.array): Chunk labels
-            dtype : np.int64
-            dims  : nchunks
-        read_ids (np.array): Read IDs
-            dtype : "U36"
-            dims  : nchunks
-        read_focus_bases (np.array): Base position within the read. This may be
-            the basecalled sequence or the read-oriented reference sequence
-            position depending on the extraction method.
-            dtype : "U36"
-            dims  : nchunks
-        nchunks (int): Current number of chunks. If None (default), will be set
-            to sig_tensor.shape[0]. If set, only chunks up to this value are
-            assumed to be valid.
-        chunk_context (tuple): 2-tuple containing the number of signal points
-            before and after the central position.
+        allocate_size (int): Size (number of chunks) allocated for dataset
         max_seq_len (int): Maximum sequence length of a chunk (used to set
             dimension for seq arrays.
-        kmer_context_bases (tuple): 2-tuple containing the bases to include in
-            the encoded k-mer presented as input.
-        base_pred (bool): Are labels predicting base? Default is mod_bases.
         mod_bases (str): Modified base single letter codes represented by labels
         mod_long_names (list): Modified base long names represented by labels
-        motifs (list): Tuples containing sequence motifs and relative position.
-            E.g. ("N", 0) for all-contexts or ("CG", 0) for CG-contexts.
-        reverse_signal (bool): Is nanopore signal 3' to 5' orientation?
-            Primarily for directRNA
-        batch_size (int): Size of batches to be produced
-        shuffle_on_iter (bool): Shuffle data before each iteration over batches
-        drop_last (bool): Drop the last batch of each iteration
-        batch_label_props (np.array): Select proportion of each label
-        sig_map_refiner (remora.refine_signal_map.SigMapRefiner): Signal
-            mapping refiner
+        motifs_sequences (list): Sequences at which model trained from chunks
+            is applicable
+        motifs_offsets (list): Offsets within motifs_sequences are applicable
+        dataset_start (int): Index of first chunk to use when reading/iterating
+            over the dataset
+        dataset_end (int): Index one beyond the  last chunk to use when
+            reading/iterating over the dataset
+        version (int): Dataset version
+        modified_base_labels (bool): Are labels modified bases? Non-modified
+            base dataset will generally require custom scripts for inference.
+        extra_arrays (dict): Extra arrays to store information about chunks.
+            Dict keys define the name of the extra arrays and values contain
+            the string dtype of the array and a description of the data to self
+            document the dataset.
+        chunk_context (tuple): 2-tuple containing the number of signal points
+            before and after the central position.
         base_start_justify (bool): Extract chunk centered on start of base
         offset (int): Extract chunk centered on base offset from base of
             interest
-        drop_read_attrs (bool): Drop read id and read focus positions
-
-    Yields:
-        Batches of data for training or inference
+        kmer_context_bases (tuple): 2-tuple containing the bases to include in
+            the encoded k-mer presented as input.
+        reverse_signal (bool): Is nanopore signal 3' to 5' orientation?
+            Primarily for directRNA
+        sig_map_refiner (remora.refine_signal_map.SigMapRefiner): Signal
+            mapping refiner
     """
 
-    # data attributes
-    sig_tensor: np.ndarray
-    seq_array: np.ndarray
-    seq_mappings: np.ndarray
-    seq_lens: np.ndarray
-    labels: np.ndarray
-    read_ids: np.ndarray
-    read_focus_bases: np.ndarray
-    nchunks: int = None
+    # dataset attributes
+    allocate_size: int
+    max_seq_len: int
+    # labels
+    mod_bases: str
+    mod_long_names: list
+    # chunk extract
+    motif_sequences: list
+    motif_offsets: list
 
-    # scalar metadata attributes
+    dataset_start: int = 0
+    dataset_end: int = 0
+    version: int = DATASET_VERSION
+    modified_base_labels: bool = True
+    # extra arrays
+    extra_arrays: dict = None
+    # chunk extract
     chunk_context: tuple = constants.DEFAULT_CHUNK_CONTEXT
-    max_seq_len: int = None
-    kmer_context_bases: tuple = constants.DEFAULT_KMER_CONTEXT_BASES
-    base_pred: bool = False
-    mod_bases: str = ""
-    mod_long_names: list = None
-    motifs: list = None
-    reverse_signal: bool = False
-
-    # batch attributes (defaults set for training)
-    batch_size: int = constants.DEFAULT_BATCH_SIZE
-    shuffle_on_iter: bool = True
-    drop_last: bool = True
-    batch_label_props: np.ndarray = None
-
-    # signal mapping refinement params
-    sig_map_refiner: SigMapRefiner = None
-
-    # chunk extraction attributes
     base_start_justify: bool = False
     offset: int = 0
+    kmer_context_bases: tuple = constants.DEFAULT_KMER_CONTEXT_BASES
+    reverse_signal: bool = False
+    # signal refinement
+    sig_map_refiner: SigMapRefiner = None
 
-    # extra attributes
-    drop_read_attrs: bool = False
-
-    def set_nbatches(self):
-        self.nbatches, remainder = divmod(self.nchunks, self.batch_size)
-        if not self.drop_last and remainder > 0:
-            self.nbatches += 1
-
-    def __post_init__(self):
-        if self.max_seq_len is None:
-            self.max_seq_len = self.seq_mappings.shape[1] - 1
-        if self.nchunks is None:
-            self.nchunks = self.sig_tensor.shape[0]
-        elif self.nchunks > self.sig_tensor.shape[0]:
-            raise RemoraError("More chunks indicated than provided.")
-        if not self.base_pred and len(self.mod_bases) != len(
-            self.mod_long_names
-        ):
-            raise RemoraError(
-                f"mod_long_names ({self.mod_long_names}) must be same length "
-                f"as mod_bases ({self.mod_bases})"
-            )
-        if self.motifs is not None:
-            self.motifs = sorted(set(self.motifs))
-        self.set_nbatches()
-        self.shuffled = False
-        if self.drop_read_attrs:
-            self.read_ids = None
-            self.read_focus_bases = None
-            gc.collect()
-        self._class_ordered_indices = None
-
-    def add_chunk(self, chunk):
-        if self.nchunks >= self.labels.size:
-            raise RemoraError("Cannot add chunk to currently allocated tensors")
-        if chunk.seq_len > self.max_seq_len:
-            raise RemoraError("Chunk sequence too long to store")
-        self.sig_tensor[self.nchunks, 0] = chunk.signal
-        self.seq_array[
-            self.nchunks, : chunk.seq_w_context.size
-        ] = chunk.seq_w_context
-        self.seq_mappings[
-            self.nchunks, : chunk.seq_to_sig_map.size
-        ] = chunk.seq_to_sig_map
-        self.seq_lens[self.nchunks] = chunk.seq_len
-        self.labels[self.nchunks] = chunk.label
-        if not self.drop_read_attrs:
-            self.read_ids[self.nchunks] = chunk.read_id
-            self.read_focus_bases[self.nchunks] = chunk.read_focus_base
-        self.nchunks += 1
-
-    def add_batch(
-        self, b_sig, b_seq, b_ss_map, b_seq_lens, b_labels, b_rids, b_rfbs
-    ):
-        batch_size = b_labels.size
-        b_st, b_en = self.nchunks, self.nchunks + batch_size
-        if self.nchunks + batch_size > self.labels.size:
-            raise RemoraError("Cannot add batch to currently allocated tensors")
-        # TODO check that applicable dims are compatible
-        self.sig_tensor[b_st:b_en] = b_sig
-        self.seq_array[b_st:b_en] = b_seq
-        self.seq_mappings[b_st:b_en] = b_ss_map
-        self.seq_lens[b_st:b_en] = b_seq_lens
-        self.labels[b_st:b_en] = b_labels
-        if not self.drop_read_attrs:
-            self.read_ids[b_st:b_en] = b_rids
-            self.read_focus_bases[b_st:b_en] = b_rfbs
-        self.nchunks += batch_size
-
-    def clip_chunks(self):
-        if self.nchunks == self.sig_tensor.shape[0]:
-            self.set_nbatches()
-            return
-        elif self.nchunks > self.sig_tensor.shape[0]:
-            raise RemoraError("More chunks indicated than provided.")
-        self.sig_tensor = self.sig_tensor[: self.nchunks]
-        self.seq_array = self.seq_array[: self.nchunks]
-        self.seq_mappings = self.seq_mappings[: self.nchunks]
-        self.seq_lens = self.seq_lens[: self.nchunks]
-        self.labels = self.labels[: self.nchunks]
-        if not self.drop_read_attrs:
-            self.read_ids = self.read_ids[: self.nchunks]
-            self.read_focus_bases = self.read_focus_bases[: self.nchunks]
-        # reset nbatches after clipping dataset
-        self.set_nbatches()
-
-    def trim_kmer_context_bases(self, new_kmer_context_bases):
-        if new_kmer_context_bases is None:
-            return
-        if (
-            new_kmer_context_bases[0] == self.kmer_context_bases[0]
-            and new_kmer_context_bases[1] == self.kmer_context_bases[1]
-        ):
-            return
-        if (
-            new_kmer_context_bases[0] > self.kmer_context_bases[0]
-            or new_kmer_context_bases[1] > self.kmer_context_bases[1]
-        ):
-            raise RemoraError(
-                f"Cannot expand kmer context (prev:{self.kmer_context_bases} ; "
-                f"requested_new:{new_kmer_context_bases})"
-            )
-        if new_kmer_context_bases[0] < self.kmer_context_bases[0]:
-            seq_diff = self.kmer_context_bases[0] - new_kmer_context_bases[0]
-            self.seq_array = np.ascontiguousarray(self.seq_array[:, seq_diff:])
-        self.kmer_context_bases = new_kmer_context_bases
-
-    def trim_chunk_context(self, new_chunk_context):
-        if new_chunk_context is None:
-            return
-        if (
-            new_chunk_context[0] == self.chunk_context[0]
-            and new_chunk_context[1] == self.chunk_context[1]
-        ):
-            return
-        if (
-            new_chunk_context[0] > self.chunk_context[0]
-            or new_chunk_context[1] > self.chunk_context[1]
-        ):
-            raise RemoraError(
-                f"Cannot expand chunk_context (prev:{self.chunk_context} ; "
-                f"requested_new:{new_chunk_context})"
-            )
-        raise NotImplementedError("Cannot currently trim chunk context.")
-
-    def get_label_nchunks(self, target_nchunks):
-        """Get the number of chunks for each label most closely matching
-        specified batch_label_props,
-        """
-        if self.batch_label_props is None:
-            raise RemoraError("Must set batch_label_props to get label nchunks")
-        lab_nchunks = np.floor(target_nchunks * self.batch_label_props).astype(
-            int
-        )
-        while lab_nchunks.sum() < target_nchunks:
-            lab_nchunks[
-                np.argmin(
-                    (lab_nchunks / lab_nchunks.sum()) - self.batch_label_props
-                )
-            ] += 1
-        return lab_nchunks
-
-    def reorder_chunks(self, indices):
-        """Re-order chunks via specified indices"""
-        for attr in (
-            "sig_tensor",
-            "seq_array",
-            "seq_mappings",
-            "seq_lens",
-            "labels",
-        ):
-            setattr(self, attr, getattr(self, attr)[indices])
-            gc.collect()
-        if not self.drop_read_attrs:
-            self.read_ids = self.read_ids[indices]
-            self.read_focus_bases = self.read_focus_bases[indices]
-        gc.collect()
-
-    def order_chunks_by_batch_labels(self):
-        """Order chunks such that each slice of size self.batch_size includes
-        the specified proportion of each label. Also store the indices
-        cooresponding to each label to facilitate shuffling within each label
-        while maintaining specified batch balance.
-
-        Note that "extra" chunks are stored at the end of the dataset and will
-        be shuffled into the used portion of the dataset at each call to
-        shuffle_by_batch_labels.
-        """
-        class_indices = [
-            np.where(self.labels == class_label)[0]
-            for class_label in range(self.num_labels)
-        ]
-        batch_nchunks = self.get_label_nchunks(self.batch_size)
-        class_nbatches = [
-            ci.size // bnc for ci, bnc in zip(class_indices, batch_nchunks)
-        ]
-        # set to number of batches given smallest class size
-        self.nbatches = min(class_nbatches)
-        if self.nbatches < 1:
-            raise RemoraError("Ordering by batch labels produced no batches")
-        # set indices for each label within each batch
-        idx_starts = np.concatenate([[0], np.cumsum(batch_nchunks)])
-        class_extras = [
-            ci.size - (bnc * self.nbatches)
-            for ci, bnc in zip(class_indices, batch_nchunks)
-        ]
-        LOGGER.debug("Computing class order indices")
-        # store indcies for each class to order all chunks and save to shuffle
-        # within class each epoch
-        self._class_ordered_indices = []
-        extras_index = self.batch_size * self.nbatches
-        for lab in range(self.num_labels):
-            lab_b_rng = np.arange(idx_starts[lab], idx_starts[lab + 1])
-            self._class_ordered_indices.append(
-                np.concatenate(
-                    [
-                        lab_b_rng + (bn * self.batch_size)
-                        for bn in range(self.nbatches)
-                    ]
-                    + [
-                        np.arange(
-                            extras_index, extras_index + class_extras[lab]
-                        )
-                    ]
-                )
-            )
-            extras_index += class_extras[lab]
-        global_ordered_indices = np.empty(self.nchunks, dtype=int)
-        for ci, coi in zip(class_indices, self._class_ordered_indices):
-            global_ordered_indices[coi] = ci
-        gc.collect()
-        LOGGER.debug("Reordering chunks")
-        # order each tensor to batch ordering
-        self.reorder_chunks(global_ordered_indices)
-
-    def shuffle_by_batch_labels(self):
-        if self._class_ordered_indices is None:
-            raise RemoraError(
-                "Must run order_chunks_by_batch_labels before "
-                "shuffle_by_batch_labels"
-            )
-        global_ordered_indices = np.empty(self.nchunks, dtype=int)
-        for coi in self._class_ordered_indices:
-            global_ordered_indices[coi] = np.random.permutation(coi)
-        self.reorder_chunks(global_ordered_indices)
-        self.shuffled = True
-
-    def shuffle(self):
-        if not self.is_clipped:
-            raise RemoraError("Cannot shuffle an unclipped dataset.")
-        if self.batch_label_props is not None:
-            raise RemoraError(
-                "Cannot shuffle dataset with batch_label_props. "
-                "Use shuffle_by_batch_labels"
-            )
-        shuf_idx = np.random.permutation(self.nchunks)
-        self.reorder_chunks(shuf_idx)
-        self.shuffled = True
-
-    def clone_metadata(self):
-        return {
-            "chunk_context": self.chunk_context,
-            "max_seq_len": self.max_seq_len,
-            "kmer_context_bases": self.kmer_context_bases,
-            "base_pred": self.base_pred,
-            "mod_bases": self.mod_bases,
-            "mod_long_names": self.mod_long_names,
-            "motifs": self.motifs,
-            "reverse_signal": self.reverse_signal,
-            "batch_size": self.batch_size,
-            "sig_map_refiner": self.sig_map_refiner,
-            "offset": self.offset,
-            "base_start_justify": self.base_start_justify,
-        }
-
-    def head(
-        self,
-        nchunks=None,
-        prop=0.01,
-        shuffle_on_iter=False,
-        drop_last=False,
-        stratified=False,
-    ):
-        if nchunks is None:
-            nchunks = int(prop * self.nchunks)
-        read_ids = read_focus_bases = None
-        if stratified:
-            LOGGER.debug("Performing stratified head")
-            head_indices = []
-            for class_label in range(self.num_labels):
-                class_indices = np.where(self.labels == class_label)[0]
-                if class_indices.size == 0:
-                    continue
-                cls_val_idx = int(class_indices.size * nchunks / self.nchunks)
-                head_indices.append(class_indices[:cls_val_idx])
-
-            head_indices = np.concatenate(head_indices)
-            if not self.drop_read_attrs:
-                read_ids = self.read_ids[head_indices].copy()
-                read_focus_bases = self.read_focus_bases[head_indices].copy()
-            return RemoraDataset(
-                self.sig_tensor[head_indices].copy(),
-                self.seq_array[head_indices].copy(),
-                self.seq_mappings[head_indices].copy(),
-                self.seq_lens[head_indices].copy(),
-                self.labels[head_indices].copy(),
-                read_ids,
-                read_focus_bases,
-                shuffle_on_iter=shuffle_on_iter,
-                drop_last=drop_last,
-                drop_read_attrs=self.drop_read_attrs,
-                **self.clone_metadata(),
-            )
-
-        if not self.drop_read_attrs:
-            read_ids = self.read_ids[:nchunks].copy()
-            read_focus_bases = self.read_focus_bases[:nchunks].copy()
-        return RemoraDataset(
-            self.sig_tensor[:nchunks].copy(),
-            self.seq_array[:nchunks].copy(),
-            self.seq_mappings[:nchunks].copy(),
-            self.seq_lens[:nchunks].copy(),
-            self.labels[:nchunks].copy(),
-            read_ids,
-            read_focus_bases,
-            shuffle_on_iter=shuffle_on_iter,
-            drop_last=drop_last,
-            drop_read_attrs=self.drop_read_attrs,
-            **self.clone_metadata(),
-        )
-
-    def copy(self):
-        read_ids = read_focus_bases = None
-        if not self.drop_read_attrs:
-            read_ids = self.read_ids.copy()
-            read_focus_bases = self.read_focus_bases.copy()
-        return RemoraDataset(
-            self.sig_tensor.copy(),
-            self.seq_array.copy(),
-            self.seq_mappings.copy(),
-            self.seq_lens.copy(),
-            self.labels.copy(),
-            read_ids,
-            read_focus_bases,
-            shuffle_on_iter=self.shuffle_on_iter,
-            drop_last=self.drop_last,
-            **self.clone_metadata(),
-        )
-
-    def __iter__(self):
-        if self.batch_label_props is not None:
-            self.shuffle_by_batch_labels()
-        elif self.shuffle_on_iter:
-            self.shuffle()
-        self._batch_i = 0
-        return self
-
-    def __next__(self):
-        if self._batch_i >= self.nbatches:
-            raise StopIteration
-        self._batch_i += 1
-        b_st = (self._batch_i - 1) * self.batch_size
-        b_en = b_st + self.batch_size
-        read_ids = read_focus_bases = None
-        if not self.drop_read_attrs:
-            read_ids = self.read_ids[b_st:b_en]
-            read_focus_bases = self.read_focus_bases[b_st:b_en]
-        return (
-            (
-                self.sig_tensor[b_st:b_en],
-                self.seq_array[b_st:b_en],
-                self.seq_mappings[b_st:b_en],
-                self.seq_lens[b_st:b_en],
-            ),
-            self.labels[b_st:b_en],
-            (
-                read_ids,
-                read_focus_bases,
-            ),
-        )
-
-    def __len__(self):
-        return self.nbatches
-
-    def get_label_counts(self):
-        return Counter(self.labels[: self.nchunks])
-
-    def split_data(
-        self,
-        *,
-        val_prop=None,
-        val_num=None,
-        stratified=True,
-    ):
-        if val_prop is None and val_num is None:
-            raise RemoraError(
-                "Must supply either val_prop or val_num to split dataset"
-            )
-        if val_prop is not None and val_num is not None:
-            LOGGER.warning(
-                "val_prop and val_num supplied to split. Using val_num"
-            )
-            val_prop = None
-        if not self.is_clipped:
-            raise RemoraError("Cannot split an unclipped dataset.")
-        if val_prop is not None:
-            if val_prop > 0.5:
-                raise RemoraError("val_prop > 0.5")
-            if val_prop < 0:
-                raise RemoraError("val_prop < 0")
-            val_num = int(self.nchunks * val_prop)
-        if val_num > self.nchunks:
-            raise RemoraError("Too many validation chunks for split")
-        if val_num > self.nchunks // 2:
-            LOGGER.warning("Val split contains more than half of chunks")
-
-        if not self.shuffled:
-            self.shuffle()
-
-        if stratified:
-            LOGGER.debug("Performing stratified split")
-            val_indices = []
-            trn_indices = []
-            for class_label in range(self.num_labels):
-                class_indices = np.where(self.labels == class_label)[0]
-                if class_indices.size == 0:
-                    continue
-                np.random.shuffle(class_indices)
-                cls_val_idx = int(class_indices.size * val_num / self.nchunks)
-                val_indices.append(class_indices[:cls_val_idx])
-                trn_indices.append(class_indices[cls_val_idx:])
-
-            val_indices = np.concatenate(val_indices)
-            trn_indices = np.concatenate(trn_indices)
-        else:
-            val_indices = np.arange(0, val_num)
-            trn_indices = np.arange(val_num, self.sig_tensor.shape[0])
-
-        LOGGER.debug("Extracting validation dataset")
-        val_read_ids = val_read_focus_bases = None
-        if not self.drop_read_attrs:
-            val_read_ids = self.read_ids[val_indices]
-            val_read_focus_bases = self.read_focus_bases[val_indices]
-        val_ds = RemoraDataset(
-            self.sig_tensor[val_indices],
-            self.seq_array[val_indices],
-            self.seq_mappings[val_indices],
-            self.seq_lens[val_indices],
-            self.labels[val_indices],
-            val_read_ids,
-            val_read_focus_bases,
-            shuffle_on_iter=False,
-            drop_last=False,
-            drop_read_attrs=self.drop_read_attrs,
-            **self.clone_metadata(),
-        )
-        LOGGER.debug("Extracting train dataset")
-        trn_read_ids = trn_read_focus_bases = None
-        if not self.drop_read_attrs:
-            trn_read_ids = self.read_ids[trn_indices]
-            trn_read_focus_bases = self.read_focus_bases[trn_indices]
-        trn_ds = RemoraDataset(
-            self.sig_tensor[trn_indices],
-            self.seq_array[trn_indices],
-            self.seq_mappings[trn_indices],
-            self.seq_lens[trn_indices],
-            self.labels[trn_indices],
-            trn_read_ids,
-            trn_read_focus_bases,
-            shuffle_on_iter=True,
-            drop_last=False,
-            drop_read_attrs=self.drop_read_attrs,
-            batch_label_props=self.batch_label_props,
-            **self.clone_metadata(),
-        )
-        return trn_ds, val_ds
-
-    def split_by_label(self):
-        if self.base_pred:
-            labels = "ACGT"
-        else:
-            labels = ["control"] + self.mod_long_names
-        label_datasets = []
-        for int_label, label in enumerate(labels):
-            label_indices = np.equal(self.labels, int_label)
-            label_datasets.append(
-                (
-                    label,
-                    RemoraDataset(
-                        self.sig_tensor[label_indices],
-                        self.seq_array[label_indices],
-                        self.seq_mappings[label_indices],
-                        self.seq_lens[label_indices],
-                        self.labels[label_indices],
-                        None
-                        if self.drop_read_attrs
-                        else self.read_ids[label_indices],
-                        None
-                        if self.drop_read_attrs
-                        else self.read_focus_bases[label_indices],
-                        shuffle_on_iter=False,
-                        drop_last=False,
-                        **self.clone_metadata(),
-                    ),
-                )
-            )
-        return label_datasets
-
-    def balance_classes(self):
-        min_class_len = min(self.get_label_counts().values())
-        if self.base_pred:
-            outs = 4
-        else:
-            outs = self.num_labels
-
-        choices = []
-        for i in range(outs):
-            choices.append(
-                np.random.choice(
-                    np.where(self.labels == i)[0],
-                    min_class_len,
-                    replace=False,
-                )
-            )
-        choices = np.concatenate(choices)
-
-        return RemoraDataset(
-            sig_tensor=self.sig_tensor[choices],
-            seq_array=self.seq_array[choices],
-            seq_mappings=self.seq_mappings[choices],
-            seq_lens=self.seq_lens[choices],
-            labels=self.labels[choices],
-            read_ids=None if self.drop_read_attrs else self.read_ids[choices],
-            read_focus_bases=None
-            if self.drop_read_attrs
-            else self.read_focus_bases[choices],
-            nchunks=outs * min_class_len,
-            **self.clone_metadata(),
-        )
-
-    def filter(self, indices):
-        if len(indices) > self.sig_tensor.shape[0]:
-            raise RemoraError(
-                "Filter indices cannot be longer than dataset size"
-            )
-        return RemoraDataset(
-            self.sig_tensor[indices],
-            self.seq_array[indices],
-            self.seq_mappings[indices],
-            self.seq_lens[indices],
-            self.labels[indices],
-            None if self.drop_read_attrs else self.read_ids[indices],
-            None if self.drop_read_attrs else self.read_focus_bases[indices],
-            shuffle_on_iter=False,
-            drop_last=False,
-            **self.clone_metadata(),
-        )
-
-    def add_fake_base(self, new_mod_long_names, new_mod_bases):
-        if not set(self.mod_long_names).issubset(new_mod_long_names):
-            raise RemoraError(
-                "There are no mods in common between the model being trained "
-                f"({new_mod_long_names}) and the external validation set "
-                f"({self.mod_long_names})."
-            )
-        for mod in self.mod_long_names:
-            new_index = new_mod_long_names.index(mod) + 1
-            old_index = self.mod_long_names.index(mod) + 1
-            self.labels[np.where(self.labels == old_index)] = new_index
-        self.mod_long_names = new_mod_long_names
-        self.mod_bases = new_mod_bases
-
-    def save(self, filename):
-        self.clip_chunks()
-        np.savez(
-            filename,
-            sig_tensor=self.sig_tensor,
-            seq_array=self.seq_array,
-            seq_mappings=self.seq_mappings,
-            seq_lens=self.seq_lens,
-            labels=self.labels,
-            read_ids=None if self.drop_read_attrs else self.read_ids,
-            read_focus_bases=None
-            if self.drop_read_attrs
-            else self.read_focus_bases,
-            chunk_context=self.chunk_context,
-            kmer_context_bases=self.kmer_context_bases,
-            base_pred=self.base_pred,
-            mod_bases=self.mod_bases,
-            mod_long_names=self.mod_long_names,
-            motifs=[mot[0] for mot in self.motifs],
-            motif_offset=[mot[1] for mot in self.motifs],
-            reverse_signal=int(self.reverse_signal),
-            base_start_justify=int(self.base_start_justify),
-            offset=self.offset,
-            version=DATASET_VERSION,
-            **self.sig_map_refiner.get_save_kwargs(),
-        )
-
-    @classmethod
-    def load_from_file(cls, filename, *args, **kwargs):
-        # use allow_pickle=True to allow None type in read_data
-        data = np.load(filename, allow_pickle=True)
-        try:
-            version = int(data["version"].item())
-        except KeyError:
-            version = None
-        if version is None or version != DATASET_VERSION:
-            raise RemoraError(
-                f"Remora dataset version ({version}) does "
-                f"not match current distribution ({DATASET_VERSION})"
-            )
-        chunk_context = tuple(data["chunk_context"].tolist())
-        kmer_context_bases = tuple(data["kmer_context_bases"].tolist())
-        base_pred = data["base_pred"].item()
-        try:
-            mod_bases = data["mod_bases"].item()
-        except ValueError:
-            mod_bases = ""
-        mod_long_names = tuple(data["mod_long_names"].tolist())
-        if isinstance(data["motif_offset"].tolist(), int):
-            motifs = [
-                (mot, mot_off)
-                for mot, mot_off in zip(
-                    [data["motif"].tolist()], [data["motif_offset"].tolist()]
-                )
-            ]
-        else:
-            motifs = [
-                (mot, mot_off)
-                for mot, mot_off in zip(
-                    data["motifs"].tolist(), data["motif_offset"].tolist()
-                )
-            ]
-        sig_map_refiner = SigMapRefiner.load_from_np_savez(data)
-        base_start_justify = bool(int(data["base_start_justify"].item()))
-        # default to reverse_signal=False for datasets without this attribute
-        reverse_signal = bool(int(data.get("reverse_signal", 0)))
-        offset = int(data["offset"].item())
-        return cls(
-            data["sig_tensor"],
-            data["seq_array"],
-            data["seq_mappings"],
-            data["seq_lens"],
-            data["labels"],
-            data["read_ids"],
-            data["read_focus_bases"],
-            chunk_context=chunk_context,
-            kmer_context_bases=kmer_context_bases,
-            base_pred=base_pred,
-            mod_bases=mod_bases,
-            mod_long_names=mod_long_names,
-            motifs=motifs,
-            reverse_signal=reverse_signal,
-            sig_map_refiner=sig_map_refiner,
-            base_start_justify=base_start_justify,
-            offset=offset,
-            *args,
-            **kwargs,
-        )
-
-    def perturb_seq_mismatch(self, mm_rate):
-        errs_added = 0
-        for c_idx, c_num_mm in tqdm(
-            enumerate(np.random.binomial(self.seq_lens, mm_rate)),
-            smoothing=0,
-            total=self.nchunks,
-            desc="Mismatches",
-            leave=False,
-            disable=os.environ.get("LOG_SAFE", False),
-        ):
-            if c_num_mm == 0:
-                continue
-            for seq_pos in np.random.choice(
-                self.seq_lens[c_idx], c_num_mm, replace=False
-            ):
-                # convert from position in chunk sequence to position in
-                # sequence array (including k-mer context bases).
-                seq_arr_pos = seq_pos + self.kmer_context_bases[0]
-                if self.seq_array[c_idx, seq_arr_pos] == -1:
-                    continue
-                self.seq_array[c_idx, seq_arr_pos] = np.random.choice(
-                    MISMATCH_ARRS[self.seq_array[c_idx, seq_arr_pos]]
-                )
-                errs_added += 1
-        LOGGER.info(f"Introduced {errs_added} mismatch errors")
-
-    def perturb_seq_to_sig_map(self, sig_shift):
-        for c_idx, c_seq_len in tqdm(
-            enumerate(self.seq_lens),
-            smoothing=0,
-            total=self.nchunks,
-            desc="Signal shifts",
-            leave=False,
-            disable=os.environ.get("LOG_SAFE", False),
-        ):
-            # shift seq to sig mapping in the middle of chunk
-            self.seq_mappings[c_idx, 1:c_seq_len] = np.clip(
-                self.seq_mappings[c_idx, 1:c_seq_len] + sig_shift,
-                self.seq_mappings[c_idx, 0],
-                self.seq_mappings[c_idx, c_seq_len],
-            )
+    _stored_kmer_context_bases: tuple = None
+    _stored_chunk_context: tuple = None
 
     @property
-    def can_base(self):
-        return self.motifs[0][0][self.motifs[0][1]]
+    def chunk_width(self):
+        return sum(self.chunk_context)
 
     @property
-    def is_clipped(self):
-        return self.nchunks == self.sig_tensor.shape[0]
+    def kmer_len(self):
+        return sum(self.kmer_context_bases) + 1
 
     @property
-    def is_multiclass(self):
-        return self.base_pred or len(self.mod_bases) > 1
+    def size(self):
+        return self.dataset_end - self.dataset_start
 
     @property
-    def num_motifs(self):
-        return len(self.motifs)
+    def labels(self):
+        return ["control"] + self.mod_long_names
 
     @property
     def num_labels(self):
-        if self.base_pred:
-            return 4
-        return len(self.mod_bases) + 1
+        return len(self.mod_long_names) + 1
+
+    @property
+    def motifs(self):
+        return list(zip(self.motif_sequences, self.motif_offsets))
+
+    @property
+    def num_motifs(self):
+        return len(self.motif_sequences)
+
+    @property
+    def extra_array_names(self):
+        return (
+            [] if self.extra_arrays is None else list(self.extra_arrays.keys())
+        )
+
+    @property
+    def extra_array_dtypes_and_shapes(self):
+        return (
+            []
+            if self.extra_arrays is None
+            else [
+                (arr_name, arr_dtype, self.extras_shape)
+                for arr_name, (arr_dtype, _) in self.extra_arrays.items()
+            ]
+        )
+
+    @property
+    def signal_shape(self):
+        return self.allocate_size, 1, self.chunk_width
+
+    @property
+    def sequence_width(self):
+        return self.max_seq_len + self.kmer_len - 1
+
+    @property
+    def sequence_shape(self):
+        return self.allocate_size, self.sequence_width
+
+    @property
+    def seqence_to_signal_mapping_width(self):
+        return self.max_seq_len + 1
+
+    @property
+    def seqence_to_signal_mapping_shape(self):
+        return self.allocate_size, self.seqence_to_signal_mapping_width
+
+    @property
+    def sequence_lengths_shape(self):
+        return tuple((self.allocate_size,))
+
+    @property
+    def labels_shape(self):
+        return tuple((self.allocate_size,))
+
+    @property
+    def extras_shape(self):
+        return tuple((self.allocate_size,))
+
+    def asdict(self):
+        r_dict = dataclasses.asdict(self)
+        del r_dict["sig_map_refiner"]
+        if self.sig_map_refiner is not None:
+            r_dict.update(self.sig_map_refiner.asdict())
+        return r_dict
+
+    def copy(self):
+        return deepcopy(self)
+
+    def write(self, metadata_path, kmer_table_path=None):
+        class NpEncoder(json.JSONEncoder):
+            def default(self, obj):
+                if isinstance(obj, np.integer):
+                    return int(obj)
+                if isinstance(obj, np.floating):
+                    return float(obj)
+                if isinstance(obj, np.bool_):
+                    return bool(obj)
+                if isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                return super(NpEncoder, self).default(obj)
+
+        self_dict = self.asdict()
+        if self_dict.get("refine_kmer_levels") is not None:
+            if kmer_table_path is not None:
+                np.save(
+                    kmer_table_path,
+                    self_dict["refine_kmer_levels"],
+                    allow_pickle=False,
+                )
+            del self_dict["refine_kmer_levels"]
+        with open(metadata_path, "w") as metadata_fh:
+            json.dump(self_dict, metadata_fh, cls=NpEncoder)
+
+
+@dataclasses.dataclass
+class CoreRemoraDataset:
+    """CoreRemoraDataset manages the storage and access to a single file of
+    training data.
+    """
+
+    data_path: str = None
+    mode: str = "r"
+    metadata: DatasetMetadata = None
+    override_metadata: dict = None
+    batch_size: int = constants.DEFAULT_BATCH_SIZE
+    sample_fraction: float = 1.0
+    infinite_iter: int = True
+
+    _core_dtypes = {
+        "signal": np.float32,
+        "sequence": np.int8,
+        "seqence_to_signal_mapping": np.int16,
+        "sequence_lengths": np.int16,
+        "labels": np.int64,
+    }
+    _core_arrays = list(_core_dtypes.keys())
+
+    @staticmethod
+    def dataset_paths(data_path):
+        data_path = util.resolve_path(data_path)
+        paths = [
+            os.path.join(data_path, arr_path)
+            for arr_path in ["metadata.jsn"]
+            + [
+                f"{array_name}.npy"
+                for array_name in CoreRemoraDataset._core_arrays
+            ]
+        ]
+        paths.extend(glob(os.path.join(data_path, "extra_*.npy")))
+        if os.path.isfile(os.path.join(data_path, "kmer_table.npy")):
+            paths.append(os.path.join(data_path, "kmer_table.npy"))
+        return paths
+
+    @staticmethod
+    def check_dataset_dir(data_path):
+        return all(
+            [
+                os.path.isfile(arr_path)
+                for arr_path in CoreRemoraDataset.dataset_paths(data_path)
+            ]
+        )
+
+    @staticmethod
+    def hash(data_path):
+        def file_digest(fh, _bufsize=2**18):
+            # copy bits from hashlib file_digest to port back to python<3.11
+            # https://github.com/python/cpython/blob/3.11/Lib/hashlib.py#L292
+            digest = hashlib.sha256()
+            buf = bytearray(_bufsize)
+            view = memoryview(buf)
+            while True:
+                size = fh.readinto(buf)
+                if size == 0:
+                    break
+                digest.update(view[:size])
+            return digest.hexdigest()
+
+        LOGGER.debug(f"Computing hash for dataset at {data_path}")
+        files_hash = ""
+        for arr_path in CoreRemoraDataset.dataset_paths(data_path):
+            with open(arr_path, "rb") as fh:
+                files_hash += file_digest(fh)
+        return hashlib.sha256(files_hash.encode("utf-8")).hexdigest()
+
+    @property
+    def metadata_path(self):
+        if self.data_path is None:
+            raise RemoraError("No path available for in-memory dataset")
+        return os.path.join(self.data_path, "metadata.jsn")
+
+    @property
+    def kmer_table_path(self):
+        if self.data_path is None:
+            raise RemoraError("No path available for in-memory dataset")
+        return os.path.join(self.data_path, "kmer_table.npy")
+
+    @property
+    def size(self):
+        return self.metadata.dataset_end - self.metadata.dataset_start
+
+    @property
+    def array_names(self):
+        return self._core_arrays + self.metadata.extra_array_names
+
+    @property
+    def arrays(self):
+        """Generator of chunk arrys in dataset. Arrays will be sliced to current
+        dataset size not allocated arrays. Note that this will load each array
+        from disk.
+        """
+        for array_name in self.array_names:
+            yield getattr(self, array_name)[
+                self.metadata.dataset_start : self.metadata.dataset_end
+            ]
+
+    @property
+    def arrays_info(self):
+        return list(
+            chain(
+                (
+                    (name, dtype, getattr(self.metadata, f"{name}_shape"))
+                    for name, dtype in self._core_dtypes.items()
+                ),
+                self.metadata.extra_array_dtypes_and_shapes,
+            )
+        )
 
     @property
     def summary(self):
         return (
-            f"               num chunks : {self.nchunks}\n"
-            f"       label distribution : {self.get_label_counts()}\n"
-            f"                base_pred : {self.base_pred}\n"
-            f"                mod_bases : {self.mod_bases}\n"
-            f"           mod_long_names : {self.mod_long_names}\n"
-            f"       kmer_context_bases : {self.kmer_context_bases}\n"
-            f"            chunk_context : {self.chunk_context}\n"
-            f"                   motifs : {self.motifs}\n"
-            f"           reverse_signal : {self.reverse_signal}\n"
-            f" chunk_extract_base_start : {self.base_start_justify}\n"
-            f"     chunk_extract_offset : {self.offset}\n"
-            f"          sig_map_refiner : {self.sig_map_refiner}\n"
+            f"                data_path : {self.data_path}\n"
+            f"                     size : {self.size}\n"
+            f"            dataset_start : {self.metadata.dataset_start}\n"
+            f"              dataset_end : {self.metadata.dataset_end}\n"
+            f"       label distribution : {self.label_summary}\n"
+            "     modified_base_labels : "
+            f"{self.metadata.modified_base_labels}\n"
+            f"                mod_bases : {self.metadata.mod_bases}\n"
+            f"           mod_long_names : {self.metadata.mod_long_names}\n"
+            f"       kmer_context_bases : {self.metadata.kmer_context_bases}\n"
+            f"            chunk_context : {self.metadata.chunk_context}\n"
+            f"                   motifs : {self.metadata.motifs}\n"
+            f"           reverse_signal : {self.metadata.reverse_signal}\n"
+            f" chunk_extract_base_start : {self.metadata.base_start_justify}\n"
+            f"     chunk_extract_offset : {self.metadata.offset}\n"
+            f"          sig_map_refiner : {self.metadata.sig_map_refiner}\n"
         )
 
-    def __repr__(self):
-        return self.summary
+    def get_array_path(self, array_name):
+        if self.data_path is None:
+            raise RemoraError("No path available for in-memory dataset")
+        if array_name in self._core_arrays:
+            return os.path.join(self.data_path, f"{array_name}.npy")
+        elif array_name in self.metadata.extra_arrays:
+            return os.path.join(self.data_path, f"extra_{array_name}.npy")
+        raise RemoraError(f"Invalid extra array name: {array_name}")
+
+    def get_label_counts(self):
+        ds_labels = self.labels[
+            self.metadata.dataset_start : self.metadata.dataset_end
+        ]
+        if self.label_conv is None:
+            lab_counts = np.bincount(ds_labels)
+        else:
+            lab_counts = np.bincount(self.label_conv[ds_labels])
+        return lab_counts
+
+    @property
+    def label_summary(self):
+        return "; ".join(
+            f"{self.metadata.labels[lab_idx]}:{count:,}"
+            for lab_idx, count in enumerate(self.get_label_counts())
+        )
+
+    def load_metadata(self):
+        """Load metadata from file and apply override_metadata attributes if
+        possible.
+
+        Attributes allowed to be overridden are:
+          - dataset_start
+            - Allows slicing of accessed elements
+          - dataset_end
+            - Allows slicing of accessed elements
+          - mod_bases
+            - Allow expansion of labels represented
+          - mod_long_names
+            - Allow expansion of labels represented
+          - extra_arrays
+            - Must be equal or subset of stored extra arrays
+          - kmer_context_bases
+            - Both values must be smaller than stored values
+          - chunk_context
+            - not currently implemented
+        """
+        with open(self.metadata_path) as metadata_fh:
+            loaded_metadata = json.load(metadata_fh)
+        if loaded_metadata.get("version") != DATASET_VERSION:
+            raise RemoraError(
+                f"Remora dataset version ({loaded_metadata.get('version')}) "
+                f"does not match current distribution ({DATASET_VERSION})"
+            )
+        # load signal map refiner if supplied
+        if os.path.exists(self.kmer_table_path):
+            loaded_metadata["refine_kmer_levels"] = np.load(
+                self.kmer_table_path
+            )
+        loaded_metadata["refine_sd_arr"] = np.asarray(
+            loaded_metadata["refine_sd_arr"], np.float32
+        )
+        loaded_metadata["sig_map_refiner"] = SigMapRefiner.load_from_metadata(
+            loaded_metadata
+        )
+        for ra in [k for k in loaded_metadata if k.startswith("refine_")]:
+            del loaded_metadata[ra]
+        if self.override_metadata is None:
+            self.metadata = DatasetMetadata(**loaded_metadata)
+            return
+
+        # process metadata to override loaded metadata
+        invalid_keys = []
+        for md_key, md_val in self.override_metadata.items():
+            if md_key == "dataset_start":
+                pass
+            elif md_key == "dataset_end":
+                if md_val > loaded_metadata["dataset_end"]:
+                    raise RemoraError("Cannot set dataset end past loaded end")
+            elif md_key == "mod_bases":
+                assert "mod_long_names" in self.override_metadata
+                assert len(self.override_metadata["mod_long_names"]) == len(
+                    md_val
+                )
+                # TODO remove this and have additional local labels added to
+                # the end. Need to consider actual use cases
+                assert all(
+                    mb in md_val for mb in self.metadata.mod_bases
+                ), "Cannot remove modified base"
+                if (
+                    self.metadata.mod_bases
+                    != md_val[: len(self.metadata.mod_bases)]
+                ):
+                    self.label_conv = np.empty(
+                        self.metadata.num_labels, dtype=np.int64
+                    )
+                    self.label_conv[0] = 0
+                    for in_lab, mod_base in enumerate(self.metadata.mod_bases):
+                        # apply at super chunks and label access
+                        self.label_conv[in_lab + 1] = md_val.find(mod_base) + 1
+                    LOGGER.debug(
+                        f"Setting label conversion: {self.label_conv} "
+                        f"{self.data_path}"
+                    )
+            elif md_key == "mod_long_names":
+                pass
+            elif md_key == "extra_arrays":
+                missing_arrays = set(md_val).difference(
+                    loaded_metadata["extra_arrays"]
+                )
+                if len(missing_arrays) > 0:
+                    raise RemoraError(
+                        "Cannot load missing arrays: "
+                        f"{', '.join(missing_arrays)}\nAvailable extra arrays: "
+                        f"{', '.join(loaded_metadata['extra_arrays'].keys())}"
+                    )
+                md_val = dict(
+                    (k, loaded_metadata["extra_arrays"][k]) for k in md_val
+                )
+            elif md_key == "chunk_context":
+                if md_val != loaded_metadata["chunk_context"]:
+                    raise NotImplementedError(
+                        "Dynamic chunk context not yet implemented. "
+                        f"{md_val} != {loaded_metadata['chunk_context']}"
+                    )
+            elif md_key == "kmer_context_bases":
+                skcb = loaded_metadata["kmer_context_bases"]
+                if md_val[0] > skcb[0] or md_val[1] > skcb[1]:
+                    raise RemoraError(
+                        f"Cannot expand kmer context (stored:{skcb} ; "
+                        f"requested:{md_val})"
+                    )
+                loaded_metadata["_stored_kmer_context_bases"] = skcb
+            else:
+                invalid_keys.append(md_key)
+                continue
+            # if no error is raised, set metadata value
+            if loaded_metadata[md_key] != md_val:
+                LOGGER.debug(
+                    f"Overriding {md_key} from value "
+                    f"'{loaded_metadata[md_key]}' to '{md_val}'"
+                )
+            loaded_metadata[md_key] = md_val
+        if loaded_metadata["dataset_start"] >= loaded_metadata["dataset_end"]:
+            raise RemoraError("Loaded dataset is empty")
+        if len(invalid_keys) > 0:
+            raise RemoraError(
+                f"Cannot change metadata values: {', '.join(invalid_keys)}"
+            )
+        self.metadata = DatasetMetadata(**loaded_metadata)
+
+    def update_metadata(self, other):
+        """Update metadata to match attributes from another dataset"""
+        # TODO add a dry run option to check compatibility of merging metadata
+        # would allow datasets to remain unchanged until all datasets have been
+        # checked. Note this would require refactoring checks out of
+        # load_metadata to use here as well
+        md = dict(
+            (
+                (md_key, getattr(other.metadata, md_key))
+                for md_key in (
+                    "mod_bases",
+                    "mod_long_names",
+                    "extra_arrays",
+                    "kmer_context_bases",
+                    "chunk_context",
+                )
+                if getattr(self.metadata, md_key)
+                != getattr(other.metadata, md_key)
+            )
+        )
+        if len(md) > 0:
+            # keep start and end at set values
+            md.update(
+                {
+                    "dataset_start": self.metadata.dataset_start,
+                    "dataset_end": self.metadata.dataset_end,
+                }
+            )
+            self.override_metadata = md
+            # load metadata instead of setting values directly to set
+            # associated attributes (label_conv etc)
+            self.load_metadata()
+
+    def allocate_arrays(self):
+        if self.mode != "w":
+            raise RemoraError("Cannot write when mode is not 'w'")
+        if self.data_path is None:
+            # load in memory numpy arrays
+            for arr_name, arr_dtype, arr_shape in self.arrays_info:
+                setattr(
+                    self,
+                    arr_name,
+                    np.empty(dtype=arr_dtype, shape=arr_shape),
+                )
+            return
+        for arr_name, arr_dtype, arr_shape in self.arrays_info:
+            setattr(
+                self,
+                arr_name,
+                np.memmap(
+                    self.get_array_path(arr_name),
+                    arr_dtype,
+                    mode="w+",
+                    shape=arr_shape,
+                ),
+            )
+
+    def refresh_memmaps(self):
+        # in-memory dataset does not touch memmaps
+        if self.data_path is None:
+            return
+        mode = "r" if self.mode == "r" else "r+"
+        for arr_name, arr_dtype, arr_shape in self.arrays_info:
+            # close prev memmap to avoid mem leaks
+            if hasattr(self, arr_name):
+                delattr(self, arr_name)
+            setattr(
+                self,
+                arr_name,
+                np.memmap(
+                    self.get_array_path(arr_name),
+                    arr_dtype,
+                    mode=mode,
+                    shape=arr_shape,
+                ),
+            )
+
+    def write_metadata(self):
+        self.metadata.write(self.metadata_path, self.kmer_table_path)
+
+    def __post_init__(self):
+        self.label_conv = None
+        assert self.mode in "rw", "mode must be 'r' or 'w'"
+        if self.data_path is None:
+            assert self.mode == "w", "In-memory dataset must have mode='w'"
+            assert isinstance(
+                self.metadata, DatasetMetadata
+            ), "Must provide metadata for in-memory dataset"
+            self.allocate_arrays()
+        elif self.mode == "r":
+            self.data_path = util.resolve_path(self.data_path)
+            self.load_metadata()
+        else:
+            assert isinstance(
+                self.metadata, DatasetMetadata
+            ), "Must provide metadata for new dataset"
+            self.data_path = util.resolve_path(self.data_path)
+            self.allocate_arrays()
+            self.write_metadata()
+        self.refresh_memmaps()
+        self._iter = None
+
+    def write_batch(self, arrays):
+        if self.mode != "w":
+            raise RemoraError("Cannot write when mode is not 'w'")
+        batch_size = next(iter(arrays.values())).shape[0]
+        if any(arr.shape[0] != batch_size for arr in arrays.values()):
+            raise RemoraError("All arrays in a batch must be the same size")
+        if self.metadata.dataset_end + batch_size > self.metadata.allocate_size:
+            # write metadata before raise to update size on disk
+            self.write_metadata()
+            raise RemoraError("Batch write greater than allocated memory")
+        missing_arrs = set(self.array_names).difference(arrays.keys())
+        if len(missing_arrs) > 0:
+            raise RemoraError(
+                "Batch write must include all arrays. Missing: "
+                f"{', '.join(missing_arrs)}"
+            )
+        unspec_arrs = set(arrays.keys()).difference(self.array_names)
+        if len(unspec_arrs) > 0:
+            raise RemoraError(
+                "Batch write must only include spcified arrays. Found: "
+                f"{', '.join(unspec_arrs)}"
+            )
+        for arr_name, in_array in arrays.items():
+            out_array = getattr(self, arr_name)
+            out_array[
+                self.metadata.dataset_end : self.metadata.dataset_end
+                + batch_size
+            ] = in_array
+        # update size
+        self.metadata.dataset_end = self.metadata.dataset_end + batch_size
+
+    def write_chunk(self, chunk):
+        if self.mode != "w":
+            raise RemoraError("Cannot write when mode is not 'w'")
+        seq_arr = np.empty(
+            (1, self.metadata.sequence_width),
+            dtype=self._core_dtypes["sequence"],
+        )
+        seq_arr[0, : chunk.seq_w_context.size] = chunk.seq_w_context
+        ssm_arr = np.empty(
+            (1, self.metadata.seqence_to_signal_mapping_width),
+            dtype=self._core_dtypes["seqence_to_signal_mapping"],
+        )
+        ssm_arr[0, : chunk.seq_to_sig_map.size] = chunk.seq_to_sig_map
+        chunk_dict = {
+            "signal": np.expand_dims(chunk.signal, axis=0).astype(
+                self._core_dtypes["signal"]
+            ),
+            "sequence": seq_arr,
+            "seqence_to_signal_mapping": ssm_arr,
+            "sequence_lengths": np.array(
+                [chunk.seq_len], dtype=self._core_dtypes["sequence_lengths"]
+            ),
+            "labels": np.array(
+                [chunk.label], dtype=self._core_dtypes["labels"]
+            ),
+        }
+        if (
+            self.metadata.extra_arrays is not None
+            and "read_ids" in self.metadata.extra_arrays
+        ):
+            chunk_dict["read_ids"] = np.array(
+                [chunk.read_id],
+                dtype=self.metadata.extra_arrays["read_ids"][0],
+            )
+        if (
+            self.metadata.extra_arrays is not None
+            and "read_focus_bases" in self.metadata.extra_arrays
+        ):
+            chunk_dict["read_focus_bases"] = np.array(
+                [chunk.read_focus_base],
+                dtype=self.metadata.extra_arrays["read_focus_bases"][0],
+            )
+        self.write_batch(chunk_dict)
+
+    def shuffle(self):
+        # TODO add option to perform pseudo-shuffle without reading full
+        # core arrays into memory.
+        if self.mode != "w":
+            raise RemoraError("Cannot write when mode is not 'w'")
+        shuf_indices = np.random.permutation(self.size)
+        for array in self.arrays:
+            array = array[shuf_indices]
+            gc.collect()
+
+    def load_super_batch(self, sb_st, sb_size, selected_indices=None):
+        super_batch = {}
+        sb_arr_st = self.metadata.dataset_start + sb_st
+        sb_arr_en = sb_arr_st + sb_size
+        if sb_arr_en <= self.metadata.dataset_end:
+            for arr_name in self.array_names:
+                arr_sb = getattr(self, arr_name)[sb_arr_st:sb_arr_en].copy()
+                if selected_indices is not None:
+                    arr_sb = arr_sb[selected_indices]
+                super_batch[arr_name] = arr_sb
+            if self.label_conv is not None:
+                super_batch["labels"] = self.label_conv[super_batch["labels"]]
+            return super_batch
+        if self.infinite_iter:
+            # wrap super batch around end of dataset
+            wrap_en = sb_arr_en - self.metadata.size
+            for arr_name in self.array_names:
+                arr_sb = np.concatenate(
+                    [
+                        getattr(self, arr_name)[
+                            sb_arr_st : self.metadata.dataset_end
+                        ],
+                        getattr(self, arr_name)[
+                            self.metadata.dataset_start : wrap_en
+                        ],
+                    ]
+                )
+                if selected_indices is not None:
+                    arr_sb = arr_sb[selected_indices]
+                super_batch[arr_name] = arr_sb
+        else:
+            # only iterating over data once set super batch values to None
+            if sb_st >= self.metadata.dataset_end:
+                return
+            else:
+                for arr_name in self.array_names:
+                    arr_sb = (
+                        getattr(self, arr_name)[
+                            sb_arr_st : self.metadata.dataset_end
+                        ],
+                    )
+                    if selected_indices is not None:
+                        arr_sb = arr_sb[selected_indices]
+                    super_batch[arr_name] = arr_sb
+        if self.label_conv is not None:
+            super_batch["labels"] = self.label_conv[super_batch["labels"]]
+        return super_batch
+
+    def trim_sb_kmer_context_bases(self, super_batch):
+        """Trim super-batch sequence array to achieve loaded k-mer context
+        bases. Note that the end trimming is applied at the encoded k-mer
+        computation via the compute_encoded_kmer_batch call with
+        load_kmer_context_bases.
+        """
+        if self.metadata._stored_kmer_context_bases is None:
+            return super_batch
+        seq_diff = (
+            self.metadata._stored_kmer_context_bases[0]
+            - self.metadata.kmer_context_bases[0]
+        )
+        if seq_diff > 0:
+            super_batch["sequence"] = super_batch["sequence"][:, seq_diff:]
+        return super_batch
+
+    def iter_super_batches(
+        self,
+        super_batch_size,
+        chunks_per_sb,
+        sample_fraction,
+        super_batch_offset,
+    ):
+        super_batch_num = 0
+        while True:
+            self.refresh_memmaps()
+            selected_indices = np.random.choice(
+                super_batch_size, chunks_per_sb, replace=False
+            )
+            super_batch = self.load_super_batch(
+                (super_batch_offset + (super_batch_num * super_batch_size))
+                % self.size,
+                super_batch_size,
+                selected_indices=selected_indices,
+            )
+            super_batch_num += 1
+            yield super_batch
+
+    def extract_batch(self, super_batch, batch_st, batch_size):
+        batch_en = (
+            super_batch["sequence"].shape[0]
+            if batch_st + batch_size > super_batch["sequence"].shape[0]
+            else batch_st + batch_size
+        )
+        batch = {
+            "enc_kmers": encoded_kmers.compute_encoded_kmer_batch(
+                *self.metadata.kmer_context_bases,
+                super_batch["sequence"][batch_st:batch_en],
+                super_batch["seqence_to_signal_mapping"][batch_st:batch_en],
+                super_batch["sequence_lengths"][batch_st:batch_en],
+            )
+        }
+        batch.update(
+            dict(
+                (
+                    arr_name,
+                    super_batch[arr_name][batch_st:batch_en],
+                )
+                for arr_name in ["signal", "labels"]
+                + self.metadata.extra_array_names
+            )
+        )
+        return batch
+
+    def iter_batches(
+        self,
+        batch_size,
+        sample_fraction=1.0,
+        super_batch_size=1_000_000,
+        max_batches=None,
+        super_batch_offset=0,
+    ):
+        if not self.infinite_iter:
+            total_batches = int(np.ceil(self.size / batch_size))
+            max_batches = (
+                total_batches
+                if max_batches is None
+                else min(max_batches, total_batches)
+            )
+        if super_batch_size > self.size:
+            super_batch_size = self.size
+        # round up to next number batch size
+        chunks_per_sb = int(
+            np.ceil(super_batch_size * sample_fraction / batch_size)
+            * batch_size
+        )
+        if chunks_per_sb > super_batch_size:
+            chunks_per_sb -= batch_size
+        if chunks_per_sb == 0:
+            batch_size = int(super_batch_size * sample_fraction)
+            chunks_per_sb = batch_size
+        super_batches = iter(
+            util.BackgroundIter(
+                self.iter_super_batches,
+                q_maxsize=2,
+                args=(
+                    super_batch_size,
+                    chunks_per_sb,
+                    sample_fraction,
+                    super_batch_offset,
+                ),
+                use_mp_queue=False,
+                name="ExtractSuperBatch",
+            )
+        )
+        batch_num = 0
+        while max_batches is None or batch_num < max_batches:
+            super_batch = next(super_batches)
+            # if infinite_iter is False and batches exhausted
+            if super_batch is None:
+                break
+            super_batch = self.trim_sb_kmer_context_bases(super_batch)
+            for batch_st in range(0, chunks_per_sb, batch_size):
+                yield self.extract_batch(super_batch, batch_st, batch_size)
+                batch_num += 1
+                if max_batches is not None and batch_num >= max_batches:
+                    break
+
+    def __iter__(self):
+        if self._iter is None or not self.infinite_iter:
+            self._iter = self.iter_batches(
+                self.batch_size, self.sample_fraction
+            )
+        return self._iter
+
+    def __next__(self):
+        return next(self._iter)
+
+    def flush(self):
+        if self.data_path is None:
+            return
+        for arr_name in self.array_names:
+            getattr(self, arr_name).flush()
+        self.refresh_memmaps()
+
+
+def parse_dataset_config(config_path, skip_hash=False, used_configs=None):
+    paths, weights, hashes = [], [], []
+    config_path = util.resolve_path(config_path)
+    if used_configs is None:
+        used_configs = set((config_path,))
+    with open(config_path) as config_fh:
+        for ds_info in json.load(config_fh):
+            if len(ds_info) == 2:
+                ds_path, weight = ds_info
+                ds_hash = None
+            elif len(ds_info) == 3:
+                ds_path, weight, ds_hash = ds_info
+            assert weight > 0, "dataset config weight must be positive"
+            ds_path = util.resolve_path(ds_path)
+            if not os.path.exists(ds_path):
+                raise RemoraError(
+                    f"Core dataset path does not exist. {ds_path}"
+                )
+            if os.path.isdir(ds_path):
+                if not skip_hash:
+                    computed_hash = CoreRemoraDataset.hash(ds_path)
+                    if ds_hash is None:
+                        ds_hash = computed_hash
+                    else:
+                        assert (
+                            ds_hash == computed_hash
+                        ), "Dataset hashes mismatch"
+                paths.append(ds_path)
+                weights.append(weight)
+                hashes.append(ds_hash)
+            else:
+                if ds_path in used_configs:
+                    raise RemoraError(
+                        f"Circular dataset config refrence. {ds_path} "
+                        f"found in {config_path}"
+                    )
+                used_configs.add(ds_path)
+                sub_paths, sub_weights, sub_hashs = parse_dataset_config(
+                    ds_path, skip_hash=skip_hash, used_configs=used_configs
+                )
+                paths.extend(sub_paths)
+                weights.extend(sub_weights * weight)
+                hashes.extend(sub_hashs)
+    if len(paths) != len(set(paths)):
+        LOGGER.warning("Core datasets loaded multiple times")
+    # normalize weights and return
+    weights = np.array(weights)
+    props = weights / weights.sum()
+    return paths, props, hashes
+
+
+def compute_best_split(total_size, props):
+    """Compute best split of total size into len(props) integers where each
+    value is >=1 and approxiamtely closeset to props.
+    """
+    if total_size < len(props):
+        raise RemoraError(
+            f"total_size ({total_size}) smaller than number of proportions "
+            f"{len(props)}"
+        )
+    sizes = np.floor(total_size * props).astype(int)
+    # if any sizes are empty add at least 1 chunk
+    sizes[sizes == 0] = 1
+    # if adding 1 to empty sizes exceeds total_size subtract from largest
+    while sizes.sum() > total_size:
+        sizes[np.argmax(sizes)] -= 1
+    # until total size is reached add chunks to value farthest below prop
+    while sizes.sum() < total_size:
+        sizes[np.argmin((sizes / sizes.sum()) - props)] += 1
+    return sizes
+
+
+def merge_motifs(motifs):
+    motifs = [util.Motif(*motif) for motif in set(motifs)]
+    motifs_to_drop = set()
+    for motif_idx, motif in enumerate(motifs):
+        for other_idx, other in enumerate(motifs):
+            if motif_idx == other_idx:
+                continue
+            if motif.is_super_set(other):
+                motifs_to_drop.add(other_idx)
+    return [
+        (motif.raw_motif, motif.focus_pos)
+        for motif_idx, motif in enumerate(motifs)
+        if motif_idx not in motifs_to_drop
+    ]
+
+
+def dataloader_worker_init(worker_id):
+    worker_info = torch.utils.data.get_worker_info()
+    if worker_info is None:
+        return
+
+    ds = worker_info.dataset
+    if ds.seed is not None:
+        np.random.seed(worker_info.dataset.seed + worker_info.id)
+    ds.offsets = [np.random.randint(0, sub_ds.size) for sub_ds in ds.datasets]
+    LOGGER.debug(
+        f"Dataset worker {worker_info.id} using super batch offsets "
+        f"{', '.join(map(str, ds.offsets))}"
+    )
+
+
+class RemoraDataset(IterableDataset):
+    """Remora dataset composed of one or more CoreRemoraDatasets. Core datasets
+    will be combined at fixed ratios in the batches supplied.
+    """
+
+    @property
+    def num_datasets(self):
+        return len(self.datasets)
+
+    @property
+    def paths(self):
+        return [ds.data_path for ds in self.datasets]
+
+    @property
+    def size(self):
+        return sum(ds.size for ds in self.datasets)
+
+    @property
+    def hashes(self):
+        if self._hashes is None:
+            LOGGER.debug("Computing dataset hashes")
+            self._hashes = [ds.hash for ds in self.datasets]
+        return self._hashes
+
+    @property
+    def summary(self):
+        return (
+            f"                     size : {self.size}\n"
+            "     modified_base_labels : "
+            f"{self.metadata.modified_base_labels}\n"
+            f"                mod_bases : {self.metadata.mod_bases}\n"
+            f"           mod_long_names : {self.metadata.mod_long_names}\n"
+            f"       kmer_context_bases : {self.metadata.kmer_context_bases}\n"
+            f"            chunk_context : {self.metadata.chunk_context}\n"
+            f"                   motifs : {self.metadata.motifs}\n"
+            f"           reverse_signal : {self.metadata.reverse_signal}\n"
+            f" chunk_extract_base_start : {self.metadata.base_start_justify}\n"
+            f"     chunk_extract_offset : {self.metadata.offset}\n"
+            f"          sig_map_refiner : {self.metadata.sig_map_refiner}\n"
+        )
+
+    @property
+    def init_kwargs(self):
+        return {
+            "proportions": self.props,
+            "hashes": self._hashes,
+            "batch_size": self.batch_size,
+            "sample_fraction": self.sample_fraction,
+            "seed": self.seed,
+        }
+
+    def set_global_metadata(self):
+        self.metadata = self.datasets[0].metadata.copy()
+        # not applicable for super dataset
+        for md_name in (
+            "allocate_size",
+            "max_seq_len",
+            "dataset_start",
+            "dataset_end",
+        ):
+            setattr(self.metadata, md_name, None)
+        self.metadata.motif_sequences, self.metadata.motif_offsets = zip(
+            *merge_motifs(self.metadata.motifs)
+        )
+        for ds in self.datasets[1:]:
+            # first check attrs for which exact match is required
+            for attr_name in (
+                "modified_base_labels",
+                "base_start_justify",
+                "offset",
+                "reverse_signal",
+                "sig_map_refiner",
+            ):
+                if getattr(ds.metadata, attr_name) != getattr(
+                    self.metadata, attr_name
+                ):
+                    raise RemoraError(
+                        f"All datasets must have same {attr_name} "
+                        f"{getattr(ds, attr_name)} != "
+                        f"{getattr(self.metadata, attr_name)}"
+                    )
+            if set(ds.metadata.extra_array_names) != set(
+                self.metadata.extra_array_names
+            ):
+                raise RemoraError(
+                    f"Extra arrays not equal: {ds.metadata.extra_array_names} "
+                    f"!= {self.metadata.extra_array_names}"
+                )
+            for mb, mln in zip(
+                ds.metadata.mod_bases, ds.metadata.mod_long_names
+            ):
+                if mb in self.metadata.mod_bases:
+                    # ensure same mod long name is specified for the short name
+                    md_mln = next(
+                        md_mln
+                        for md_mb, md_mln in zip(
+                            self.metadata.mod_bases,
+                            self.metadata.mod_long_names,
+                        )
+                        if mb == md_mb
+                    )
+                    assert mln == md_mln, (
+                        "Mismatched modified bases.\n\tPreviously loaded "
+                        f"modified bases: {self.metadata.mod_bases} "
+                        f"{self.metadata.mod_long_names}\n\tNew modified "
+                        f"bases: {ds.metadata.mod_bases} "
+                        f"{ds.metadata.mod_long_names}"
+                    )
+                else:
+                    # add mod base to super dataset metadata
+                    self.metadata.mod_bases += mb
+                    self.metadata.mod_long_names.append(mln)
+
+            # kmer_context bases can be reduced
+            if (
+                ds.metadata.kmer_context_bases
+                != self.metadata.kmer_context_bases
+            ):
+                LOGGER.debug(
+                    "K-mer context bases not equal. Setting to minimum values. "
+                    f"{ds.metadata.kmer_context_bases} != "
+                    f"{self.metadata.kmer_context_bases}"
+                )
+                self.metadata.kmer_context_bases = (
+                    min(
+                        self.metadata.kmer_context_bases[0],
+                        ds.metadata.kmer_context_bases[0],
+                    ),
+                    min(
+                        self.metadata.kmer_context_bases[1],
+                        ds.metadata.kmer_context_bases[1],
+                    ),
+                )
+            # separate chunk_context as well
+            if ds.metadata.chunk_context != self.metadata.chunk_context:
+                raise NotImplementedError(
+                    "Chunk context adjustment not implemneted"
+                )
+                """LOGGER.debug(
+                    "Chunk context not equal. Setting to minimum values. "
+                    f"{ds.metadata.chunk_context} != "
+                    f"{self.metadata.chunk_context}"
+                )
+                self.metadata.kmer_context_bases = (
+                    min(self.metadata.chunk_context[0],
+                        ds.metadata.chunk_context[0]),
+                    min(self.metadata.chunk_context[1],
+                        ds.metadata.chunk_context[1]),
+                )"""
+
+            # do simple motif merges; example: CG + C -> C
+            if set(ds.metadata.motifs) != set(self.metadata.motifs):
+                LOGGER.debug(
+                    f"Motif sets not equal: {set(ds.metadata.motifs)} "
+                    f"!= {set(self.metadata.motifs)}. Merging motif sets."
+                )
+                (
+                    self.metadata.motif_sequences,
+                    self.metadata.motif_offsets,
+                ) = zip(
+                    *merge_motifs(self.metadata.motifs + ds.metadata.motifs)
+                )
+
+        # sort modified bases alphabetically
+        mod_bases = ""
+        mod_long_names = []
+        for idx in sorted(
+            range(len(self.metadata.mod_bases)),
+            key=self.metadata.mod_bases.__getitem__,
+        ):
+            mod_bases += self.metadata.mod_bases[idx]
+            mod_long_names.append(self.metadata.mod_long_names[idx])
+        self.metadata.mod_bases = mod_bases
+        self.metadata.mod_long_names = mod_long_names
+
+    def update_metadata(self, other):
+        for md_key in (
+            "modified_base_labels",
+            "offset",
+            "reverse_signal",
+            "sig_map_refiner",
+        ):
+            if getattr(self.metadata, md_key) != getattr(
+                other.metadata, md_key
+            ):
+                raise RemoraError(
+                    f"Cannot update metadata with mismatching '{md_key}'. "
+                    f"({getattr(self.metadata, md_key)} != "
+                    f"{getattr(other.metadata, md_key)}"
+                )
+        for ds in self.datasets:
+            ds.update_metadata(other)
+        for md_key in (
+            "mod_bases",
+            "mod_long_names",
+            "extra_arrays",
+            "kmer_context_bases",
+            "chunk_context",
+        ):
+            setattr(self.metadata, md_key, getattr(other.metadata, md_key))
+
+    def __init__(
+        self,
+        datasets,
+        proportions,
+        hashes=None,
+        batch_size=constants.DEFAULT_BATCH_SIZE,
+        sample_fraction=0.1,
+        seed=None,
+    ):
+        self.datasets = datasets
+        self.props = proportions
+        assert all(
+            0 <= prop <= 1 for prop in self.props
+        ), "Dataset proportions must be between 0 and 1."
+        self._hashes = hashes
+        self.batch_size = batch_size
+        self.sample_fraction = sample_fraction
+        self.seed = seed
+
+        self.batch_sizes = compute_best_split(batch_size, proportions)
+        # RemoraDataset is infinite iter if all core datasets are infinite
+        self.infinite_iter = all(ds.infinite_iter for ds in self.datasets)
+        self.set_global_metadata()
+        # apply applicable global metadata to sub-datasets
+        for ds in self.datasets:
+            ds.update_metadata(self)
+        self.offsets = [0 for ds in self.datasets]
+        self._iter = None
 
     @classmethod
-    def allocate_empty_chunks(
+    def from_config(
         cls,
-        num_chunks,
-        chunk_context,
-        kmer_context_bases,
-        max_seq_len=None,
-        min_samps_per_base=None,
-        *args,
+        config_path,
+        override_metadata=None,
+        ds_kwargs=None,
+        skip_hash=False,
         **kwargs,
     ):
-        if max_seq_len is None and min_samps_per_base is None:
-            raise RemoraError(
-                "Must set either max_seq_len or min_samps_per_base"
+        paths, props, hashes = parse_dataset_config(
+            config_path, skip_hash=skip_hash
+        )
+        LOGGER.debug(f"Loaded dataset paths: {', '.join(paths)}")
+        LOGGER.debug(
+            f"Loaded dataset proportions: {', '.join(map(str, props))}"
+        )
+        LOGGER.debug(f"Loaded dataset hashes: {', '.join(map(str, hashes))}")
+        if override_metadata is None:
+            override_metadata = {}
+        if ds_kwargs is None:
+            ds_kwargs = {}
+        datasets = [
+            CoreRemoraDataset(
+                ds_path,
+                override_metadata=override_metadata.copy(),
+                **ds_kwargs,
             )
-        if max_seq_len is None:
-            max_seq_len = sum(chunk_context) // min_samps_per_base
-        sig_tensor = np.empty(
-            (num_chunks, 1, sum(chunk_context)), dtype=np.float32
-        )
-        seq_array = np.empty(
-            (num_chunks, max_seq_len + sum(kmer_context_bases)),
-            dtype=np.byte,
-        )
-        seq_mappings = np.empty(
-            (num_chunks, max_seq_len + 1),
-            dtype=np.short,
-        )
-        seq_lens = np.empty(num_chunks, dtype=np.short)
-        labels = np.empty(num_chunks, dtype=np.int64)
-        read_ids = np.empty(num_chunks, dtype="U36")
-        read_pos = np.empty(num_chunks, dtype=int)
-        return cls(
-            sig_tensor,
-            seq_array,
-            seq_mappings,
-            seq_lens,
-            labels,
-            read_ids,
-            read_pos,
-            nchunks=0,
-            chunk_context=chunk_context,
-            max_seq_len=max_seq_len,
-            kmer_context_bases=kmer_context_bases,
-            *args,
-            **kwargs,
-        )
+            for ds_path in paths
+        ]
+        label_summaries = "\n".join(ds.label_summary for ds in datasets)
+        LOGGER.debug(f"Loaded dataset label summaries:\n{label_summaries}")
+        return cls(datasets, props, hashes, **kwargs)
 
-
-def merge_datasets(input_datasets, balance=False, quiet=False):
-    def load_dataset(ds_path, num_chunks):
-        dataset = RemoraDataset.load_from_file(
-            ds_path,
-            shuffle_on_iter=False,
-            drop_last=False,
-        )
-        if num_chunks is not None and num_chunks < dataset.nchunks:
-            dataset.shuffle()
-        else:
-            num_chunks = dataset.nchunks
-        return dataset, num_chunks
-
-    log_fp = LOGGER.debug if quiet else LOGGER.info
-
-    # load first file to determine base_pred or mod_bases
-    dataset, num_chunks = load_dataset(*input_datasets[0])
-    base_pred = dataset.base_pred
-    chunk_context = dataset.chunk_context
-    max_seq_len = dataset.max_seq_len
-    kmer_context_bases = dataset.kmer_context_bases
-    motifs = set(dataset.motifs)
-    sig_map_refiner = dataset.sig_map_refiner
-    base_start_justify = dataset.base_start_justify
-    reverse_signal = dataset.reverse_signal
-    offset = dataset.offset
-    raw_mod_long_names = []
-    raw_mod_bases = []
-    if not base_pred:
-        for mod_base, mln in zip(dataset.mod_bases, dataset.mod_long_names):
-            if mod_base not in raw_mod_bases:
-                raw_mod_bases.append(mod_base)
-                raw_mod_long_names.append(mln)
-    del dataset
-    gc.collect()
-
-    all_num_chunks = [num_chunks]
-    for ds_path, num_chunks in input_datasets[1:]:
-        dataset, num_chunks = load_dataset(ds_path, num_chunks)
-        for attr_name, attr_val in (
-            ("base_pred", base_pred),
-            ("chunk_context", chunk_context),
-            ("max_seq_len", max_seq_len),
-            ("kmer_context_bases", kmer_context_bases),
-            ("base_start_justify", base_start_justify),
-            ("offset", offset),
-        ):
-            if getattr(dataset, attr_name) != attr_val:
-                raise RemoraError(
-                    f"All datasets must have same {attr_name} "
-                    f"{getattr(dataset, attr_name)} != {attr_val}"
-                )
-        if set(dataset.motifs) != motifs:
-            log_fp(
-                "WARNING: Datasets have different motifs. Merging motifs "
-                f"{motifs} with motifs {set(dataset.motifs)}"
+    def train_test_split(self, num_test_chunks, override_metadata=None):
+        test_sizes = compute_best_split(num_test_chunks, self.props)
+        if override_metadata is None:
+            override_metadata = {}
+        train_datasets, test_datasets = [], []
+        for ds, test_size in zip(self.datasets, test_sizes):
+            if test_size >= ds.size:
+                raise RemoraError("Not enough chunks")
+            trn_md = override_metadata.copy()
+            trn_md["dataset_start"] = ds.metadata.dataset_start + test_size
+            LOGGER.debug(f"train split override metadata: {trn_md}")
+            train_datasets.append(
+                CoreRemoraDataset(ds.data_path, override_metadata=trn_md)
             )
-            motifs.update(dataset.motifs)
-        if not base_pred:
-            for mod_base, mln in zip(dataset.mod_bases, dataset.mod_long_names):
-                if mod_base not in raw_mod_bases:
-                    raw_mod_bases.append(mod_base)
-                    raw_mod_long_names.append(mln)
-        all_num_chunks.append(num_chunks)
-        # TODO add checks for refine attributes
-        del dataset
-        gc.collect()
-
-    all_mod_bases = ""
-    all_mod_long_names = None
-    if not base_pred:
-        # sort modified bases alphabetically
-        all_mod_long_names = []
-        for idx in sorted(
-            range(len(raw_mod_bases)), key=raw_mod_bases.__getitem__
-        ):
-            all_mod_bases += raw_mod_bases[idx]
-            all_mod_long_names.append(raw_mod_long_names[idx])
-
-    output_dataset = RemoraDataset.allocate_empty_chunks(
-        num_chunks=sum(all_num_chunks),
-        chunk_context=chunk_context,
-        max_seq_len=max_seq_len,
-        kmer_context_bases=kmer_context_bases,
-        base_pred=base_pred,
-        mod_bases=all_mod_bases,
-        mod_long_names=all_mod_long_names,
-        motifs=motifs,
-        reverse_signal=reverse_signal,
-        sig_map_refiner=sig_map_refiner,
-        base_start_justify=base_start_justify,
-        offset=offset,
-    )
-    LOGGER.info(f"Output dataset summary:\n{output_dataset.summary}")
-    for ds_path, num_chunks in input_datasets:
-        input_dataset, num_chunks = load_dataset(ds_path, num_chunks)
-        if base_pred:
-            label_conv = np.arange(4, dtype=np.int64)
-        else:
-            label_conv = np.empty(
-                len(input_dataset.mod_bases) + 1, dtype=np.int64
+            test_md = override_metadata.copy()
+            test_md["dataset_end"] = ds.metadata.dataset_start + test_size
+            LOGGER.debug(f"test split override metadata: {test_md}")
+            test_datasets.append(
+                CoreRemoraDataset(
+                    ds.data_path,
+                    infinite_iter=False,
+                    override_metadata=test_md,
+                )
             )
-            label_conv[0] = 0
-            for input_lab, mod_base in enumerate(input_dataset.mod_bases):
-                label_conv[input_lab + 1] = (
-                    output_dataset.mod_bases.find(mod_base) + 1
+        return RemoraDataset(train_datasets, **self.init_kwargs), RemoraDataset(
+            test_datasets, **self.init_kwargs
+        )
+
+    def head(self, num_chunks, override_metadata=None):
+        ds_sizes = compute_best_split(num_chunks, self.props)
+        if override_metadata is None:
+            override_metadata = {}
+        head_datasets = []
+        for ds, ds_size in zip(self.datasets, ds_sizes):
+            if ds_size >= ds.size:
+                raise RemoraError("Not enough chunks")
+            head_md = override_metadata.copy()
+            head_md["dataset_start"] = ds.metadata.dataset_start
+            head_md["dataset_end"] = ds.metadata.dataset_start + ds_size
+            head_datasets.append(
+                CoreRemoraDataset(
+                    ds.data_path, infinite_iter=False, override_metadata=head_md
                 )
-        added_chunks = 0
-        for (
-            (b_sig, b_seq, b_ss_map, b_seq_lens),
-            b_labels,
-            (b_rids, b_rfbs),
-        ) in input_dataset:
-            b_labels = label_conv[b_labels]
-            if added_chunks + b_labels.size >= num_chunks:
-                batch_size = num_chunks - added_chunks
-                output_dataset.add_batch(
-                    b_sig[:batch_size],
-                    b_seq[:batch_size],
-                    b_ss_map[:batch_size],
-                    b_seq_lens[:batch_size],
-                    b_labels[:batch_size],
-                    b_rids[:batch_size],
-                    b_rfbs[:batch_size],
-                )
-                added_chunks += batch_size
+            )
+        return RemoraDataset(head_datasets, **self.init_kwargs)
+
+    def iter_batches(self, return_arrays=("enc_kmers", "signal", "labels")):
+        while True:
+            try:
+                ds_arrays = [next(ds) for ds in self.ds_iters]
+            except StopIteration:
                 break
-            added_chunks += b_labels.size
-            output_dataset.add_batch(
-                b_sig, b_seq, b_ss_map, b_seq_lens, b_labels, b_rids, b_rfbs
-            )
-        log_fp(
-            f"Copied {added_chunks} chunks. New label distribution: "
-            f"{output_dataset.get_label_counts()}"
-        )
-        del input_dataset
-        gc.collect()
-    output_dataset.clip_chunks()
-    if balance:
-        balanced_dataset = output_dataset.balance_classes()
-        log_fp(
-            f"Balanced out to {balanced_dataset.sig_tensor.shape[0]} chunks. "
-            f"New label distribution: {balanced_dataset.get_label_counts()}"
-        )
-        return balanced_dataset
+            yield [
+                torch.from_numpy(
+                    np.concatenate([arr[arr_name] for arr in ds_arrays])
+                )
+                for arr_name in return_arrays
+            ]
 
-    return output_dataset
+    def __iter__(self):
+        # if first time calling iter or if this is an exhaustible dataset
+        # re-initialize the iterator
+        if self._iter is None or not self.infinite_iter:
+            self.ds_iters = [
+                ds.iter_batches(
+                    bs,
+                    self.sample_fraction,
+                    super_batch_offset=offset,
+                )
+                for ds, bs, offset in zip(
+                    self.datasets, self.batch_sizes, self.offsets
+                )
+            ]
+            self._iter = self.iter_batches()
+        return self._iter
+
+    def __next__(self):
+        return next(self._iter)
+
+    def get_label_counts(self):
+        label_counts = np.zeros(self.metadata.num_labels, dtype=int)
+        for ds in self.datasets:
+            for idx, count in enumerate(ds.get_label_counts()):
+                label_counts[idx] += count
+        return label_counts
+
+    @property
+    def label_summary(self):
+        return "; ".join(
+            f"{self.metadata.labels[lab_idx]}:{count:,}"
+            for lab_idx, count in enumerate(self.get_label_counts())
+        )
+
+    def get_config(self):
+        return [
+            (ds_path, ds_prop)
+            if ds_hash is None
+            else (ds_path, ds_prop, ds_hash)
+            for ds_path, ds_prop, ds_hash in zip(
+                self.paths, self.props, self.hashes
+            )
+        ]
+
+    def epoch_summary(self, batches_per_epoch):
+        epoch_chunk_totals = [
+            batches_per_epoch * ds_chunks_per_batch
+            for ds_chunks_per_batch in self.batch_sizes
+        ]
+        ds_label_counts = [
+            dict(zip(ds.metadata.labels, ds.get_label_counts()))
+            for ds in self.datasets
+        ]
+        dss_label_cols = [
+            "\t".join(f"{ds_lc.get(lab, 0):,}" for lab in self.metadata.labels)
+            for ds_lc in ds_label_counts
+        ]
+        summ_strs = [
+            f"{ds_chunks_per_epoch/ds.size:.6%}\t{ds_chunks_per_epoch}\t"
+            f"{ds.size}\t"
+            f"{ds_label_cols}\t"
+            f"{ds.data_path}"
+            for ds_chunks_per_epoch, ds, ds_label_cols in zip(
+                epoch_chunk_totals, self.datasets, dss_label_cols
+            )
+        ]
+        labels_header = "\t".join(self.metadata.labels)
+        return (
+            "percent_of_dataset_per_epoch\tdataset_chunks_per_epoch\t"
+            f"dataset_size\t{labels_header}\tpath\n"
+        ) + "\n".join(summ_strs)

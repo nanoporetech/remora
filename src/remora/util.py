@@ -6,6 +6,8 @@ import platform
 import traceback
 from abc import ABC
 from time import sleep
+from pathlib import Path
+from shutil import rmtree
 import multiprocessing as mp
 from threading import Thread
 from reprlib import recursive_repr
@@ -49,6 +51,19 @@ U_TO_T_BASES = {ord("U"): ord("T")}
 T_TO_U_BASES = {ord("T"): ord("U")}
 
 DEFAULT_QUEUE_SIZE = 10_000
+
+
+def prepare_out_dir(out_dir, overwrite):
+    out_path = Path(out_dir)
+    if overwrite:
+        if out_path.is_dir():
+            rmtree(out_path)
+        elif out_path.exists():
+            out_path.unlink()
+    elif out_path.exists():
+        raise RemoraError("Refusing to overwrite existing training directory.")
+    out_path.mkdir(parents=True, exist_ok=True)
+    log.init_logger(os.path.join(out_path, "log.txt"))
 
 
 def human_format(num):
@@ -204,8 +219,8 @@ def get_read_ids(bam_idx, pod5_fh, num_reads):
     both_read_ids = list(pod5_read_ids.intersection(bam_idx.read_ids))
     num_both_read_ids = len(both_read_ids)
     LOGGER.info(
-        f"Found {bam_idx.num_reads} BAM records, {num_pod5_reads} "
-        f"POD5 reads, and {num_both_read_ids} in common"
+        f"Found {bam_idx.num_reads:,} BAM records, {num_pod5_reads:,} "
+        f"POD5 reads, and {num_both_read_ids:,} in common"
     )
     if num_reads is None:
         num_reads = num_both_read_ids
@@ -259,6 +274,31 @@ class Motif:
     @property
     def num_bases_after_focus(self):
         return len(self.raw_motif) - self.focus_pos - 1
+
+    def is_super_set(self, other):
+        """Determine if this motif is a super-set of another motif. In other
+        words, are all sequences represented by the other motif found within
+        this motif?
+        """
+        # first ensure that this motif is equal or shorted than the other motif
+        if (
+            self.focus_pos > other.focus_pos
+            or self.num_bases_after_focus > other.num_bases_after_focus
+        ):
+            return False
+        trim_other_raw_motif = other.raw_motif[
+            other.focus_pos
+            - self.focus_pos : other.focus_pos
+            + self.num_bases_after_focus
+            + 1
+        ]
+        for self_base, other_base in zip(self.raw_motif, trim_other_raw_motif):
+            if any(
+                ob not in SINGLE_LETTER_CODE[self_base]
+                for ob in SINGLE_LETTER_CODE[other_base]
+            ):
+                return False
+        return True
 
 
 def get_can_converter(alphabet, collapse_alphabet):

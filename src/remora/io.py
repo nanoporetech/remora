@@ -231,10 +231,10 @@ class ReadIndexedBam:
             pbar.update()
             if self.req_tags is not None:
                 tags = set(tg[0] for tg in read.tags)
-                if not self.req_tags.issubset(tags):
+                missing_tags = self.req_tags.difference(tags)
+                if len(missing_tags) > 0:
                     LOGGER.debug(
-                        f"{read.query_name} missing tags "
-                        f"{self.req_tags.difference(tags)}"
+                        f"{read.query_name} missing tags {missing_tags}"
                     )
                     continue
             index_read_id = (
