@@ -519,7 +519,6 @@ def train_model(
         model_name=constants.FINAL_MODEL_FILENAME,
         model_name_torchscript=constants.FINAL_TORCHSCRIPT_MODEL_FILENAME,
     )
-    LOGGER.info("Training complete")
 
 
 if __name__ == "__main__":

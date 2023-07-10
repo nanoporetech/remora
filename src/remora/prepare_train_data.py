@@ -149,12 +149,14 @@ def extract_chunk_dataset(
         f"anchored training data"
     )
     LOGGER.info("Opening dataset for output")
+    max_seq_len = sum(chunk_context) // min_samps_per_base
+    LOGGER.debug(f"Maximum chunk sequence length set to {max_seq_len}")
     dataset = CoreRemoraDataset(
         data_path=out_path,
         mode="w",
         metadata=DatasetMetadata(
             allocate_size=max_chunks_per_read * num_reads,
-            max_seq_len=sum(chunk_context) // min_samps_per_base,
+            max_seq_len=max_seq_len,
             mod_bases="" if mod_base_control else mod_base[0],
             mod_long_names=[] if mod_base_control else [mod_base[1]],
             motif_sequences=[motif.raw_motif for motif in motifs],
@@ -232,6 +234,9 @@ def extract_chunk_dataset(
                 errs[err] += 1
                 continue
             for chunk in read_align_chunks:
+                if chunk.seq_len > max_seq_len:
+                    errs["Sequence too long"] += 1
+                    continue
                 try:
                     dataset.write_chunk(chunk)
                     if dataset.size % save_every == 0:
@@ -246,7 +251,6 @@ def extract_chunk_dataset(
         LOGGER.info(f"Unsuccessful read/chunk reasons:\n{err_str:,}")
 
     dataset.write_metadata()
-
     LOGGER.info(f"Extracted {dataset.size:,} chunks from {num_reads:,} reads.")
     LOGGER.info(f"Label distribution: {dataset.label_summary}")
     if not skip_shuffle:
