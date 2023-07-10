@@ -308,6 +308,7 @@ def run_dataset_prepare(args):
         save_every=args.save_every,
         skip_shuffle=args.skip_shuffle,
     )
+    LOGGER.info("Done")
 
 
 def register_dataset_inspect(parser):
@@ -567,6 +568,7 @@ def run_model_train(args):
         args.freeze_num_layers,
         args.skip_dataset_hash,
     )
+    LOGGER.info("Done")
 
 
 def register_model_export(parser):
@@ -624,6 +626,7 @@ def run_model_export(args):
         export_model_torchscript(ckpt, model, args.output_path)
     else:
         raise RemoraError(f"Invalid export format: {args.format}")
+    LOGGER.info("Done")
 
 
 def register_model_list_pretrained(parser):
@@ -728,6 +731,7 @@ def run_download(args):
     for model_url in models["Remora_Model_URL"]:
         if model_url != "":
             model_dl.download(model_url)
+    LOGGER.info("Done")
 
 
 ################
@@ -1025,6 +1029,7 @@ def run_infer_from_pod5_and_bam(args):
         batch_size=args.batch_size,
         ref_anchored=args.reference_anchored,
     )
+    LOGGER.info("Done")
 
 
 def run_infer_from_pod5_and_bam_duplex(args):
@@ -1066,6 +1071,7 @@ def run_infer_from_pod5_and_bam_duplex(args):
         num_reads=args.num_reads,
         duplex_deliminator=args.duplex_delim,
     )
+    LOGGER.info("Done")
 
 
 ###################
@@ -1169,6 +1175,7 @@ def run_validate_modbams(args):
         extra_bases=args.extra_bases,
         max_sites_per_read=args.max_sites_per_read,
     )
+    LOGGER.info("Done")
 
 
 def register_validate_from_remora_dataset(parser):
@@ -1306,6 +1313,7 @@ def run_validate_from_remora_dataset(args):
         dataset,
         args.pct_filt / 100,
     )
+    LOGGER.info("Done")
 
 
 ##################
@@ -1505,6 +1513,7 @@ def run_plot_ref_region(args):
                 highlight_ranges=reg_highlight_ranges,
             )
             pdf_fh.savefig(fig, bbox_inches="tight")
+    LOGGER.info("Done")
 
 
 def register_estimate_kmer_levels(parser):
@@ -1692,3 +1701,4 @@ def run_estimate_kmer_levels(args):
         else:
             out_fh.write(f"{kmer}\t{np.median(levels)}\n")
     out_fh.close()
+    LOGGER.info("Done")
