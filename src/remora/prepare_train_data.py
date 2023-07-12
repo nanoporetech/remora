@@ -247,8 +247,8 @@ def extract_chunk_dataset(
 
     if len(errs) > 0:
         err_types = sorted([(num, err) for err, num in errs.items()])[::-1]
-        err_str = "\n".join(f"{num:>7} : {err:<80}" for num, err in err_types)
-        LOGGER.info(f"Unsuccessful read/chunk reasons:\n{err_str:,}")
+        err_str = "\n".join(f"{num:>7,} : {err:<80}" for num, err in err_types)
+        LOGGER.info(f"Unsuccessful read/chunk reasons:\n{err_str}")
 
     dataset.write_metadata()
     LOGGER.info(f"Extracted {dataset.size:,} chunks from {num_reads:,} reads.")
