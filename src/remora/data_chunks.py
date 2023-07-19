@@ -887,17 +887,29 @@ class CoreRemoraDataset:
 
     @staticmethod
     def hash(data_path):
-        def file_digest(fh, _bufsize=2**18):
+        def file_digest(fh, _bufsize=2**18, num_buf=8):
             # copy bits from hashlib file_digest to port back to python<3.11
             # https://github.com/python/cpython/blob/3.11/Lib/hashlib.py#L292
             digest = hashlib.sha256()
             buf = bytearray(_bufsize)
             view = memoryview(buf)
-            while True:
-                size = fh.readinto(buf)
-                if size == 0:
-                    break
-                digest.update(view[:size])
+            file_size = fh.seek(0, os.SEEK_END)
+            if file_size < _bufsize * num_buf:
+                # if file is smaller than _bufsize * num_buf digest entire file
+                fh.seek(0)
+                while True:
+                    size = fh.readinto(buf)
+                    if size == 0:
+                        break
+                    digest.update(view[:size])
+            else:
+                # else digest num_buf evenly spaced chunks of the file
+                for f_pos in np.floor(
+                    np.linspace(0, file_size - _bufsize, num_buf)
+                ).astype(int):
+                    fh.seek(f_pos)
+                    fh.readinto(buf)
+                    digest.update(view)
             return digest.hexdigest()
 
         LOGGER.debug(f"Computing hash for dataset at {data_path}")
@@ -1513,7 +1525,7 @@ class CoreRemoraDataset:
         self.refresh_memmaps()
 
 
-def parse_dataset_config(config_path, skip_hash=False, used_configs=None):
+def parse_dataset_config(config_path, used_configs=None):
     paths, weights, hashes = [], [], []
     config_path = util.resolve_path(config_path)
     if used_configs is None:
@@ -1532,14 +1544,14 @@ def parse_dataset_config(config_path, skip_hash=False, used_configs=None):
                     f"Core dataset path does not exist. {ds_path}"
                 )
             if os.path.isdir(ds_path):
-                if not skip_hash:
-                    computed_hash = CoreRemoraDataset.hash(ds_path)
-                    if ds_hash is None:
-                        ds_hash = computed_hash
-                    else:
-                        assert (
-                            ds_hash == computed_hash
-                        ), "Dataset hashes mismatch"
+                computed_hash = CoreRemoraDataset.hash(ds_path)
+                if ds_hash is None:
+                    ds_hash = computed_hash
+                elif ds_hash != computed_hash:
+                    raise RemoraError(
+                        "Dataset hash does not match value from config "
+                        f"for dataset at {ds_path}"
+                    )
                 paths.append(ds_path)
                 weights.append(weight)
                 hashes.append(ds_hash)
@@ -1551,7 +1563,7 @@ def parse_dataset_config(config_path, skip_hash=False, used_configs=None):
                     )
                 used_configs.add(ds_path)
                 sub_paths, sub_weights, sub_hashs = parse_dataset_config(
-                    ds_path, skip_hash=skip_hash, used_configs=used_configs
+                    ds_path, used_configs=used_configs
                 )
                 paths.extend(sub_paths)
                 weights.extend(sub_weights * weight)
@@ -1861,12 +1873,9 @@ class RemoraDataset(IterableDataset):
         config_path,
         override_metadata=None,
         ds_kwargs=None,
-        skip_hash=False,
         **kwargs,
     ):
-        paths, props, hashes = parse_dataset_config(
-            config_path, skip_hash=skip_hash
-        )
+        paths, props, hashes = parse_dataset_config(config_path)
         LOGGER.debug(f"Loaded dataset paths: {', '.join(paths)}")
         LOGGER.debug(
             f"Loaded dataset proportions: {', '.join(map(str, props))}"

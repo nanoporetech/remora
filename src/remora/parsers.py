@@ -322,14 +322,24 @@ def register_dataset_inspect(parser):
         "remora_dataset_path",
         help="Remora training dataset",
     )
+    subparser.add_argument(
+        "--out-path",
+        help="Path to save new config with hierarchical datasets expanded "
+        "and dataset hash values included.",
+    )
     subparser.set_defaults(func=run_dataset_inspect)
 
 
 def run_dataset_inspect(args):
+    import json
+
     from remora.data_chunks import RemoraDataset
 
     dataset = RemoraDataset.from_config(args.remora_dataset_path)
     print(f"Dataset summary:\n{dataset.summary}")
+    if args.out_path is not None:
+        with open(args.out_path, "w") as fh:
+            json.dump(dataset.get_config(), fh)
 
 
 ################
@@ -525,11 +535,6 @@ def register_model_train(parser):
         help="Device for neural network processing. See torch.device.",
     )
     comp_grp.add_argument(
-        "--skip-dataset-hash",
-        action="store_true",
-        help="Skip computation of dataset hash.",
-    )
-    comp_grp.add_argument(
         "--super-batch-size",
         default=constants.DEFAULT_SUPER_BATCH_SIZE,
         type=int,
@@ -591,7 +596,6 @@ def run_model_train(args):
         args.high_conf_incorrect_thr_frac,
         args.finetune_path,
         args.freeze_num_layers,
-        args.skip_dataset_hash,
         args.super_batch_size,
         args.super_batch_sample_fraction,
     )

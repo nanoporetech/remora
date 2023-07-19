@@ -65,6 +65,25 @@ def test_remora_dataset(chunks):
     assert label_counts[1] == EXPECTED_MOD_SIZE
 
 
+@pytest.mark.unit
+@pytest.mark.etl
+def test_dataset_inspect(chunks, tmpdir_factory):
+    """Run `dataset inspect` on the command line."""
+    print(f"Running command line `remora dataset inspect` on {chunks}")
+    out_path = tmpdir_factory.mktemp("remora_tests") / "dataset_inspect.cfg"
+    print(f"Output config path: {out_path}")
+    check_call(
+        [
+            "remora",
+            "dataset",
+            "inspect",
+            str(chunks),
+            "--out-path",
+            str(out_path),
+        ],
+    )
+
+
 ##################
 # Mod Prediction #
 ##################
