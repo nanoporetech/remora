@@ -388,8 +388,7 @@ def register_model_train(parser):
         type=int,
         metavar=("BASES_BEFORE", "BASES_AFTER"),
         help="""Override kmer context bases from data prep. Definition of
-        k-mer (derived from the reference) passed into the model along with
-        each signal position.""",
+        k-mer passed into the model along with each signal position.""",
     )
     data_grp.add_argument(
         "--ext-val",
@@ -403,9 +402,23 @@ def register_model_train(parser):
         [--ext-val] argument""",
     )
     data_grp.add_argument(
-        "--skip-dataset-hash",
-        action="store_true",
-        help="Skip computation of dataset hash.",
+        "--chunks-per-epoch",
+        default=constants.DEFAULT_CHUNKS_PER_EPOCH,
+        type=int,
+        help="Number of chunks per-epoch.",
+    )
+    data_grp.add_argument(
+        "--num-test-chunks",
+        default=constants.DEFAULT_NUM_TEST_CHUNKS,
+        type=int,
+        help="Number of chunks per-epoch.",
+    )
+    data_grp.add_argument(
+        "--filter-fraction",
+        default=constants.DEFAULT_FILT_FRAC,
+        type=float,
+        help="""Fraction of predictions to filter in validation reporting.
+        Un-filtered validation metrics will always be reported as well.""",
     )
 
     out_grp = subparser.add_argument_group("Output Arguments")
@@ -431,6 +444,16 @@ def register_model_train(parser):
         "--model", required=True, help="Model architecture file (required)"
     )
     mdl_grp.add_argument(
+        "--finetune-path",
+        help="Path to the torch checkpoint for the model to be fine tuned.",
+    )
+    mdl_grp.add_argument(
+        "--freeze-num-layers",
+        default=0,
+        type=int,
+        help="Number of layers to be frozen for finetuning.",
+    )
+    mdl_grp.add_argument(
         "--size",
         type=int,
         default=constants.DEFAULT_NN_SIZE,
@@ -443,18 +466,6 @@ def register_model_train(parser):
         default=constants.DEFAULT_EPOCHS,
         type=int,
         help="Number of training epochs.",
-    )
-    train_grp.add_argument(
-        "--chunks-per-epoch",
-        default=constants.DEFAULT_CHUNKS_PER_EPOCH,
-        type=int,
-        help="Number of chunks per-epoch.",
-    )
-    train_grp.add_argument(
-        "--num-test-chunks",
-        default=constants.DEFAULT_NUM_TEST_CHUNKS,
-        type=int,
-        help="Number of chunks per-epoch.",
     )
     train_grp.add_argument(
         "--optimizer",
@@ -481,7 +492,7 @@ def register_model_train(parser):
     )
     train_grp.add_argument(
         "--early-stopping",
-        default=5,
+        default=10,
         type=int,
         help="""Stops training after a number of epochs without improvement.
         If set to 0 no stopping is done.""",
@@ -490,13 +501,6 @@ def register_model_train(parser):
         "--seed",
         type=int,
         help="Seed value.",
-    )
-    train_grp.add_argument(
-        "--filter-fraction",
-        default=constants.DEFAULT_FILT_FRAC,
-        type=float,
-        help="""Fraction of predictions to filter in validation reporting.
-        Un-filtered validation metrics will always be reported as well.""",
     )
     train_grp.add_argument(
         "--lr-sched-kwargs",
@@ -509,27 +513,35 @@ def register_model_train(parser):
         nargs=2,
         type=float,
         metavar=("THRESHOLD", "FRACTION"),
-        help="1.) Threshold value of what to consider a high confidence "
-        " predicition. Based on the softmax output. \n"
-        "2.) Fraction (of the batch size) of highly confident incorrect "
-        "predictions to filter during training. Filtering up to this value, "
-        "but might be lower.",
-    )
-    train_grp.add_argument(
-        "--finetune-path",
-        help="Path to the torch checkpoint for the model to be fine tuned.",
-    )
-    train_grp.add_argument(
-        "--freeze-num-layers",
-        default=0,
-        type=int,
-        help="Number of layers to be frozen for finetuning.",
+        help="""Filter highly confident but incorrect chunks from training each
+        iteration. First value sets the threshold for high confidence
+        predictions and second value sets the maximum fraction of chunks to
+        filter per batch.""",
     )
 
     comp_grp = subparser.add_argument_group("Compute Arguments")
     comp_grp.add_argument(
         "--device",
         help="Device for neural network processing. See torch.device.",
+    )
+    comp_grp.add_argument(
+        "--skip-dataset-hash",
+        action="store_true",
+        help="Skip computation of dataset hash.",
+    )
+    comp_grp.add_argument(
+        "--super-batch-size",
+        default=constants.DEFAULT_SUPER_BATCH_SIZE,
+        type=int,
+        help="""Number of chunks to load off disk at one time. Larger values
+        may improve disk IO, but also increase RAM usage.""",
+    )
+    comp_grp.add_argument(
+        "--super-batch-sample-fraction",
+        default=constants.DEFAULT_SUPER_BATCH_SAMPLE_FRAC,
+        type=float,
+        help="""Fraction of loaded super batch to use. Smaller values will
+        increase randomness, but also increase disk IO required.""",
     )
 
     subparser.set_defaults(func=run_model_train)
@@ -540,6 +552,19 @@ def run_model_train(args):
     from remora.util import parse_device, prepare_out_dir
 
     prepare_out_dir(args.output_path, args.overwrite)
+    PROF_TRAIN_FN = os.getenv("REMORA_TRAIN_PROFILE_FILE")
+    if PROF_TRAIN_FN is not None:
+        from torch.profiler import profile, ProfilerActivity
+
+        train_model_wrapper = train_model
+
+        def train_model(*args):
+            with profile(
+                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]
+            ) as prof:
+                train_model_wrapper(*args)
+            prof.export_chrome_trace(PROF_TRAIN_FN)
+
     train_model(
         args.seed,
         parse_device(args.device),
@@ -567,6 +592,8 @@ def run_model_train(args):
         args.finetune_path,
         args.freeze_num_layers,
         args.skip_dataset_hash,
+        args.super_batch_size,
+        args.super_batch_sample_fraction,
     )
     LOGGER.info("Done")
 
@@ -1291,6 +1318,7 @@ def run_validate_from_remora_dataset(args):
         batch_size=args.batch_size,
         ds_kwargs={"infinite_iter": False},
     )
+    dataset.load_all_batches()
     LOGGER.info(f"Loaded dataset summary:\n{dataset.summary}")
 
     if args.out_file is None:

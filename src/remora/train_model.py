@@ -117,6 +117,8 @@ def train_model(
     finetune_path,
     freeze_num_layers,
     skip_dataset_hash,
+    super_batch_size,
+    super_batch_sample_frac,
 ):
     seed = (
         np.random.randint(0, np.iinfo(np.uint32).max, dtype=np.uint32)
@@ -143,7 +145,11 @@ def train_model(
         override_metadata=override_metadata,
         batch_size=batch_size,
         skip_hash=skip_dataset_hash,
+        super_batch_size=super_batch_size,
+        super_batch_sample_frac=super_batch_sample_frac,
     )
+    # TODO move hash computation into background worker and write this from
+    # that worker as well. This command stalls startup too much
     with open(os.path.join(out_path, "dataset_config.jsn"), "w") as ds_cfg_fh:
         json.dump(dataset.get_config(), ds_cfg_fh)
     dataset.metadata.write(os.path.join(out_path, "dataset_metadata.jsn"))
@@ -217,16 +223,19 @@ def train_model(
             ext_val_names = [f"e_val_{idx}" for idx in range(len(ext_val))]
         else:
             assert len(ext_val_names) == len(ext_val)
-        ext_sets = []
+        ext_datasets = []
         for e_name, e_path in zip(ext_val_names, ext_val):
-            ext_val_set = RemoraDataset.from_config(
+            ext_val_ds = RemoraDataset.from_config(
                 e_path.strip(),
                 ds_kwargs={"infinite_iter": False},
                 batch_size=batch_size,
                 skip_hash=True,
+                super_batch_size=super_batch_size,
+                super_batch_sample_frac=super_batch_sample_frac,
             )
-            ext_val_set.update_metadata(dataset)
-            ext_sets.append((e_name, ext_val_set))
+            ext_val_ds.update_metadata(dataset)
+            ext_val_ds.load_all_batches()
+            ext_datasets.append((e_name, ext_val_ds))
 
     kmer_dim = int(dataset.metadata.kmer_len * 4)
     test_input_sig = torch.randn(
@@ -239,7 +248,7 @@ def train_model(
         model, inputs=(test_input_sig, test_input_seq), verbose=False
     )
     LOGGER.info(
-        f" Params (k) {params / (1000):.2f} | MACs (M) {macs / (1000 ** 2):.2f}"
+        f"Params (k) {params / (1000):.2f} | MACs (M) {macs / (1000 ** 2):.2f}"
     )
 
     LOGGER.info("Preparing training settings")
@@ -255,11 +264,12 @@ def train_model(
         num_test_chunks,
         override_metadata=override_metadata,
     )
+    val_ds.load_all_batches()
     trn_loader = DataLoader(
         trn_ds,
-        num_workers=4,
         batch_size=None,
         pin_memory=True,
+        num_workers=8,
         persistent_workers=True,
         worker_init_fn=dataloader_worker_init,
     )
@@ -268,6 +278,7 @@ def train_model(
         num_test_chunks,
         override_metadata=override_metadata,
     )
+    val_trn_ds.load_all_batches()
     LOGGER.info(f"Dataset loaded with labels: {dataset.label_summary}")
     LOGGER.info(f"Train labels: {trn_ds.label_summary}")
     LOGGER.info(f"Held-out validation labels: {val_ds.label_summary}")
@@ -293,15 +304,15 @@ def train_model(
         summ_fh.write(epoch_summ + "\n")
 
     if ext_val:
-        best_alt_val_accs = dict((e_name, 0) for e_name, _ in ext_sets)
-        for e_name, e_set in ext_sets:
+        best_alt_val_accs = dict((e_name, 0) for e_name, _ in ext_datasets)
+        for ext_name, ext_ds in ext_datasets:
             val_fp.validate_model(
                 model,
                 dataset.metadata.mod_bases,
                 criterion,
-                e_set,
+                ext_ds,
                 filt_frac,
-                e_name,
+                ext_name,
             )
 
     LOGGER.info("Start training")
@@ -452,26 +463,26 @@ def train_model(
             early_stop_epochs += 1
 
         if ext_val:
-            for e_name, e_set in ext_sets:
-                e_val_metrics = val_fp.validate_model(
+            for ext_name, ext_ds in ext_datasets:
+                ext_val_metrics = val_fp.validate_model(
                     model,
                     dataset.metadata.mod_bases,
                     criterion,
-                    e_set,
+                    ext_ds,
                     filt_frac,
-                    e_name,
+                    ext_name,
                     nepoch=epoch + 1,
                     niter=(epoch + 1) * batches_per_epoch,
                     disable_pbar=True,
                 )
-                if e_val_metrics.acc <= best_alt_val_accs[e_name]:
+                if ext_val_metrics.acc <= best_alt_val_accs[ext_name]:
                     continue
-                best_alt_val_accs[e_name] = e_val_metrics.acc
+                best_alt_val_accs[ext_name] = ext_val_metrics.acc
                 early_stop_epochs = 0
                 LOGGER.debug(
-                    f"Saving best model based on {e_name} "
+                    f"Saving best model based on {ext_name} "
                     f"validation set after {epoch + 1} epochs "
-                    f"with val_acc {e_val_metrics.acc}"
+                    f"with val_acc {ext_val_metrics.acc}"
                 )
                 save_model(
                     model,
@@ -479,8 +490,8 @@ def train_model(
                     out_path,
                     epoch,
                     opt,
-                    model_name=f"model_ext_val_{e_name}_best.checkpoint",
-                    model_name_torchscript=f"model_ext_val_{e_name}_best.pt",
+                    model_name=f"model_ext_val_{ext_name}_best.checkpoint",
+                    model_name_torchscript=f"model_ext_val_{ext_name}_best.pt",
                 )
 
         if int(epoch + 1) % save_freq == 0:
@@ -502,13 +513,14 @@ def train_model(
         )
         ebar.update()
         if early_stopping and early_stop_epochs >= early_stopping:
-            LOGGER.info(
-                "No validation accuracy improvement after"
-                f" {early_stopping} epoch(s). Stopping training early."
-            )
             break
     ebar.close()
     pbar.close()
+    if early_stopping and early_stop_epochs >= early_stopping:
+        LOGGER.info(
+            "No validation accuracy improvement after {early_stopping} "
+            "epochs. Training stopped early."
+        )
     LOGGER.info("Saving final model checkpoint")
     save_model(
         model,

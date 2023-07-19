@@ -80,7 +80,7 @@ cdef inline int index_from_int_kmer(
     cdef int idx = 0
     cdef int kmer_pos
     for kmer_pos in range(kmer_len):
-        idx += int_kmer[kmer_len - kmer_pos - 1] * (4 ** kmer_pos)
+        idx += int_kmer[kmer_len - kmer_pos - 1] * <int>(4 ** kmer_pos)
     return idx
 
 

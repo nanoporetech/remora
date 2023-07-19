@@ -411,6 +411,7 @@ def can_modbam(tmpdir_factory, can_pod5, can_mappings, pretrain_model_args):
     out_dir = tmpdir_factory.mktemp("remora_tests")
     print(f"\nPretrained infer results output: {out_dir}")
     out_path = out_dir / "can_infer_pretrain.bam"
+    out_log = out_dir / "can_infer_pretrain.log"
     check_call(
         [
             "remora",
@@ -420,6 +421,8 @@ def can_modbam(tmpdir_factory, can_pod5, can_mappings, pretrain_model_args):
             can_mappings,
             "--out-bam",
             out_path,
+            "--log-filename",
+            out_log,
             *pretrain_model_args,
         ],
     )
@@ -431,6 +434,7 @@ def mod_modbam(tmpdir_factory, mod_pod5, mod_mappings, pretrain_model_args):
     out_dir = tmpdir_factory.mktemp("remora_tests")
     print(f"\nPretrained infer results output: {out_dir}")
     out_path = out_dir / "mod_infer_pretrain.bam"
+    out_log = out_dir / "can_infer_pretrain.log"
     check_call(
         [
             "remora",
@@ -440,6 +444,8 @@ def mod_modbam(tmpdir_factory, mod_pod5, mod_mappings, pretrain_model_args):
             mod_mappings,
             "--out-bam",
             out_path,
+            "--log-filename",
+            out_log,
             *pretrain_model_args,
         ],
     )
