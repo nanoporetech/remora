@@ -16,13 +16,13 @@ def compute_encoded_kmer_batch(
     const short[:, ::1] seq_mappings,
     const short[::1] seq_lens,
 ):
-    cdef int nchunks = seq_lens.shape[0]
+    cdef int nchunks = seq_lens.size
 
     # initialize output array
     cdef int sig_len = seq_mappings[0, seq_lens[0]]
     cdef int kmer_len = before_context_bases + after_context_bases + 1
     cdef int enc_kmer_len = ENCODING_LEN * kmer_len
-    out_arr = np.zeros((seq_lens.shape[0], enc_kmer_len, sig_len), np.float32)
+    out_arr = np.zeros((nchunks, enc_kmer_len, sig_len), np.float32)
     cdef float[:, :, ::1] out_mv = out_arr
 
     # loop over chunks, kmer_pos and mappings to fill output array

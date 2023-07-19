@@ -8,6 +8,12 @@ if sys.platform == "darwin":
     print("Using macOS clang args")
 ext_modules = [
     Extension(
+        "remora.data_chunks_core",
+        sources=["src/remora/data_chunks_core.pyx"],
+        extra_compile_args=extra_compile_args,
+        language="c",
+    ),
+    Extension(
         "remora.encoded_kmers",
         sources=["src/remora/encoded_kmers.pyx"],
         extra_compile_args=extra_compile_args,
@@ -24,7 +30,6 @@ ext_modules = [
 
 if __name__ == "__main__":
     setup(
-        use_pyscaffold=True,
         setup_requires=[
             "setuptools>=38.3",
             "cython",

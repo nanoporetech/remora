@@ -16,13 +16,9 @@ FINAL_MODEL_FILENAME = "model_final.pt"
 # SAVE_DATASET_FILENAME = "remora_train_data.npz"
 
 MODELS_DIR = Path(__file__).absolute().parent.parent / "models"
-MODEL_PATHS = [
-    model_path
-    for model_path in MODELS_DIR.iterdir()
-    if str(model_path).endswith(".py")
-    # TODO fix var width model data loading
-    and str(model_path).find("var_width") == -1
-]
+CONV_MODEL = MODELS_DIR / "Conv_w_ref.py"
+CONV_LSTM_MODEL = MODELS_DIR / "ConvLSTM_w_ref.py"
+MODEL_PATHS = [CONV_MODEL, CONV_LSTM_MODEL]
 
 EXPECTED_CAN_SIZE = 205
 EXPECTED_MOD_SIZE = 210
@@ -91,6 +87,91 @@ def test_train(model_path, tmpdir_factory, chunks, train_cli_args):
             str(out_dir),
             "--model",
             model_path,
+            *train_cli_args,
+        ],
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model_path", [CONV_LSTM_MODEL])
+def test_train_dynamic_chunk_context(
+    model_path, tmpdir_factory, chunks, train_cli_args
+):
+    """Run `model train` on the command line reducing chunk context from
+    (50, 50) to (30, 25)."""
+    print(f"Running command line `remora model train` with model {model_path}")
+    out_dir = tmpdir_factory.mktemp("remora_tests") / "train_mod_model"
+    print(f"Output file: {out_dir}")
+    check_call(
+        [
+            "remora",
+            "model",
+            "train",
+            str(chunks),
+            "--output-path",
+            str(out_dir),
+            "--model",
+            model_path,
+            "--chunk-context",
+            "30",
+            "25",
+            *train_cli_args,
+        ],
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model_path", MODEL_PATHS)
+def test_train_dynamic_kmer_context(
+    model_path, tmpdir_factory, chunks, train_cli_args
+):
+    """Run `model train` on the command line reducing kmer context bases from
+    (4, 4) to (2, 3)."""
+    print(f"Running command line `remora model train` with model {model_path}")
+    out_dir = tmpdir_factory.mktemp("remora_tests") / "train_mod_model"
+    print(f"Output file: {out_dir}")
+    check_call(
+        [
+            "remora",
+            "model",
+            "train",
+            str(chunks),
+            "--output-path",
+            str(out_dir),
+            "--model",
+            model_path,
+            "--kmer-context-bases",
+            "2",
+            "3",
+            *train_cli_args,
+        ],
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model_path", [CONV_LSTM_MODEL])
+def test_train_dynamic_both(model_path, tmpdir_factory, chunks, train_cli_args):
+    """Run `model train` on the command line reducing both chunk context and
+    kmer context bases."""
+    print(f"Running command line `remora model train` with model {model_path}")
+    out_dir = tmpdir_factory.mktemp("remora_tests") / "train_mod_model"
+    print(f"Output file: {out_dir}")
+    check_call(
+        [
+            "remora",
+            "model",
+            "train",
+            str(chunks),
+            "--output-path",
+            str(out_dir),
+            "--model",
+            model_path,
+            "--chunk-context",
+            "30",
+            "25",
+            "--kmer-context-bases",
+            "2",
+            "3",
             *train_cli_args,
         ],
     )

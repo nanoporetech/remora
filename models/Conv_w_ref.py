@@ -1,9 +1,8 @@
-from torch import nn
 import torch
+from torch import nn
 
-from remora.activations import swish
 from remora import constants
-import torch.nn.functional as F
+from remora.activations import swish
 
 
 class network(nn.Module):

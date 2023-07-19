@@ -412,6 +412,24 @@ def format_mm_ml_tags(seq, poss, probs, mod_bases, can_base, strand: str = "+"):
     return mm_tag, ml_tag
 
 
+def profile(prof_path):
+    if prof_path is not None:
+        import cProfile
+
+    def inner(func):
+        def wrapper(*args, **kwargs):
+            if prof_path is None:
+                return func(*args, **kwargs)
+            prof = cProfile.Profile()
+            retval = prof.runcall(func, *args, **kwargs)
+            prof.dump_stats(prof_path)
+            return retval
+
+        return wrapper
+
+    return inner
+
+
 ###################
 # Multiprocessing #
 ###################
