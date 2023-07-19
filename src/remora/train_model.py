@@ -116,7 +116,6 @@ def train_model(
     high_conf_incorrect_thr_frac,
     finetune_path,
     freeze_num_layers,
-    skip_dataset_hash,
     super_batch_size,
     super_batch_sample_frac,
 ):
@@ -144,7 +143,6 @@ def train_model(
         remora_dataset_path,
         override_metadata=override_metadata,
         batch_size=batch_size,
-        skip_hash=skip_dataset_hash,
         super_batch_size=super_batch_size,
         super_batch_sample_frac=super_batch_sample_frac,
     )
