@@ -335,7 +335,9 @@ def run_dataset_inspect(args):
 
     from remora.data_chunks import RemoraDataset
 
-    dataset = RemoraDataset.from_config(args.remora_dataset_path)
+    dataset = RemoraDataset.from_config(
+        args.remora_dataset_path, ds_kwargs={"do_check_super_batches": True}
+    )
     print(f"Dataset summary:\n{dataset.summary}")
     if args.out_path is not None:
         with open(args.out_path, "w") as fh:
@@ -548,6 +550,13 @@ def register_model_train(parser):
         help="""Fraction of loaded super batch to use. Smaller values will
         increase randomness, but also increase disk IO required.""",
     )
+    data_grp.add_argument(
+        "--read-batches-from-disk",
+        action="store_true",
+        help="""Read validation batches from disk each iteration. Default:
+        loads all batches into memory once upfront. Setting this flag may
+        reduce RAM usage.""",
+    )
 
     subparser.set_defaults(func=run_model_train)
 
@@ -598,6 +607,7 @@ def run_model_train(args):
         args.freeze_num_layers,
         args.super_batch_size,
         args.super_batch_sample_fraction,
+        args.read_batches_from_disk,
     )
     LOGGER.info("Done")
 
@@ -1263,6 +1273,10 @@ def register_validate_from_remora_dataset(parser):
     out_grp.add_argument(
         "--full-results-filename", help="Output per-read calls to TSV file."
     )
+    out_grp.add_argument(
+        "--log-filename",
+        help="Log filename. (default: Don't output log file)",
+    )
 
     val_grp = subparser.add_argument_group("Validation Arguments")
     val_grp.add_argument(
@@ -1284,6 +1298,12 @@ def register_validate_from_remora_dataset(parser):
         type=int,
         help="ID of GPU that is used for inference. Default: CPU",
     )
+    comp_grp.add_argument(
+        "--read-batches-from-disk",
+        action="store_true",
+        help="""Read batches from disk during iteration. Default: loads batches
+        before iteration""",
+    )
 
     subparser.set_defaults(func=run_validate_from_remora_dataset)
 
@@ -1296,6 +1316,8 @@ def run_validate_from_remora_dataset(args):
     from remora.validate import ValidationLogger
     from remora.data_chunks import RemoraDataset
 
+    if args.log_filename is not None:
+        log.init_logger(args.log_filename)
     LOGGER.info("Loading model")
     model, model_metadata = load_model(
         args.model,
@@ -1320,10 +1342,12 @@ def run_validate_from_remora_dataset(args):
         args.remora_dataset_path,
         override_metadata=override_metadata,
         batch_size=args.batch_size,
-        ds_kwargs={"infinite_iter": False},
+        super_batch_sample_frac=None,
+        ds_kwargs={"infinite_iter": False, "do_check_super_batches": True},
     )
-    dataset.load_all_batches()
     LOGGER.info(f"Loaded dataset summary:\n{dataset.summary}")
+    if not args.read_batches_from_disk:
+        dataset.load_all_batches()
 
     if args.out_file is None:
         out_fp = sys.stdout
