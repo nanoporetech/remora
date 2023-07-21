@@ -118,6 +118,7 @@ def train_model(
     freeze_num_layers,
     super_batch_size,
     super_batch_sample_frac,
+    read_batches_from_disk,
 ):
     seed = (
         np.random.randint(0, np.iinfo(np.uint32).max, dtype=np.uint32)
@@ -225,14 +226,17 @@ def train_model(
         for e_name, e_path in zip(ext_val_names, ext_val):
             ext_val_ds = RemoraDataset.from_config(
                 e_path.strip(),
-                ds_kwargs={"infinite_iter": False},
+                ds_kwargs={
+                    "infinite_iter": False,
+                    "do_check_super_batches": True,
+                },
                 batch_size=batch_size,
                 skip_hash=True,
                 super_batch_size=super_batch_size,
-                super_batch_sample_frac=super_batch_sample_frac,
             )
             ext_val_ds.update_metadata(dataset)
-            ext_val_ds.load_all_batches()
+            if not read_batches_from_disk:
+                ext_val_ds.load_all_batches()
             ext_datasets.append((e_name, ext_val_ds))
 
     kmer_dim = int(dataset.metadata.kmer_len * 4)
@@ -262,7 +266,10 @@ def train_model(
         num_test_chunks,
         override_metadata=override_metadata,
     )
-    val_ds.load_all_batches()
+    val_ds.super_batch_sample_frac = None
+    val_ds.do_check_super_batches = True
+    if not read_batches_from_disk:
+        val_ds.load_all_batches()
     trn_loader = DataLoader(
         trn_ds,
         batch_size=None,
@@ -276,7 +283,10 @@ def train_model(
         num_test_chunks,
         override_metadata=override_metadata,
     )
-    val_trn_ds.load_all_batches()
+    val_trn_ds.super_batch_sample_frac = None
+    val_trn_ds.do_check_super_batches = True
+    if not read_batches_from_disk:
+        val_trn_ds.load_all_batches()
     LOGGER.info(f"Dataset loaded with labels: {dataset.label_summary}")
     LOGGER.info(f"Train labels: {trn_ds.label_summary}")
     LOGGER.info(f"Held-out validation labels: {val_ds.label_summary}")
