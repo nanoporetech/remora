@@ -208,14 +208,6 @@ def train_model(
                 "The kmer context bases of the pre-trained model and "
                 "the dataset do not match."
             )
-        if (
-            dataset.metadata.modified_base_labels
-            != ckpt["modified_base_labels"]
-        ):
-            raise RemoraError(
-                "The modified_base_labels flag does not match between the "
-                "pre-trained model and the dataset."
-            )
 
     if ext_val is not None:
         if ext_val_names is None:
@@ -526,7 +518,7 @@ def train_model(
     pbar.close()
     if early_stopping and early_stop_epochs >= early_stopping:
         LOGGER.info(
-            "No validation accuracy improvement after {early_stopping} "
+            f"No validation accuracy improvement after {early_stopping} "
             "epochs. Training stopped early."
         )
     LOGGER.info("Saving final model checkpoint")
