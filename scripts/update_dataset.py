@@ -1,9 +1,8 @@
-import json
 import argparse
 
 import numpy as np
 
-from remora import log, RemoraError, util
+from remora import util
 from remora.refine_signal_map import SigMapRefiner
 from remora.data_chunks import CoreRemoraDataset, DatasetMetadata
 
@@ -11,21 +10,12 @@ from remora.data_chunks import CoreRemoraDataset, DatasetMetadata
 ARR_CONV = {
     "sig_tensor": "signal",
     "seq_array": "sequence",
-    "seq_mappings": "seqence_to_signal_mapping",
+    "seq_mappings": "sequence_to_signal_mapping",
     "seq_lens": "sequence_lengths",
     "labels": "labels",
     "read_ids": "read_ids",
     "read_focus_bases": "read_focus_bases",
 }
-DATA_ARRAYS = [
-    "sig_tensor",
-    "seq_array",
-    "seq_mappings",
-    "seq_lens",
-    "labels",
-    "read_ids",
-    "read_focus_bases",
-]
 
 
 def main(args):
@@ -34,8 +24,7 @@ def main(args):
 
     # load and convert metadata
     metadata = dict(
-        (mdn, in_data[mdn])
-        for mdn in set(in_data.files).difference(DATA_ARRAYS)
+        (mdn, in_data[mdn]) for mdn in set(in_data.files).difference(ARR_CONV)
     )
     metadata["extra_arrays"] = {
         "read_ids": ("<U36", "Read identifier"),
@@ -50,7 +39,7 @@ def main(args):
     elif metadata["mod_bases"].shape[0] == 0:
         metadata["mod_bases"] = ""
     else:
-        mod_bases = str(metadata["mod_bases"][0])
+        metadata["mod_bases"] = str(metadata["mod_bases"][0])
     metadata["motif_offsets"] = metadata["motif_offset"]
     del metadata["motif_offset"]
     metadata["motif_sequences"] = metadata["motifs"]
