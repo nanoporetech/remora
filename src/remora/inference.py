@@ -1,13 +1,11 @@
 import os
 import torch
-import atexit
-import itertools
 from copy import copy
 import array as pyarray
 from pathlib import Path
+from itertools import chain
 from threading import Thread
 from collections import defaultdict
-from multiprocessing import shared_memory, Semaphore
 
 import pod5
 import pysam
@@ -15,6 +13,7 @@ import numpy as np
 from tqdm import tqdm
 
 from remora import constants, log, RemoraError
+from remora.data_chunks import CoreRemoraDataset, DatasetMetadata
 from remora.io import (
     ReadIndexedBam,
     iter_signal,
@@ -27,8 +26,8 @@ from remora.util import (
     _put_item,
     MultitaskMap,
     BackgroundIter,
-    CountingQueue,
-    CountingMPQueue,
+    NamedQueue,
+    NamedMPQueue,
     format_mm_ml_tags,
     softmax_axis1,
     get_read_ids,
@@ -44,8 +43,6 @@ _PROF_MODEL_FN = os.getenv("REMORA_INFER_RUN_MODEL_PROFILE_FILE")
 _PROF_UNBATCH_FN = os.getenv("REMORA_INFER_UNBATCH_PROFILE_FILE")
 _PROF_MAIN_FN = os.getenv("REMORA_INFER_MAIN_PROFILE_FILE")
 
-_PREP_READS_USE_PROCESS = os.getenv("PREP_READS_USE_PROCESS") == "1"
-
 
 ################
 # POD5+BAM CLI #
@@ -60,8 +57,19 @@ def mods_tags_to_str(mods_tags):
     ]
 
 
-def prepare_batches(read_errs, model_metadata, batch_size, ref_anchored):
+def prepare_reads(read_errs, model_metadata, ref_anchored):
     out_read_errs = []
+    motif_seqs, motif_offsets = zip(*model_metadata["motifs"])
+    motifs = [Motif(*mot) for mot in model_metadata["motifs"]]
+    md_kwargs = {
+        "mod_bases": model_metadata["mod_bases"],
+        "mod_long_names": model_metadata["mod_long_names"],
+        "motif_sequences": motif_seqs,
+        "motif_offsets": motif_offsets,
+        "chunk_context": model_metadata["chunk_context"],
+        "kmer_context_bases": model_metadata["kmer_context_bases"],
+        "extra_arrays": {"read_focus_bases": ("int64", "")},
+    }
     for io_read, err in read_errs:
         if io_read is None:
             out_read_errs.append((None, None, err))
@@ -72,128 +80,136 @@ def prepare_batches(read_errs, model_metadata, batch_size, ref_anchored):
             LOGGER.debug(f"Remora read prep error: {e}")
             out_read_errs.append((None, None, "Remora read prep error"))
             continue
-        motifs = [Motif(*mot) for mot in model_metadata["motifs"]]
         remora_read.set_motif_focus_bases(motifs)
-        remora_read.prepare_batches(model_metadata, batch_size)
-        if len(remora_read.batches) == 0:
+        remora_read.refine_signal_mapping(model_metadata["sig_map_refiner"])
+        chunks = list(
+            remora_read.iter_chunks(
+                model_metadata["chunk_context"],
+                model_metadata["kmer_context_bases"],
+                model_metadata["base_start_justify"],
+                model_metadata["offset"],
+            )
+        )
+        if len(chunks) == 0:
             out_read_errs.append((None, None, "No mod calls"))
-            continue
-        out_read_errs.append((io_read, remora_read, None))
+        # clear larger memory arrays (for quicker queue transfer)
+        io_read.sig_len = io_read.dacs.size
+        io_read.dacs = None
+        io_read.mv_table = None
+        io_read.query_to_signal = None
+        io_read.ref_to_signal = None
+        # prepare in memory dataset to perform chunk extraction
+        num_chunks = len(chunks)
+        md_kwargs["allocate_size"] = num_chunks
+        md_kwargs["max_seq_len"] = max(c.seq_len for c in chunks)
+        # open in-memory dataset
+        dataset = CoreRemoraDataset(
+            mode="w",
+            metadata=DatasetMetadata(**md_kwargs),
+            batch_size=num_chunks,
+            super_batch_size=num_chunks,
+            infinite_iter=False,
+        )
+        for chunk in chunks:
+            dataset.write_chunk(chunk)
+        out_read_errs.append((io_read, dataset, None))
     return out_read_errs
 
 
 if _PROF_PREP_FN:
-    _prepare_batches_wrapper = prepare_batches
+    _prepare_reads_wrapper = prepare_reads
 
-    def prepare_batches(*args, **kwargs):
+    def prepare_reads(*args, **kwargs):
         import cProfile
 
         prof = cProfile.Profile()
-        retval = prof.runcall(_prepare_batches_wrapper, *args, **kwargs)
+        retval = prof.runcall(_prepare_reads_wrapper, *args, **kwargs)
         prof.dump_stats(_PROF_PREP_FN)
         return retval
 
 
-def batch_reads(
-    reads_q, batches_q, batch_size, model_metadata, num_prep_batch_workers
-):
-    b_sigs = np.empty(
-        (batch_size, 1, model_metadata["chunk_len"]),
-        dtype=np.float32,
-    )
-    b_enc_kmers = np.empty(
-        (
-            batch_size,
-            model_metadata["kmer_len"] * 4,
-            model_metadata["chunk_len"],
-        ),
-        dtype=np.float32,
-    )
-    b_read_pos = np.empty(batch_size, dtype=int)
+def prep_nn_input(read_errs):
+    # TODO for basecall-anchored calls only call on first read and apply to
+    # other mappings
+    if len(read_errs) == 0:
+        return [
+            (None, None, "No valid mappings"),
+        ]
+    read_nn_inputs = []
+    for io_read, read_dataset, err in read_errs:
+        if err is not None:
+            read_nn_inputs.append((io_read, None, err))
+        r_chunks = next(iter(read_dataset))
+        del r_chunks["labels"]
+        read_nn_inputs.append((io_read, r_chunks, None))
+    return read_nn_inputs
+
+
+def batch_reads(prepped_nn_inputs, batches_q, batch_size, model_metadata):
+    def new_arrays():
+        return (
+            np.empty(
+                (batch_size, 1, model_metadata["chunk_len"]),
+                dtype=np.float32,
+            ),
+            np.empty(
+                (
+                    batch_size,
+                    model_metadata["kmer_len"] * 4,
+                    model_metadata["chunk_len"],
+                ),
+                dtype=np.float32,
+            ),
+            np.empty(batch_size, dtype=int),
+        )
+
+    b_sigs, b_enc_kmers, b_read_pos = new_arrays()
+    # position within current batch
     b_pos = 0
     b_reads = []
-    for read_errs in _queue_iter(reads_q, num_prep_batch_workers):
-        if len(read_errs) == 0:
-            b_reads.append([None, None, None, None, None, "No valid mappings"])
-            continue
-        for mapping_idx, (io_read, remora_read, err) in enumerate(read_errs):
+    for read_nn_inputs in prepped_nn_inputs:
+        for io_read, r_chunks, err in read_nn_inputs:
             if err is not None:
-                rid = None if io_read is None else io_read.read_id
-                b_reads.append([rid, mapping_idx, None, None, None, err])
+                b_reads.append([None, None, None, err])
                 continue
-            # clear larger memory arrays (for quicker queue transfer)
-            io_read.sig_len = io_read.dacs.size
-            io_read.dacs = None
-            io_read.mv_table = None
-            io_read.query_to_signal = None
-            io_read.ref_to_signal = None
-            for rb_sigs, rb_enc_kmers, _, rb_read_pos in remora_read.batches:
-                b_en = b_pos + rb_sigs.shape[0]
-                # if read does not reach end of batch add this read and continue
-                if b_en <= batch_size:
-                    b_sigs[b_pos:b_en] = rb_sigs
-                    b_enc_kmers[b_pos:b_en] = rb_enc_kmers
-                    b_read_pos[b_pos:b_en] = rb_read_pos
-                    b_reads.append(
-                        [
-                            io_read.read_id,
-                            mapping_idx,
-                            b_pos,
-                            b_en,
-                            io_read,
-                            None,
-                        ]
-                    )
-                    b_pos = b_en
-                    continue
-
-                # fill out and yield full batches
-                rb_consumed = 0
-                while b_pos + rb_sigs.shape[0] - rb_consumed > batch_size:
-                    rb_en = rb_consumed + batch_size - b_pos
-                    b_sigs[b_pos:] = rb_sigs[rb_consumed:rb_en]
-                    b_enc_kmers[b_pos:] = rb_enc_kmers[rb_consumed:rb_en]
-                    b_read_pos[b_pos:] = rb_read_pos[rb_consumed:rb_en]
-                    b_reads.append(
-                        [
-                            io_read.read_id,
-                            mapping_idx,
-                            b_pos,
-                            None,
-                            io_read,
-                            None,
-                        ]
-                    )
-                    rb_consumed += batch_size - b_pos
-                    batch = (
-                        b_sigs.copy(),
-                        b_enc_kmers.copy(),
-                        b_read_pos.copy(),
-                        b_reads,
-                    )
-                    _put_item(batch, batches_q)
-                    # reset non-numpy array batch values
-                    b_pos = 0
-                    b_reads = []
-                # fill start of new batch
-                b_pos = rb_sigs.shape[0] - rb_consumed
-                b_sigs[:b_pos] = rb_sigs[rb_consumed:]
-                b_enc_kmers[:b_pos] = rb_enc_kmers[rb_consumed:]
-                b_read_pos[:b_pos] = rb_read_pos[rb_consumed:]
-                # if read continues from last batch set start to None
-                b_st = 0 if rb_consumed == 0 else None
-                b_reads.append(
-                    [io_read.read_id, mapping_idx, b_st, b_pos, io_read, None]
-                )
+            num_chunks = r_chunks["read_focus_bases"].size
+            # fill out and yield full batches
+            rb_consumed = 0
+            # while this read extends through a whole batch continue to
+            # supply batches from this read
+            while b_pos + num_chunks - rb_consumed > batch_size:
+                rb_en = rb_consumed + batch_size - b_pos
+                b_sigs[b_pos:] = r_chunks["signal"][rb_consumed:rb_en]
+                b_enc_kmers[b_pos:] = r_chunks["enc_kmers"][rb_consumed:rb_en]
+                b_read_pos[b_pos:] = r_chunks["read_focus_bases"][
+                    rb_consumed:rb_en
+                ]
+                # batch start is None once the first batch is complete
+                # from this read
+                b_st = b_pos if rb_consumed == 0 else None
+                b_reads.append([io_read, b_st, None, None])
+                _put_item((b_sigs, b_enc_kmers, b_read_pos, b_reads), batches_q)
+                rb_consumed += batch_size - b_pos
+                # new batch
+                b_sigs, b_enc_kmers, b_read_pos = new_arrays()
+                b_pos = 0
+                b_reads = []
+            # add rest of read to unfinished batch
+            b_en = b_pos + num_chunks - rb_consumed
+            b_sigs[b_pos:b_en] = r_chunks["signal"][rb_consumed:]
+            b_enc_kmers[b_pos:b_en] = r_chunks["enc_kmers"][rb_consumed:]
+            b_read_pos[b_pos:b_en] = r_chunks["read_focus_bases"][rb_consumed:]
+            # if read continues from last batch set start to None
+            b_st = b_pos if rb_consumed == 0 else None
+            b_reads.append([io_read, b_st, b_en, None])
+            # set current batch position for next read
+            b_pos = b_en
     if b_pos > 0:
         # send last batch
-        batch = (
-            b_sigs[:b_pos].copy(),
-            b_enc_kmers[:b_pos].copy(),
-            b_read_pos[:b_pos].copy(),
-            b_reads,
+        _put_item(
+            (b_sigs[:b_pos], b_enc_kmers[:b_pos], b_read_pos[:b_pos], b_reads),
+            batches_q,
         )
-        _put_item(batch, batches_q)
     _put_item(StopIteration, batches_q)
 
 
@@ -209,71 +225,11 @@ if _PROF_BATCH_FN:
         return retval
 
 
-def release_shared(name):
-    shm = shared_memory.SharedMemory(name=name)
-    shm.close()
-    shm.unlink()
-
-
-def assign_batch(
-    batches_q, read_vals_q, model_metadata, batch_size, sigs_sem, enc_kmers_sem
-):
-    sigs_shm = shared_memory.SharedMemory(name="sigs_batch")
-    sigs_dst = np.ndarray(
-        shape=(batch_size, 1, model_metadata["chunk_len"]),
-        dtype=np.float32,
-        buffer=sigs_shm.buf,
-    )
-    enc_kmers_shm = shared_memory.SharedMemory(name="enc_kmers_batch")
-    enc_kmers_dst = np.ndarray(
-        (
-            batch_size,
-            model_metadata["kmer_len"] * 4,
-            model_metadata["chunk_len"],
-        ),
-        dtype=np.float32,
-        buffer=enc_kmers_shm.buf,
-    )
-    for b_sigs, b_enc_kmers, b_read_pos, b_reads in _queue_iter(batches_q):
-        _put_item((b_read_pos, b_reads), read_vals_q)
-        sigs_sem.acquire()
-        sigs_dst[: b_sigs.shape[0]] = b_sigs[:]
-        sigs_sem.release()
-        enc_kmers_sem.acquire()
-        enc_kmers_dst[: b_enc_kmers.shape[0]] = b_enc_kmers[:]
-        enc_kmers_sem.release()
-    _put_item(StopIteration, read_vals_q)
-
-
 def run_model_batched(
-    read_vals_q,
-    called_batches_q,
-    model,
-    model_metadata,
-    ref_anchored,
-    batch_size,
-    sigs_sem,
-    enc_kmers_sem,
+    batches_q, called_batches_q, model, model_metadata, batch_size
 ):
-    sigs_shm = shared_memory.SharedMemory(name="sigs_batch")
-    sigs_dst = np.ndarray(
-        (batch_size, 1, model_metadata["chunk_len"]),
-        dtype=np.float32,
-        buffer=sigs_shm.buf,
-    )
-    enc_kmers_shm = shared_memory.SharedMemory(name="enc_kmers_batch")
-    enc_kmers_dst = np.ndarray(
-        (
-            batch_size,
-            model_metadata["kmer_len"] * 4,
-            model_metadata["chunk_len"],
-        ),
-        dtype=np.float32,
-        buffer=enc_kmers_shm.buf,
-    )
     device = next(model.parameters()).device
-    # pin memory for efficient GPU transfers
-    pin_memory = torch.device.type == "cuda"
+    pin_memory = device.type == "cuda"
     t_b_sigs = torch.empty(
         (batch_size, 1, model_metadata["chunk_len"]),
         dtype=torch.float32,
@@ -288,23 +244,14 @@ def run_model_batched(
         dtype=torch.float32,
         pin_memory=pin_memory,
     )
-    # TODO wrap in try/catch and return errors
-    for b_read_pos, b_reads in _queue_iter(read_vals_q):
-        sigs_sem.acquire()
-        b_sigs = sigs_dst.copy()
-        sigs_sem.release()
-        enc_kmers_sem.acquire()
-        b_enc_kmers = enc_kmers_dst.copy()
-        enc_kmers_sem.release()
-        if b_read_pos.shape[0] == batch_size:
+    for b_sigs, b_enc_kmers, b_read_pos, b_reads in _queue_iter(batches_q):
+        if b_read_pos.size == batch_size:
             t_b_sigs[:] = torch.from_numpy(b_sigs)
             t_b_enc_kmers[:] = torch.from_numpy(b_enc_kmers)
         else:
-            t_b_sigs = torch.from_numpy(b_sigs[: b_read_pos.shape[0]])
-            t_b_enc_kmers = torch.from_numpy(b_enc_kmers[: b_read_pos.shape[0]])
-        nn_out = (
-            model(t_b_sigs.to(device), t_b_enc_kmers.to(device)).cpu().numpy()
-        )
+            t_b_sigs = torch.from_numpy(b_sigs)
+            t_b_enc_kmers = torch.from_numpy(b_enc_kmers)
+        nn_out = model(t_b_sigs.to(device), t_b_enc_kmers.to(device))
         _put_item((nn_out, b_read_pos, b_reads), called_batches_q)
     _put_item(StopIteration, called_batches_q)
 
@@ -321,63 +268,44 @@ if _PROF_MODEL_FN:
         return retval
 
 
-def unbatch_reads(
-    curr_mappings,
-    b_probs,
-    b_read_pos,
-    b_reads,
-):
+def unbatch_reads(curr_read, b_nn_out, b_read_pos, b_reads):
     comp_reads = []
-    for rid, mi, b_st, b_en, io_read, err in b_reads:
+    for io_read, b_st, b_en, err in b_reads:
         if err is not None:
-            curr_mappings.append([io_read, mi, None, None, None, err])
+            comp_reads.append((io_read, None, None, err))
+            curr_read = None
             continue
         # end of read from previous batch
         if b_st is None:
             assert (
-                len(curr_mappings) > 0
-                and curr_mappings[-1][0].read_id == rid
-                and curr_mappings[-1][1] == mi
+                curr_read is not None
+                and curr_read[0].read_id == io_read.read_id
             )
-            io_read, mi, r_probs, r_read_pos, _ = curr_mappings[-1]
-            if b_en is None:
-                # read extends through entire batch
-                assert len(b_reads) == 1
-            # merge with beginning of read from last batch
-            curr_mappings[-1] = [
+            io_read, r_nn_out, r_read_pos, _ = curr_read
+            # update curr_read
+            curr_read = (
                 io_read,
-                mi,
-                np.concatenate([r_probs, b_probs[:b_en]], axis=0),
+                np.concatenate([r_nn_out, b_nn_out[:b_en]], axis=0),
                 np.concatenate([r_read_pos, b_read_pos[:b_en]]),
                 None,
-            ]
+            )
             continue
-        # last read in batch
-        if b_en is None:
-            # ensure this is the last read in the batch
-            assert rid == b_reads[-1][0] and mi == b_reads[-1][1]
-        r_probs = b_probs[b_st:b_en]
-        r_read_pos = b_read_pos[b_st:b_en]
-        r_mapping = [io_read, mi, r_probs, r_read_pos, None]
-        if len(curr_mappings) == 0 or rid == curr_mappings[0][0].read_id:
-            # add read to current mappings
-            curr_mappings.append(r_mapping)
-        else:
-            # else add read mappings to completed reads and start new mappings
-            comp_reads.append(curr_mappings)
-            curr_mappings = [r_mapping]
-    return comp_reads, curr_mappings
+        if curr_read is not None:
+            comp_reads.append(curr_read)
+        curr_read = (io_read, b_nn_out[b_st:b_en], b_read_pos[b_st:b_en], None)
+    return comp_reads, curr_read
 
 
 def unbatch(called_batches_q, called_reads_q):
-    curr_mappings = []
+    curr_read = None
     for nn_out, b_read_pos, b_reads in _queue_iter(called_batches_q):
-        comp_reads, curr_mappings = unbatch_reads(
-            curr_mappings, nn_out, b_read_pos, b_reads
+        comp_reads, curr_read = unbatch_reads(
+            curr_read, nn_out.cpu().numpy(), b_read_pos, b_reads
         )
-        for read_mappings in comp_reads:
-            _put_item(read_mappings, called_reads_q)
-    _put_item(curr_mappings, called_reads_q)
+        for read in comp_reads:
+            _put_item(read, called_reads_q)
+    if curr_read is not None:
+        _put_item(curr_read, called_reads_q)
     _put_item(StopIteration, called_reads_q)
 
 
@@ -393,42 +321,36 @@ if _PROF_UNBATCH_FN:
         return retval
 
 
-def post_process_reads(read_mappings, model_metadata, ref_anchored):
-    def update_io_read(io_read, pos, probs):
-        seq = io_read.ref_seq if ref_anchored else io_read.seq
-        mod_tags = mods_tags_to_str(
-            format_mm_ml_tags(
-                seq=seq,
-                poss=pos,
-                probs=probs,
-                mod_bases=model_metadata["mod_bases"],
-                can_base=model_metadata["can_base"],
-            )
+def post_process_reads(read_mapping, model_metadata, ref_anchored):
+    io_read, nn_out, r_poss, err = read_mapping
+    if err is not None:
+        return None, err
+    r_probs = softmax_axis1(nn_out)[:, 1:].astype(np.float64)
+    seq = io_read.ref_seq if ref_anchored else io_read.seq
+    mod_tags = mods_tags_to_str(
+        format_mm_ml_tags(
+            seq=seq,
+            poss=r_poss,
+            probs=r_probs,
+            mod_bases=model_metadata["mod_bases"],
+            can_base=model_metadata["can_base"],
         )
-        io_read.full_align["tags"] = [
-            tag
-            for tag in io_read.full_align["tags"]
-            if not (tag.startswith("MM") or tag.startswith("ML"))
-        ]
-        io_read.full_align["tags"].extend(mod_tags)
-        if ref_anchored:
-            io_read.full_align["cigar"] = f"{len(io_read.ref_seq)}M"
-            io_read.full_align["seq"] = (
-                io_read.ref_seq
-                if io_read.ref_reg.strand == "+"
-                else revcomp(io_read.ref_seq)
-            )
-            io_read.full_align["qual"] = "*"
-        return io_read
-
-    final_mappings = []
-    for io_read, _, nn_out, r_poss, err in read_mappings:
-        if err is not None:
-            final_mappings.append((None, err))
-            continue
-        r_probs = softmax_axis1(nn_out)[:, 1:].astype(np.float64)
-        final_mappings.append((update_io_read(io_read, r_poss, r_probs), None))
-    return final_mappings
+    )
+    io_read.full_align["tags"] = [
+        tag
+        for tag in io_read.full_align["tags"]
+        if not (tag.startswith("MM") or tag.startswith("ML"))
+    ]
+    io_read.full_align["tags"].extend(mod_tags)
+    if ref_anchored:
+        io_read.full_align["cigar"] = f"{len(io_read.ref_seq)}M"
+        io_read.full_align["seq"] = (
+            io_read.ref_seq
+            if io_read.ref_reg.strand == "+"
+            else revcomp(io_read.ref_seq)
+        )
+        io_read.full_align["qual"] = "*"
+    return io_read, None
 
 
 def infer_from_pod5_and_bam(
@@ -440,7 +362,8 @@ def infer_from_pod5_and_bam(
     num_reads=None,
     queue_max=1_000,
     num_extract_alignment_workers=1,
-    num_prep_batch_workers=1,
+    num_prep_read_workers=1,
+    num_prep_nn_input_workers=1,
     num_post_process_workers=1,
     batch_size=constants.DEFAULT_BATCH_SIZE,
     skip_non_primary=True,
@@ -473,82 +396,46 @@ def infer_from_pod5_and_bam(
         q_maxsize=queue_max,
     )
     prepped_reads = MultitaskMap(
-        prepare_batches,
+        prepare_reads,
         reads,
-        num_workers=num_prep_batch_workers,
-        args=(model_metadata, batch_size, ref_anchored),
-        name="PrepBatches",
-        use_process=_PREP_READS_USE_PROCESS,
-        use_mp_queue=_PREP_READS_USE_PROCESS,
+        num_workers=num_prep_read_workers,
+        args=(model_metadata, ref_anchored),
+        name="PrepReadData",
+        use_process=True,
+        use_mp_queue=True,
         q_maxsize=100,
     )
-    batches_q = CountingQueue(maxsize=10, name="BatchReads")
+    prepped_nn_input = MultitaskMap(
+        prep_nn_input,
+        prepped_reads,
+        num_workers=num_prep_nn_input_workers,
+        name="PrepNNInput",
+        use_process=False,
+        use_mp_queue=False,
+        q_maxsize=10,
+    )
+    batches_q = NamedQueue(maxsize=4, name="Batches")
     batch_reads_p = Thread(
         target=batch_reads,
         args=(
-            prepped_reads.out_q,
+            _queue_iter(prepped_nn_input.out_q, num_prep_nn_input_workers),
             batches_q,
             batch_size,
             model_metadata,
-            num_prep_batch_workers,
         ),
         name="batch_reads",
         daemon=True,
     )
     batch_reads_p.start()
-    shared_memory.SharedMemory(
-        name="sigs_batch",
-        create=True,
-        size=np.dtype(np.float32).itemsize
-        * batch_size
-        * model_metadata["chunk_len"],
-    )
-    shared_memory.SharedMemory(
-        name="enc_kmers_batch",
-        create=True,
-        size=np.dtype(np.float32).itemsize
-        * batch_size
-        * model_metadata["kmer_len"]
-        * 4
-        * model_metadata["chunk_len"],
-    )
-    atexit.register(release_shared, "sigs_batch")
-    atexit.register(release_shared, "enc_kmers_batch")
-    sigs_sem = Semaphore()
-    enc_kmers_sem = Semaphore()
-    read_vals_q = CountingQueue(maxsize=10, name="ReadVals")
-    assign_batch_t = Thread(
-        target=assign_batch,
-        args=(
-            batches_q,
-            read_vals_q,
-            model_metadata,
-            batch_size,
-            sigs_sem,
-            enc_kmers_sem,
-        ),
-        name="assign_batch",
-        daemon=True,
-    )
-    assign_batch_t.start()
-    called_batches_q = CountingQueue(maxsize=10, name="CallBatches")
+    called_batches_q = NamedQueue(maxsize=4, name="CalledBatches")
     call_batches_t = Thread(
         target=run_model_batched,
-        args=(
-            read_vals_q,
-            called_batches_q,
-            model,
-            model_metadata,
-            ref_anchored,
-            batch_size,
-            sigs_sem,
-            enc_kmers_sem,
-        ),
+        args=(batches_q, called_batches_q, model, model_metadata, batch_size),
         name="call_batches",
         daemon=True,
     )
     call_batches_t.start()
-    called_reads_q = CountingMPQueue(maxsize=queue_max, name="Unbatch")
+    called_reads_q = NamedMPQueue(maxsize=queue_max, name="Unbatch")
     unbatch_p = Thread(
         target=unbatch,
         args=(
@@ -574,8 +461,8 @@ def infer_from_pod5_and_bam(
         signals.out_q,
         reads.out_q,
         prepped_reads.out_q,
+        prepped_nn_input.out_q,
         batches_q,
-        read_vals_q,
         called_batches_q,
         called_reads_q,
         final_reads.out_q,
@@ -583,7 +470,7 @@ def infer_from_pod5_and_bam(
     errs = defaultdict(int)
     pysam_save = pysam.set_verbosity(0)
     sig_called = 0
-    in_bam = out_bam = pbar = None
+    in_bam = out_bam = pbar = prev_rid = None
     try:
         in_bam = pysam.AlignmentFile(in_bam_path, "rb")
         out_bam = pysam.AlignmentFile(out_bam_path, "wb", template=in_bam)
@@ -595,23 +482,29 @@ def infer_from_pod5_and_bam(
             desc="Inferring mods",
             disable=os.environ.get("LOG_SAFE", False),
         )
-        for read_mappings in final_reads:
-            LOGGER.debug("QueuesStatus: " + "\t".join(map(str, all_qs)))
-            pbar.update()
-            for io_read, err in read_mappings:
-                if err is not None:
-                    errs[err] += 1
-                    continue
-                sig_called += io_read.sig_len
-                sps, mag = human_format(
-                    sig_called / pbar.format_dict["elapsed"]
+        for io_read, err in final_reads:
+            LOGGER.debug(
+                "QueuesStatus: "
+                + "\t".join(
+                    [f"{q.name}: {q.queue.qsize()}/{q.maxsize}" for q in all_qs]
                 )
-                pbar.set_postfix_str(f"{sps:>5.1f} {mag}samps/s", refresh=False)
-                out_bam.write(
-                    pysam.AlignedSegment.from_dict(
-                        io_read.full_align, out_bam.header
-                    )
+            )
+            if err is not None:
+                errs[err] += 1
+                prev_rid = None
+                pbar.update()
+                continue
+            if prev_rid != io_read.read_id:
+                pbar.update()
+            sig_called += io_read.sig_len
+            sps, mag = human_format(sig_called / pbar.format_dict["elapsed"])
+            pbar.set_postfix_str(f"{sps:>5.1f} {mag}samps/s", refresh=False)
+            out_bam.write(
+                pysam.AlignedSegment.from_dict(
+                    io_read.full_align, out_bam.header
                 )
+            )
+            prev_rid = io_read.read_id
     finally:
         if pbar is not None:
             pbar.close()
@@ -797,7 +690,7 @@ def check_simplex_alignments(*, simplex_index, duplex_index, pairs):
     """
     if len(pairs) == 0:
         raise ValueError("no pairs found in file")
-    all_paired_read_ids = set(itertools.chain(*pairs))
+    all_paired_read_ids = set(chain(*pairs))
     simplex_read_ids = set(simplex_index.read_ids)
     duplex_read_ids = set(duplex_index.read_ids)
     count_paired_simplex_alignments = sum(
