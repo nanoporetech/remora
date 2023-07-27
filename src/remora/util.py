@@ -10,7 +10,6 @@ from pathlib import Path
 from shutil import rmtree
 import multiprocessing as mp
 from threading import Thread
-from reprlib import recursive_repr
 from os.path import realpath, expanduser
 
 import torch
@@ -435,58 +434,26 @@ def profile(prof_path):
 ###################
 
 
-class AbstractCountingQueue(ABC):
+class AbstractNamedQueue(ABC):
     def put(self, *args, **kwargs):
         self.queue.put(*args, **kwargs)
-        with self._size.get_lock():
-            self._size.value += 1
 
     def get(self, *args, **kwargs):
         rval = self.queue.get(*args, **kwargs)
-        with self._size.get_lock():
-            self._size.value -= 1
         return rval
 
-    def qsize(self):
-        qsize = max(0, self._size.value)
-        if self.maxsize is not None:
-            return min(self.maxsize, qsize)
-        return qsize
 
-    def empty(self):
-        return self.qsize() <= 0
-
-    @recursive_repr()
-    def __repr__(self):
-        return (
-            f"{'Queue' if self.name is None else self.name}:{self.qsize()}"
-            f"{'' if self.maxsize is None else '/' + str(self.maxsize)}"
-        )
-
-
-class CountingMPQueue(AbstractCountingQueue):
+class NamedMPQueue(AbstractNamedQueue):
     def __init__(self, *args, **kwargs):
-        self._size = mp.Value("i", 0)
-        self.maxsize = None
-        self.name = None
-        if "name" in kwargs:
-            self.name = kwargs["name"]
-            del kwargs["name"]
-        if "maxsize" in kwargs:
-            self.maxsize = kwargs["maxsize"]
+        self.maxsize = kwargs.get("maxsize")
+        self.name = kwargs.get("name")
         self.queue = mp.Queue(maxsize=self.maxsize)
 
 
-class CountingQueue(AbstractCountingQueue):
+class NamedQueue(AbstractNamedQueue):
     def __init__(self, **kwargs):
-        self._size = mp.Value("i", 0)
-        self.maxsize = None
-        self.name = None
-        if "name" in kwargs:
-            self.name = kwargs["name"]
-            del kwargs["name"]
-        if "maxsize" in kwargs:
-            self.maxsize = kwargs["maxsize"]
+        self.maxsize = kwargs.get("maxsize")
+        self.name = kwargs.get("name")
         self.queue = queue.Queue(maxsize=self.maxsize)
 
 
@@ -608,7 +575,7 @@ class MultitaskMap:
     ):
         self.name = name
         self.num_workers = num_workers
-        q_cls = CountingMPQueue if use_mp_queue else CountingQueue
+        q_cls = NamedMPQueue if use_mp_queue else NamedQueue
         self.out_q = q_cls(maxsize=q_maxsize, name=f"{name}.out")
         in_q = q_cls(maxsize=q_maxsize, name=f"{name}.in")
 
@@ -668,7 +635,7 @@ class BackgroundIter:
         name="BackgroundIter",
     ):
         self.name = name
-        q_cls = CountingMPQueue if use_mp_queue else CountingQueue
+        q_cls = NamedMPQueue if use_mp_queue else NamedQueue
         self.out_q = q_cls(maxsize=q_maxsize, name=f"{name}.out")
 
         mt_worker = mp.Process if use_process else Thread

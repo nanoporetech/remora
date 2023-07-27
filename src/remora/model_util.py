@@ -178,21 +178,14 @@ def export_model_dorado(ckpt, model, save_dir):
 
     # add refinement metadata
     refinement = {}
-    refinement["refine_do_rough_rescale"] = ckpt["refine_do_rough_rescale"]
-    if refinement["refine_do_rough_rescale"]:
-        refinement["refine_kmer_center_idx"] = ckpt["refine_kmer_center_idx"]
-        try:
-            refine_kmer_levels = torch.Tensor(
-                ckpt["refine_kmer_levels"].astype(np.float32)
-            )
-        except AttributeError:
-            refine_kmer_levels = torch.from_numpy(
-                np.frombuffer(
-                    ckpt["refine_kmer_levels"].encode("cp437"),
-                    dtype=np.float32,
-                ).copy()
-            )
-        save_tensor("refine_kmer_levels", refine_kmer_levels)
+    sig_map_refiner = ckpt["sig_map_refiner"]
+    refinement["refine_do_rough_rescale"] = sig_map_refiner.do_rough_rescale
+    if sig_map_refiner.do_rough_rescale:
+        refinement["refine_kmer_center_idx"] = sig_map_refiner.center_idx
+        save_tensor(
+            "refine_kmer_levels",
+            torch.Tensor(sig_map_refiner._levels_array.astype(np.float32)),
+        )
 
     # add simple metadata
     for ckpt_key in (

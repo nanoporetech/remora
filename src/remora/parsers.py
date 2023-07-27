@@ -882,13 +882,21 @@ def register_infer_from_pod5_and_bam(parser):
         "--num-extract-alignment-workers",
         type=int,
         default=1,
-        help="Number of signal extraction workers.",
+        help="""Number of alignment extraction workers. See log for queue
+        status and potentially increase num workers for process with inputs,
+        but no outputs.""",
     )
     comp_grp.add_argument(
-        "--num-prepare-batch-workers",
+        "--num-prepare-read-workers",
         type=int,
         default=1,
-        help="Number of batch preparation workers.",
+        help="Number of read preparation workers.",
+    )
+    comp_grp.add_argument(
+        "--num-prepare-nn-input-workers",
+        type=int,
+        default=1,
+        help="Number of neural net input preparation workers.",
     )
     comp_grp.add_argument(
         "--num-post-process-workers",
@@ -1065,7 +1073,8 @@ def run_infer_from_pod5_and_bam(args):
         num_reads=args.num_reads,
         queue_max=args.queue_max,
         num_extract_alignment_workers=args.num_extract_alignment_workers,
-        num_prep_batch_workers=args.num_prepare_batch_workers,
+        num_prep_read_workers=args.num_prepare_read_workers,
+        num_prep_nn_input_workers=args.num_prepare_nn_input_workers,
         num_post_process_workers=args.num_post_process_workers,
         batch_size=args.batch_size,
         ref_anchored=args.reference_anchored,
