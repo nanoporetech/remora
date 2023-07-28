@@ -10,7 +10,11 @@ from remora.constants import (
     DEFAULT_REFINE_SHORT_DWELL_PARAMS,
     DEFAULT_REFINE_ALGO,
     REFINE_ALGO_DWELL_PEN_NAME,
+    ROUGH_RESCALE_METHODS,
+    ROUGH_RESCALE_LEAST_SQUARES,
+    ROUGH_RESCALE_THEIL_SEN,
     MAX_POINTS_FOR_THEIL_SEN,
+    DEFAULT_ROUGH_RESCALE_METHOD,
 )
 from remora.refine_signal_map_core import (
     seq_banded_dp,
@@ -157,6 +161,7 @@ class SigMapRefiner:
     half_bandwidth: int = DEFAULT_REFINE_HBW
     sd_params: tuple = None
     do_fix_guage: bool = False
+    rough_rescale_method: str = DEFAULT_ROUGH_RESCALE_METHOD
 
     sd_arr: np.ndarray = field(
         default_factory=lambda: DEFAULT_REFINE_SHORT_DWELL_PEN
@@ -317,6 +322,10 @@ class SigMapRefiner:
                 "K-mer table provided, but not used. "
                 "See rough rescaling options."
             )
+        if self.rough_rescale_method not in ROUGH_RESCALE_METHODS:
+            raise RemoraError(
+                f"Invalid rough re-scale method: {self.rough_rescale_method}"
+            )
 
     def extract_levels(self, int_seq):
         return extract_levels(
@@ -357,7 +366,6 @@ class SigMapRefiner:
         quants=np.arange(0.05, 1, 0.05),
         clip_bases=10,
         use_base_center=True,
-        use_theil_sen=True,
     ):
         """Estimate new scaling parameters base on quantiles of levels and
         quantiles of central signal point in each base.
@@ -378,11 +386,15 @@ class SigMapRefiner:
                 optim_dacs = optim_dacs[clip_bases:-clip_bases]
         else:
             optim_dacs = dacs[seq_to_sig_map[0] : seq_to_sig_map[-1]]
-        if use_theil_sen:
+        if self.rough_rescale_method == ROUGH_RESCALE_LEAST_SQUARES:
+            return rough_rescale_lstsq(optim_dacs, levels, shift, scale, quants)
+        elif self.rough_rescale_method == ROUGH_RESCALE_THEIL_SEN:
             return rough_rescale_theil_sen(
                 optim_dacs, levels, shift, scale, quants
             )
-        return rough_rescale_lstsq(optim_dacs, levels, shift, scale, quants)
+        raise RemoraError(
+            f"Invalid rough re-scale method: {self.rough_rescale_method}"
+        )
 
     def rescale(
         self,
@@ -395,7 +407,6 @@ class SigMapRefiner:
         min_abs_level=0.2,
         edge_filter_bases=10,
         min_levels=10,
-        use_theil_sen=True,
     ):
         """Estimate new scaling parameters base on current signal mapping to
         estimated levels.
@@ -446,9 +457,9 @@ class SigMapRefiner:
         filt_dacs = dac_means[valid_bases]
         if filt_levels.size < min_levels:
             raise RemoraError("Too few positions")
-        if use_theil_sen:
-            return rescale_theil_sen(filt_dacs, filt_levels, shift, scale)
-        return rescale_lstsq(filt_dacs, filt_levels, shift, scale)
+        # TODO explore least-squares here. But this is an experimental method
+        # so hard code Theil-Sen for now
+        return rescale_theil_sen(filt_dacs, filt_levels, shift, scale)
 
     def refine_sig_map(self, shift, scale, seq_to_sig_map, int_seq, dacs):
         levels = self.extract_levels(int_seq)
@@ -485,6 +496,7 @@ class SigMapRefiner:
             "refine_algo": self.algo,
             "refine_half_bandwidth": self.half_bandwidth,
             "refine_sd_arr": self.sd_arr,
+            "rough_rescale_method": self.rough_rescale_method,
         }
 
     @classmethod
@@ -497,6 +509,9 @@ class SigMapRefiner:
             algo=metadata.get("refine_algo"),
             half_bandwidth=metadata.get("refine_half_bandwidth"),
             sd_arr=metadata.get("refine_sd_arr"),
+            rough_rescale_method=metadata.get(
+                "rough_rescale_method", ROUGH_RESCALE_LEAST_SQUARES
+            ),
         )
 
     @classmethod
@@ -510,6 +525,7 @@ class SigMapRefiner:
         sd_params=None,
         do_fix_guage=False,
         sd_arr=DEFAULT_REFINE_SHORT_DWELL_PEN,
+        rough_rescale_method=DEFAULT_ROUGH_RESCALE_METHOD,
     ):
         """Create refiner from str_kmer_levels dict with kmer keys and float
         current level values.
@@ -525,6 +541,7 @@ class SigMapRefiner:
             sd_arr=sd_arr,
             str_kmer_levels=data,
             kmer_len=kmer_len,
+            rough_rescale_method=rough_rescale_method,
         )
 
     def __eq__(self, other):
@@ -536,6 +553,8 @@ class SigMapRefiner:
             return False
         if not self.do_rough_rescale and self.scale_iters < 0:
             return True
+        if self.rough_rescale_method != other.rough_rescale_method:
+            return False
         if (
             not np.array_equal(self._levels_array, other._levels_array)
             or self.center_idx != other.center_idx
@@ -547,7 +566,7 @@ class SigMapRefiner:
             (
                 self.algo == other.algo,
                 self.half_bandwidth == other.half_bandwidth,
-                self.sd_arr == other.sd_arr,
+                np.array_equal(self.sd_arr, other.sd_arr),
             )
         )
 
