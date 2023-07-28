@@ -684,6 +684,7 @@ class DatasetMetadata:
     reverse_signal: bool = False
     # signal refinement
     sig_map_refiner: SigMapRefiner = None
+    rough_rescale_method: str = constants.DEFAULT_ROUGH_RESCALE_METHOD
 
     _stored_kmer_context_bases: tuple = None
     _stored_chunk_context: tuple = None

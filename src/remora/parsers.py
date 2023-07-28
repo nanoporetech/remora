@@ -225,6 +225,13 @@ def register_dataset_prepare(parser):
         help="""Short dwell penalty refiner parameters. Dwells shorter than
         LIMIT will be penalized a value of `WEIGHT * (dwell - TARGET)^2`.""",
     )
+    refine_grp.add_argument(
+        "--rough-rescale-method",
+        default=constants.DEFAULT_ROUGH_RESCALE_METHOD,
+        choices=constants.ROUGH_RESCALE_METHODS,
+        help="""Use either least squares or Theil-Sen estimator for rough
+        rescaling.""",
+    )
 
     label_grp = subparser.add_argument_group("Label Arguments")
     label_grp.add_argument(
@@ -282,6 +289,7 @@ def run_dataset_prepare(args):
         half_bandwidth=args.refine_half_bandwidth,
         sd_params=args.refine_short_dwell_parameters,
         do_fix_guage=True,
+        rough_rescale_method=args.rough_rescale_method,
     )
     if not sig_map_refiner.is_valid:
         raise RemoraError("Invalid signal mappnig refiner settings.")
