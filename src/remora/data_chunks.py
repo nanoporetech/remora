@@ -858,7 +858,7 @@ def check_super_batch(super_batch, chunk_width):
     seqlen_cs = np.cumsum(super_batch["sequence_lengths"])
     sm_diff_mask = np.ones(sm_m.size - 1, dtype=bool)
     sm_diff_mask[seqlen_cs[:-1] + np.arange(seqlen_cs.size)[:-1]] = 0
-    if np.diff(sm_m)[sm_diff_mask].min() <= 0:
+    if np.diff(sm_m)[sm_diff_mask].min() < 0:
         raise RemoraError("Sequence to signal mappings are not monotonic")
     # check that sequence values are valid
     seq_r = np.arange(super_batch["sequence"].shape[1])
@@ -1130,7 +1130,9 @@ class CoreRemoraDataset:
                     (k, loaded_metadata["extra_arrays"][k]) for k in md_val
                 )
             elif md_key == "chunk_context":
-                scc = loaded_metadata["chunk_context"]
+                scc = loaded_metadata["chunk_context"] = tuple(
+                    loaded_metadata["chunk_context"]
+                )
                 if md_val[0] > scc[0] or md_val[1] > scc[1]:
                     raise RemoraError(
                         f"Cannot expand chunk context (stored:{scc} ; "
@@ -1138,7 +1140,9 @@ class CoreRemoraDataset:
                     )
                 loaded_metadata["_stored_chunk_context"] = scc
             elif md_key == "kmer_context_bases":
-                skcb = loaded_metadata["kmer_context_bases"]
+                skcb = loaded_metadata["kmer_context_bases"] = tuple(
+                    loaded_metadata["kmer_context_bases"]
+                )
                 if md_val[0] > skcb[0] or md_val[1] > skcb[1]:
                     raise RemoraError(
                         f"Cannot expand kmer context (stored:{skcb} ; "
@@ -1415,6 +1419,8 @@ class CoreRemoraDataset:
         if size is None:
             size = self.metadata.dataset_end - sb_arr_st
         sb_arr_en = sb_arr_st + size
+        if self.infinite_iter and offset >= self.size:
+            offset = offset % self.size
         if sb_arr_en <= self.metadata.dataset_end:
             for arr_name in self.array_names:
                 super_batch[arr_name] = getattr(self, arr_name)[
@@ -1462,14 +1468,13 @@ class CoreRemoraDataset:
         while True:
             self.refresh_memmaps()
             super_batch = self.load_super_batch(
-                (
-                    self.super_batch_offset
-                    + (super_batch_num * self.super_batch_size)
-                )
-                % self.size,
+                self.super_batch_offset
+                + (super_batch_num * self.super_batch_size),
                 self.super_batch_size,
                 select_num_chunks=select_num_chunks,
             )
+            if super_batch is None:
+                break
             if self.do_check_super_batches:
                 check_super_batch(super_batch, self.metadata.chunk_width)
             super_batch_num += 1
@@ -1502,13 +1507,6 @@ class CoreRemoraDataset:
         return batch
 
     def iter_batches(self, max_batches=None):
-        if not self.infinite_iter:
-            total_batches = int(np.ceil(self.size / self.batch_size))
-            max_batches = (
-                total_batches
-                if max_batches is None
-                else min(max_batches, total_batches)
-            )
         if self.super_batch_size > self.size:
             self.super_batch_size = self.size
         if self.super_batch_sample_frac is None:
@@ -1546,16 +1544,12 @@ class CoreRemoraDataset:
             )
         super_batches = self.iter_super_batches(sb_select_num_chunks)
         batch_num = 0
-        while max_batches is None or batch_num < max_batches:
-            super_batch = next(super_batches)
-            # if infinite_iter is False and batches exhausted
-            if super_batch is None:
-                break
+        for super_batch in super_batches:
             for batch_st in range(0, chunks_per_sb, self.batch_size):
                 yield self.extract_batch(super_batch, batch_st)
                 batch_num += 1
                 if max_batches is not None and batch_num >= max_batches:
-                    break
+                    return
 
     def __iter__(self):
         if self._iter is None or not self.infinite_iter:
@@ -1912,6 +1906,7 @@ class RemoraDataset(IterableDataset):
         for ds in self.datasets:
             ds.update_metadata(self)
         self.super_batch_offsets = [0 for ds in self.datasets]
+        self._ds_iters = None
         self._iter = None
         self._all_batches = None
 
@@ -1991,7 +1986,19 @@ class RemoraDataset(IterableDataset):
             )
         return RemoraDataset(head_datasets, **self.init_kwargs)
 
+    def _set_sub_ds_iters(self):
+        for ds, bs, sb_offset in zip(
+            self.datasets, self.batch_sizes, self.super_batch_offsets
+        ):
+            ds.batch_size = bs
+            ds.super_batch_offset = sb_offset
+            ds.super_batch_size = self.super_batch_size
+            ds.super_batch_sample_frac = self.super_batch_sample_frac
+        self._ds_iters = [ds.iter_batches() for ds in self.datasets]
+
     def iter_batches(self, return_arrays=("enc_kmers", "signal", "labels")):
+        if self._ds_iters is None:
+            self._set_sub_ds_iters()
         while True:
             try:
                 ds_arrays = [next(ds) for ds in self._ds_iters]
@@ -2007,14 +2014,7 @@ class RemoraDataset(IterableDataset):
     def load_all_batches(self):
         if self.infinite_iter:
             raise RemoraError("Cannot save all batches for infinite dataset")
-        for ds, bs, sb_offset in zip(
-            self.datasets, self.batch_sizes, self.super_batch_offsets
-        ):
-            ds.batch_size = bs
-            ds.super_batch_offset = sb_offset
-            ds.super_batch_size = self.super_batch_size
-            ds.super_batch_sample_frac = self.super_batch_sample_frac
-        self._ds_iters = [ds.iter_batches() for ds in self.datasets]
+        self._set_sub_ds_iters()
         self._all_batches = list(self.iter_batches())
 
     def __iter__(self):
@@ -2024,14 +2024,7 @@ class RemoraDataset(IterableDataset):
         # if first time calling iter or if this is an exhaustible dataset
         # re-initialize the iterator
         if self._iter is None or not self.infinite_iter:
-            for ds, bs, sb_offset in zip(
-                self.datasets, self.batch_sizes, self.super_batch_offsets
-            ):
-                ds.batch_size = bs
-                ds.super_batch_offset = sb_offset
-                ds.super_batch_size = self.super_batch_size
-                ds.super_batch_sample_frac = self.super_batch_sample_frac
-            self._ds_iters = [ds.iter_batches() for ds in self.datasets]
+            self._set_sub_ds_iters()
             self._iter = self.iter_batches()
         return self._iter
 
