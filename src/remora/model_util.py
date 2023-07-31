@@ -179,7 +179,10 @@ def export_model_dorado(ckpt, model, save_dir):
     # add refinement metadata
     refinement = {}
     sig_map_refiner = ckpt["sig_map_refiner"]
-    refinement["refine_do_rough_rescale"] = sig_map_refiner.do_rough_rescale
+    # dorado reads this value as an int from previous remora version
+    refinement["refine_do_rough_rescale"] = int(
+        sig_map_refiner.do_rough_rescale
+    )
     if sig_map_refiner.do_rough_rescale:
         refinement["refine_kmer_center_idx"] = sig_map_refiner.center_idx
         save_tensor(
