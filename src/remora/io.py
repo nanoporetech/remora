@@ -500,6 +500,7 @@ class ReadRefReg:
     seq: str
     seq_to_sig_map: np.ndarray
     ref_reg: RefRegion
+    sig_start: int = 0
 
     @property
     def ref_sig_coords(self):
@@ -520,6 +521,7 @@ class ReadRefReg:
             self.norm_signal,
             self.seq_to_sig_map,
             rev_strand=self.ref_reg.strand == "-",
+            sig_start=self.sig_start,
             **kwargs,
         )
 
@@ -544,13 +546,18 @@ class ReadBasecallRegion:
     seq: str
     seq_to_sig_map: np.ndarray
     start: int
+    sig_start: int = 0
 
     def plot_on_signal_coords(self, **kwargs):
         """Plot signal on signal coordinates. See global plot_on_signal_coords
         function for kwargs.
         """
         return plot_on_signal_coords(
-            self.seq, self.norm_signal, self.seq_to_sig_map, **kwargs
+            self.seq,
+            self.norm_signal,
+            self.seq_to_sig_map,
+            sig_start=self.sig_start,
+            **kwargs,
         )
 
     def plot_on_base_coords(self, **kwargs):
@@ -920,6 +927,7 @@ def plot_on_signal_coords(
     levels_lw=8,
     ylim=None,
     t_as_u=False,
+    sig_start=0,
 ):
     """Plot a single read on signal coordinates.
 
@@ -951,10 +959,11 @@ def plot_on_signal_coords(
 
     # plot vertical base lines
     for b in seq_to_sig_map:
-        ax.axvline(x=b, color="k", alpha=0.1, lw=1)
+        ax.axvline(x=sig_start + b, color="k", alpha=0.1, lw=1)
     # plot read signal
+    sig_len = seq_to_sig_map[-1] - seq_to_sig_map[0]
     ax.plot(
-        np.arange(seq_to_sig_map[0], seq_to_sig_map[-1]),
+        np.arange(sig_start, sig_start + sig_len),
         sig,
         color="k",
         alpha=0.5,
@@ -966,7 +975,7 @@ def plot_on_signal_coords(
             levels, seq_to_sig_map[:-1], seq_to_sig_map[1:]
         ):
             ax.plot(
-                [b_st, b_en],
+                [sig_start + b_st, sig_start + b_en],
                 [b_lev] * 2,
                 linestyle="-",
                 color="y",
@@ -978,7 +987,7 @@ def plot_on_signal_coords(
         seq = util.t_to_u(seq)
     for b_st, b_en, base in zip(seq_to_sig_map[:-1], seq_to_sig_map[1:], seq):
         ax.text(
-            (b_en + b_st) / 2,
+            sig_start + (b_en + b_st) / 2,
             base_text_loc,
             base,
             color=BASE_COLORS[base],
@@ -1735,13 +1744,15 @@ class Read:
         end_base = end_base or self.seq_len
         reg_seq_to_sig = self.query_to_signal[start_base : end_base + 1].copy()
         reg_sig = self.norm_signal[reg_seq_to_sig[0] : reg_seq_to_sig[-1]]
-        reg_seq_to_sig -= reg_seq_to_sig[0]
+        sig_start = reg_seq_to_sig[0]
+        reg_seq_to_sig -= sig_start
         return ReadBasecallRegion(
             read_id=self.read_id,
             norm_signal=reg_sig,
             seq=self.seq[start_base:end_base],
             seq_to_sig_map=reg_seq_to_sig,
             start=start_base,
+            sig_start=sig_start,
         )
 
     def extract_ref_reg(self, ref_reg):
@@ -1773,7 +1784,8 @@ class Read:
         ].copy()
         reg_sig = self.norm_signal[reg_seq_to_sig[0] : reg_seq_to_sig[-1]]
         reg_seq = self.ref_seq[reg_st_within_read:reg_en_within_read]
-        reg_seq_to_sig -= reg_seq_to_sig[0]
+        sig_start = reg_seq_to_sig[0]
+        reg_seq_to_sig -= sig_start
         read_reg_ref_st = max(self.ref_reg.start, ref_reg.start)
         # orient reverse strand reads on the reference
         if self.ref_reg.strand == "-":
@@ -1791,6 +1803,7 @@ class Read:
                 read_reg_ref_st,
                 read_reg_ref_st + len(reg_seq),
             ),
+            sig_start=sig_start,
         )
 
     def compute_per_base_metric(
