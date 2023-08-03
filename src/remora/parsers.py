@@ -55,6 +55,7 @@ def register_dataset(parser):
     #  Register dataset sub commands
     register_dataset_prepare(ssubparser)
     register_dataset_inspect(ssubparser)
+    register_dataset_make_config(ssubparser)
 
 
 def register_dataset_prepare(parser):
@@ -317,6 +318,60 @@ def run_dataset_prepare(args):
         skip_shuffle=args.skip_shuffle,
     )
     LOGGER.info("Done")
+
+
+def register_dataset_make_config(parser):
+    subparser = parser.add_parser(
+        "make_config",
+        description="Create a dataset config file",
+        help="Create a dataset config file",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    subparser.add_argument(
+        "out_path",
+        help="Path to save new config.",
+    )
+    subparser.add_argument(
+        "dataset_paths",
+        nargs="+",
+        help="""Remora training dataset. May be either a core Remora dataset or
+        another config""",
+    )
+    subparser.add_argument(
+        "--equal-weights",
+        action="store_true",
+        help="""Should sub-datasets be combined with equal weight? Default
+        will create config with weights equal to the size of each dataset
+        (drawing chunks globally with equal probability)""",
+    )
+    subparser.set_defaults(func=run_dataset_make_config)
+
+
+def run_dataset_make_config(args):
+    import json
+
+    import numpy as np
+
+    from remora.data_chunks import (
+        load_dataset,
+        CoreRemoraDataset,
+        RemoraDataset,
+    )
+
+    all_paths, all_weights = [], []
+    for ds_path in args.dataset_paths:
+        paths, weights, _ = load_dataset(ds_path)
+        all_paths.extend(paths)
+        if not args.equal_weights:
+            weights *= sum([CoreRemoraDataset(path).size for path in paths])
+        all_weights.extend(weights)
+    all_weights = np.array(all_weights)
+    dataset = RemoraDataset(
+        [CoreRemoraDataset(path) for path in all_paths],
+        all_weights / all_weights.sum(),
+    )
+    with open(args.out_path, "w") as fh:
+        json.dump(dataset.get_config(), fh)
 
 
 def register_dataset_inspect(parser):
