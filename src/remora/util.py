@@ -10,6 +10,8 @@ from pathlib import Path
 from shutil import rmtree
 import multiprocessing as mp
 from threading import Thread
+from itertools import product
+from dataclasses import dataclass
 from os.path import realpath, expanduser
 
 import torch
@@ -38,6 +40,7 @@ SINGLE_LETTER_CODE = {
     "W": "AT",
     "Y": "CT",
 }
+BASES_TO_CODES = dict((v, k) for k, v in SINGLE_LETTER_CODE.items())
 SEQ_MIN = np.array(["A"], dtype="S1").view(np.uint8)[0]
 SEQ_TO_INT_ARR = np.full(26, -1, dtype=int)
 SEQ_TO_INT_ARR[0] = 0
@@ -228,39 +231,34 @@ def get_read_ids(bam_idx, pod5_fh, num_reads):
     return both_read_ids, num_reads
 
 
+@dataclass
 class Motif:
-    def __init__(self, raw_motif, focus_pos=0):
-        self.raw_motif = raw_motif
+    raw_motif: str
+    focus_pos: int = 0
+
+    def __post_init__(self):
         try:
-            self.focus_pos = int(focus_pos)
+            self.focus_pos = int(self.focus_pos)
         except ValueError:
             raise RemoraError(
-                f'Motif focus position not an integer: "{focus_pos}"'
+                f'Motif focus position not an integer: "{self.focus_pos}"'
             )
         if self.focus_pos >= len(self.raw_motif):
             raise RemoraError(
                 "Motif focus position is past the end of the motif"
             )
-
-        ambig_pat_str = "".join(
-            "[{}]".format(SINGLE_LETTER_CODE[letter]) for letter in raw_motif
-        )
-        # add lookahead group to serach for overlapping motif hits
-        self.pattern = re.compile("(?=({}))".format(ambig_pat_str))
-
-        self.int_pattern = [
-            np.array(
-                [
-                    b_idx
-                    for b_idx, b in enumerate(CAN_ALPHABET)
-                    if b in SINGLE_LETTER_CODE[letter]
-                ]
-            )
-            for letter in raw_motif
-        ]
+        # clip Ns from end of new motif
+        while len(self.raw_motif) > 1 and self.raw_motif[0] == "N":
+            self.raw_motif = self.raw_motif[1:]
+            self.focus_pos -= 1
+        while len(self.raw_motif) > 1 and self.raw_motif[-1] == "N":
+            self.raw_motif = self.raw_motif[:-1]
 
     def to_tuple(self):
         return self.raw_motif, self.focus_pos
+
+    def __hash__(self):
+        return hash(self.to_tuple())
 
     @property
     def focus_base(self):
@@ -273,6 +271,37 @@ class Motif:
     @property
     def num_bases_after_focus(self):
         return len(self.raw_motif) - self.focus_pos - 1
+
+    @property
+    def pattern(self):
+        ambig_pat_str = "".join(
+            "[{}]".format(SINGLE_LETTER_CODE[letter])
+            for letter in self.raw_motif
+        )
+        # add lookahead group to serach for overlapping motif hits
+        return re.compile("(?=({}))".format(ambig_pat_str))
+
+    @property
+    def int_pattern(self):
+        return [
+            np.array(
+                [
+                    b_idx
+                    for b_idx, b in enumerate(CAN_ALPHABET)
+                    if b in SINGLE_LETTER_CODE[letter]
+                ]
+            )
+            for letter in self.raw_motif
+        ]
+
+    @property
+    def possible_kmers(self):
+        return [
+            "".join(bs)
+            for bs in product(
+                *[SINGLE_LETTER_CODE[letter] for letter in self.raw_motif]
+            )
+        ]
 
     def is_super_set(self, other):
         """Determine if this motif is a super-set of another motif. In other
@@ -298,6 +327,77 @@ class Motif:
             ):
                 return False
         return True
+
+    def merge(self, other):
+        """Merge this motif with another motif"""
+        if self == other:
+            return self
+        elif self.is_super_set(other):
+            return self
+        elif other.is_super_set(self):
+            return other
+        elif len(self.raw_motif) != len(other.raw_motif):
+            raise RemoraError("Cannot merge motifs of different sizes")
+        elif self.focus_pos != other.focus_pos:
+            raise RemoraError("Cannot merge motifs with different focus pos")
+        # attempt to join motifs
+        all_kmers = set(self.possible_kmers).union(other.possible_kmers)
+        new_motif = Motif(
+            "".join(
+                BASES_TO_CODES[
+                    "".join(sorted(set(kmer[kmer_idx] for kmer in all_kmers)))
+                ]
+                for kmer_idx in range(len(self.raw_motif))
+            ),
+            self.focus_pos,
+        )
+        # if new motif is trimmed with N positions
+        if len(new_motif.raw_motif) < len(self.raw_motif):
+            st = self.focus_pos - new_motif.focus_pos
+            en = len(self.raw_motif) - len(new_motif.raw_motif) - st
+            pos_bases = (
+                (["ACGT"] * st)
+                + [SINGLE_LETTER_CODE[letter] for letter in new_motif.raw_motif]
+                + (["ACGT"] * en)
+            )
+            new_poss_kmers = set(["".join(bs) for bs in product(*pos_bases)])
+        else:
+            new_poss_kmers = set(new_motif.possible_kmers)
+        if all_kmers != new_poss_kmers:
+            raise RemoraError("Cannot merge motifs {self} {other}")
+        return new_motif
+
+
+def merge_motifs(motifs):
+    """Merge list of motif objects via pairwise merge attempts"""
+    # convert to tuples to motifs
+    motifs = [
+        motif if isinstance(motif, Motif) else (Motif(*motif))
+        for motif in motifs
+    ]
+    prev_motifs = None
+    # ensure motifs are unique
+    motifs = list(set(motifs))
+    while len(motifs) > 1 and (
+        prev_motifs is None or set(prev_motifs) != set(motifs)
+    ):
+        prev_motifs = motifs
+        merged_motifs = set()
+        motifs = set()
+        for motif_a in prev_motifs:
+            for motif_b in prev_motifs[1:]:
+                try:
+                    m_motif = motif_a.merge(motif_b)
+                    if m_motif != motif_a:
+                        merged_motifs.add(motif_a)
+                    if m_motif != motif_b:
+                        merged_motifs.add(motif_b)
+                    motifs.add(m_motif)
+                except RemoraError:
+                    # could not merge so add both motifs
+                    motifs.update((motif_a, motif_b))
+        motifs = list(motifs.difference(merged_motifs))
+    return motifs
 
 
 def get_can_converter(alphabet, collapse_alphabet):
