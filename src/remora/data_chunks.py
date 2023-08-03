@@ -1618,6 +1618,16 @@ def parse_dataset_config(config_path, used_configs=None):
     return paths, props, hashes
 
 
+def load_dataset(ds_path):
+    """Parse either core dataset or dataset config"""
+    ds_path = util.resolve_path(ds_path)
+    if not os.path.exists(ds_path):
+        raise RemoraError(f"Dataset path does not exist. {ds_path}")
+    if os.path.isdir(ds_path):
+        return [ds_path], np.ones(1, dtype=float), None
+    return parse_dataset_config(ds_path)
+
+
 def compute_best_split(total_size, props):
     """Compute best split of total size into len(props) integers where each
     value is >=1 and approxiamtely closeset to props.
@@ -1678,7 +1688,7 @@ class RemoraDataset(IterableDataset):
     def hashes(self):
         if self._hashes is None:
             LOGGER.debug("Computing dataset hashes")
-            self._hashes = [ds.hash for ds in self.datasets]
+            self._hashes = [ds.hash(ds.data_path) for ds in self.datasets]
         return self._hashes
 
     @property
