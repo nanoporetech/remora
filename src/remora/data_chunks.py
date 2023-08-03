@@ -1639,22 +1639,6 @@ def compute_best_split(total_size, props):
     return sizes
 
 
-def merge_motifs(motifs):
-    motifs = [util.Motif(*motif) for motif in set(motifs)]
-    motifs_to_drop = set()
-    for motif_idx, motif in enumerate(motifs):
-        for other_idx, other in enumerate(motifs):
-            if motif_idx == other_idx:
-                continue
-            if motif.is_super_set(other):
-                motifs_to_drop.add(other_idx)
-    return [
-        (motif.raw_motif, motif.focus_pos)
-        for motif_idx, motif in enumerate(motifs)
-        if motif_idx not in motifs_to_drop
-    ]
-
-
 def dataloader_worker_init(worker_id):
     worker_info = torch.utils.data.get_worker_info()
     if worker_info is None:
@@ -1736,7 +1720,10 @@ class RemoraDataset(IterableDataset):
         ):
             setattr(self.metadata, md_name, None)
         self.metadata.motif_sequences, self.metadata.motif_offsets = zip(
-            *merge_motifs(self.metadata.motifs)
+            *[
+                motif.to_tuple()
+                for motif in util.merge_motifs(self.metadata.motifs)
+            ]
         )
         for ds in self.datasets[1:]:
             # first check attrs for which exact match is required
@@ -1824,8 +1811,7 @@ class RemoraDataset(IterableDataset):
                         ds.metadata.chunk_context[1],
                     ),
                 )
-
-            # do simple motif merges; example: CG + C -> C
+            # merge motifs
             if set(ds.metadata.motifs) != set(self.metadata.motifs):
                 LOGGER.debug(
                     f"Motif sets not equal: {set(ds.metadata.motifs)} "
@@ -1835,7 +1821,12 @@ class RemoraDataset(IterableDataset):
                     self.metadata.motif_sequences,
                     self.metadata.motif_offsets,
                 ) = zip(
-                    *merge_motifs(self.metadata.motifs + ds.metadata.motifs)
+                    *[
+                        motif.to_tuple()
+                        for motif in util.merge_motifs(
+                            self.metadata.motifs + ds.metadata.motifs
+                        )
+                    ]
                 )
 
         # sort modified bases alphabetically
