@@ -91,35 +91,6 @@ def parse_device(device):
     return device
 
 
-def iter_motif_hits(int_seq, motif):
-    yield from np.where(
-        np.logical_and.reduce(
-            [
-                np.isin(
-                    int_seq[
-                        po : int_seq.size - len(motif.int_pattern) + po + 1
-                    ],
-                    pi,
-                )
-                for po, pi in enumerate(motif.int_pattern)
-            ]
-        )
-    )[0]
-
-
-def find_focus_bases_in_int_sequence(
-    int_seq: np.ndarray, motifs: list
-) -> np.ndarray:
-    return np.fromiter(
-        set(
-            mot_pos + mot.focus_pos
-            for mot in motifs
-            for mot_pos in iter_motif_hits(int_seq, mot)
-        ),
-        int,
-    )
-
-
 def comp(seq):
     return seq.translate(COMP_BASES)
 
@@ -233,6 +204,15 @@ def get_read_ids(bam_idx, pod5_fh, num_reads):
 
 @dataclass
 class Motif:
+    """Sequence motif including ambiguous bases along with the focus position
+    within the motif.
+
+    Args:
+        raw_motif (str): Sequence motif. Use IUPAC single letter base codes for
+            ambiguous bases. Variable length motifs are not implemented.
+        focus_base (int): 0-based index of the focus position within the motif
+    """
+
     raw_motif: str
     focus_pos: int = 0
 
@@ -242,6 +222,13 @@ class Motif:
         except ValueError:
             raise RemoraError(
                 f'Motif focus position not an integer: "{self.focus_pos}"'
+            )
+        if not isinstance(self.raw_motif, str):
+            raise RemoraError("Motif sequence must be a string")
+        invalid_bases = set(self.raw_motif).difference(SINGLE_LETTER_CODE)
+        if len(invalid_bases) > 0:
+            raise RemoraError(
+                f"Motif contains invalid characters: {invalid_bases}"
             )
         if self.focus_pos >= len(self.raw_motif):
             raise RemoraError(
@@ -255,6 +242,7 @@ class Motif:
             self.raw_motif = self.raw_motif[:-1]
 
     def to_tuple(self):
+        """Return motif as tuple of raw motif and focus position"""
         return self.raw_motif, self.focus_pos
 
     def __hash__(self):
@@ -262,18 +250,17 @@ class Motif:
 
     @property
     def focus_base(self):
+        """Canonical base at the focus position of the motif"""
         return self.raw_motif[self.focus_pos]
 
     @property
-    def any_context(self):
-        return self.raw_motif == "N"
-
-    @property
     def num_bases_after_focus(self):
+        """Number of bases in the motif after the focus position."""
         return len(self.raw_motif) - self.focus_pos - 1
 
     @property
     def pattern(self):
+        """Python regex for matching a string with the motif"""
         ambig_pat_str = "".join(
             "[{}]".format(SINGLE_LETTER_CODE[letter])
             for letter in self.raw_motif
@@ -283,6 +270,9 @@ class Motif:
 
     @property
     def int_pattern(self):
+        """Integer encoded bases (A=0, C=1, G=2, T=3) allowed at each position
+        within the motif. Stored as a list of numpy arrays.
+        """
         return [
             np.array(
                 [
@@ -296,12 +286,48 @@ class Motif:
 
     @property
     def possible_kmers(self):
+        """List of all possible k-mers encoded by the motif"""
         return [
             "".join(bs)
             for bs in product(
                 *[SINGLE_LETTER_CODE[letter] for letter in self.raw_motif]
             )
         ]
+
+    def findall(self, int_seq):
+        """Return numpy array with index of focus position for each hit of
+        motif to input integer encoded sequence.
+        """
+        return np.where(
+            np.logical_and.reduce(
+                [
+                    np.isin(
+                        int_seq[
+                            po : int_seq.size - len(self.int_pattern) + po + 1
+                        ],
+                        pi,
+                    )
+                    for po, pi in enumerate(self.int_pattern)
+                ]
+            )
+        )[0]
+
+    def match(self, int_seq, pos):
+        """Test whether the motif matches the motif at the specified position"""
+        pat_st = pos - self.focus_pos
+        pat_en = pos + self.num_bases_after_focus + 1
+        # clip pattern if motif extends beyond read
+        int_pat = self.int_pattern
+        if pat_st < 0:
+            int_pat = int_pat[-pat_st:]
+            pat_st = 0
+        if pat_en > int_seq.size:
+            int_pat = int_pat[: len(int_pat) - pat_en + int_seq.size]
+            pat_en = int_seq.size
+        return all(
+            np.isin(idx_base, idx_pat)
+            for idx_pat, idx_base in zip(int_pat, int_seq[pat_st:pat_en])
+        )
 
     def is_super_set(self, other):
         """Determine if this motif is a super-set of another motif. In other
@@ -398,6 +424,22 @@ def merge_motifs(motifs):
                     motifs.update((motif_a, motif_b))
         motifs = list(motifs.difference(merged_motifs))
     return motifs
+
+
+def find_focus_bases_in_int_sequence(
+    int_seq: np.ndarray, motifs: list
+) -> np.ndarray:
+    """Return numpy array from with position of hit of any motif within the
+    input sequence.
+    """
+    return np.fromiter(
+        set(
+            mot_pos + mot.focus_pos
+            for mot in motifs
+            for mot_pos in mot.findall(int_seq)
+        ),
+        int,
+    )
 
 
 def get_can_converter(alphabet, collapse_alphabet):
