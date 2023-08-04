@@ -98,6 +98,7 @@ def extract_chunks(
                 base_start_justify,
                 offset,
                 check_chunks=True,
+                motifs=motifs,
             )
         )
         LOGGER.debug(

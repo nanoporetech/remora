@@ -421,8 +421,15 @@ class RemoraRead:
         base_start_justify=False,
         offset=0,
         check_chunks=False,
+        motifs=None,
     ):
         for focus_base in self.focus_bases:
+            if motifs is not None:
+                if not any(
+                    motif.match(self.int_seq, focus_base) for motif in motifs
+                ):
+                    LOGGER.debug("FAILED_MOTIF_CHECK")
+                    continue
             label = -1 if self.labels is None else self.labels[focus_base]
             # add offset and ensure not out of bounds
             focus_base = max(
@@ -790,6 +797,23 @@ class DatasetMetadata:
     def extras_shape(self):
         return tuple((self.allocate_size,))
 
+    def check_motifs(self):
+        motifs = [util.Motif(*motif) for motif in self.motifs]
+        ambig_focus_motifs = [
+            motif for motif in motifs if motif.focus_base not in "ACGT"
+        ]
+        if len(ambig_focus_motifs) > 0:
+            raise RemoraError(
+                f"Cannot create dataset at motifs with ambiguous bases "
+                f"{ambig_focus_motifs}"
+            )
+        focus_bases = set(motif.focus_base for motif in motifs)
+        if len(focus_bases) > 1:
+            raise RemoraError(
+                f"Cannot create dataset with multiple motif focus bases: "
+                f"{focus_bases}"
+            )
+
     def __post_init__(self):
         self.chunk_context = tuple(self.chunk_context)
         self.kmer_context_bases = tuple(self.kmer_context_bases)
@@ -799,6 +823,7 @@ class DatasetMetadata:
             self._stored_kmer_context_bases = tuple(
                 self._stored_kmer_context_bases
             )
+        self.check_motifs()
 
     def asdict(self):
         r_dict = dataclasses.asdict(self)
@@ -1735,6 +1760,7 @@ class RemoraDataset(IterableDataset):
                 for motif in util.merge_motifs(self.metadata.motifs)
             ]
         )
+        self.metadata.check_motifs()
         for ds in self.datasets[1:]:
             # first check attrs for which exact match is required
             for attr_name in (
@@ -1838,6 +1864,7 @@ class RemoraDataset(IterableDataset):
                         )
                     ]
                 )
+                self.metadata.check_motifs()
 
         # sort modified bases alphabetically
         mod_bases = ""
