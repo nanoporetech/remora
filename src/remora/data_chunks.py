@@ -1440,12 +1440,22 @@ class CoreRemoraDataset:
 
     def load_super_batch(self, offset=0, size=None, select_num_chunks=None):
         super_batch = {}
+        if self.infinite_iter:
+            offset %= self.size
+        else:
+            if offset >= self.size:
+                return
         sb_arr_st = self.metadata.dataset_start + offset
+        # load full dataset if size is None
         if size is None:
+            if self.infinite_iter:
+                raise RemoraError(
+                    "Must specify size of super batch for infinite iter dataset"
+                )
             size = self.metadata.dataset_end - sb_arr_st
+        if size > self.size:
+            raise RemoraError("Super batch larger than dataset requested")
         sb_arr_en = sb_arr_st + size
-        if self.infinite_iter and offset >= self.size:
-            offset = offset % self.size
         if sb_arr_en <= self.metadata.dataset_end:
             for arr_name in self.array_names:
                 super_batch[arr_name] = getattr(self, arr_name)[
@@ -1453,7 +1463,7 @@ class CoreRemoraDataset:
                 ].copy()
         elif self.infinite_iter:
             # wrap super batch around end of dataset
-            wrap_en = sb_arr_en - self.metadata.size
+            wrap_en = sb_arr_en - self.size
             for arr_name in self.array_names:
                 super_batch[arr_name] = np.concatenate(
                     [
@@ -1466,9 +1476,6 @@ class CoreRemoraDataset:
                     ]
                 )
         else:
-            # only iterating over data once; return None
-            if sb_arr_st >= self.metadata.dataset_end:
-                return
             # return last batch with smaller batch dim
             for arr_name in self.array_names:
                 super_batch[arr_name] = getattr(self, arr_name)[
