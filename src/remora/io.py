@@ -177,12 +177,14 @@ class ReadIndexedBam:
         req_tags (bool): Skip reads without required tags
         read_id_converter (Callable[[str], str]): Function to convert read ids
             (e.g. for concatenated duplex read ids)
+        read_ids_subset (set): Read IDs to include
     """
 
     bam_path: str
     skip_non_primary: bool = True
     req_tags: set = None
     read_id_converter: Callable = None
+    read_ids_subset: set = None
 
     def __post_init__(self):
         self.num_reads = None
@@ -229,23 +231,26 @@ class ReadIndexedBam:
             except StopIteration:
                 break
             pbar.update()
-            if self.req_tags is not None:
-                tags = set(tg[0] for tg in read.tags)
-                missing_tags = self.req_tags.difference(tags)
-                if len(missing_tags) > 0:
-                    LOGGER.debug(
-                        f"{read.query_name} missing tags {missing_tags}"
-                    )
-                    continue
             index_read_id = (
                 read.query_name
                 if self.read_id_converter is None
                 else self.read_id_converter(read.query_name)
             )
+            if (
+                self.read_ids_subset is not None
+                and index_read_id not in self.read_ids_subset
+            ):
+                continue
+            if self.req_tags is not None:
+                tags = set(tg[0] for tg in read.tags)
+                missing_tags = self.req_tags.difference(tags)
+                if len(missing_tags) > 0:
+                    LOGGER.debug(f"{index_read_id} missing tags {missing_tags}")
+                    continue
             if self.skip_non_primary and (
                 not read_is_primary(read) or index_read_id in self._bam_idx
             ):
-                LOGGER.debug(f"{read.query_name} not primary")
+                LOGGER.debug(f"{index_read_id} not primary")
                 continue
             self.num_records += 1
             self._bam_idx[index_read_id].append(read_ptr)
@@ -279,9 +284,14 @@ class ReadIndexedBam:
                     "Could not extract BAM read. Ensure BAM file object was "
                     "closed before spawning process."
                 )
-            assert bam_read.query_name == read_id, (
+            index_read_id = (
+                bam_read.query_name
+                if self.read_id_converter is None
+                else self.read_id_converter(bam_read.query_name)
+            )
+            assert index_read_id == read_id, (
                 f"Read ID {read_id} does not match extracted BAM record "
-                f"{bam_read.query_name} at {read_ptr}. ReadIndexedBam may "
+                f"{index_read_id} at {read_ptr}. ReadIndexedBam may "
                 "be corrupted."
             )
             yield bam_read
