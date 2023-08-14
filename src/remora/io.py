@@ -174,7 +174,7 @@ class ReadIndexedBam:
     Args:
         bam_path (str): Path to BAM file
         skip_non_primary (bool): Should non-primary alignmets be skipped
-        req_tags (bool): Skip reads without required tags
+        req_tags (set): Skip reads without required tags
         read_id_converter (Callable[[str], str]): Function to convert read ids
             (e.g. for concatenated duplex read ids)
         read_ids_subset (set): Read IDs to include

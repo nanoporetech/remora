@@ -1400,9 +1400,15 @@ class CoreRemoraDataset:
             - self.metadata.kmer_context_bases[0]
         )
         if seq_diff > 0:
-            super_batch["sequence"][:, :-seq_diff] = super_batch["sequence"][
-                :, seq_diff:
-            ]
+            try:
+                super_batch["sequence"][:, :-seq_diff] = super_batch[
+                    "sequence"
+                ][:, seq_diff:]
+            except ValueError:
+                super_batch["sequence"] = super_batch["sequence"].copy()
+                super_batch["sequence"][:, :-seq_diff] = super_batch[
+                    "sequence"
+                ][:, seq_diff:]
         return super_batch
 
     def trim_sb_chunk_context(self, super_batch):
@@ -1427,7 +1433,16 @@ class CoreRemoraDataset:
         super_batch["signal"] = super_batch["signal"][:, :, st_diff:new_en]
         super_batch["signal"] = np.ascontiguousarray(super_batch["signal"])
 
-        super_batch["sequence_to_signal_mapping"] -= st_diff
+        try:
+            super_batch["sequence_to_signal_mapping"] -= st_diff
+        except ValueError:
+            super_batch["sequence_to_signal_mapping"] = (
+                super_batch["sequence_to_signal_mapping"].copy() - st_diff
+            )
+            super_batch["sequence"] = super_batch["sequence"].copy()
+            super_batch["sequence_lengths"] = super_batch[
+                "sequence_lengths"
+            ].copy()
         trim_sb_chunk_context_core(
             *self.metadata.stored_chunk_context,
             *self.metadata.chunk_context,
