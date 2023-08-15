@@ -1155,6 +1155,7 @@ class CoreRemoraDataset:
                     (k, loaded_metadata["extra_arrays"][k]) for k in md_val
                 )
             elif md_key == "chunk_context":
+                md_val = tuple(md_val)
                 scc = loaded_metadata["chunk_context"] = tuple(
                     loaded_metadata["chunk_context"]
                 )
@@ -1165,6 +1166,7 @@ class CoreRemoraDataset:
                     )
                 loaded_metadata["_stored_chunk_context"] = scc
             elif md_key == "kmer_context_bases":
+                md_val = tuple(md_val)
                 skcb = loaded_metadata["kmer_context_bases"] = tuple(
                     loaded_metadata["kmer_context_bases"]
                 )
@@ -1183,7 +1185,7 @@ class CoreRemoraDataset:
                     f"Overriding {md_key} from value "
                     f"'{loaded_metadata[md_key]}' to '{md_val}'"
                 )
-            loaded_metadata[md_key] = md_val
+                loaded_metadata[md_key] = md_val
         if loaded_metadata["dataset_start"] >= loaded_metadata["dataset_end"]:
             raise RemoraError("Loaded dataset is empty")
         if len(invalid_keys) > 0:
