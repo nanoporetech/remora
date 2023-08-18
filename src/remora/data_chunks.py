@@ -29,6 +29,7 @@ MISMATCH_ARRS = {
 MATCH_OPS = np.array(
     [True, False, False, False, False, False, False, True, True]
 )
+MATCH_OPS_SET = set(np.where(MATCH_OPS)[0])
 QUERY_OPS = np.array([True, True, False, False, True, False, False, True, True])
 REF_OPS = np.array([True, False, True, True, False, False, False, True, True])
 CIGAR_CODES = ["M", "I", "D", "N", "S", "H", "P", "=", "X"]
@@ -85,6 +86,10 @@ def make_sequence_coordinate_mapping(cigar):
             such that read_seq[x_i] <> ref_seq[i]. Note that ref_len is derived
             from the cigar input.
     """
+    while len(cigar) > 0 and cigar[-1][0] not in MATCH_OPS_SET:
+        cigar = cigar[:-1]
+    if len(cigar) == 0:
+        raise RemoraError("No match operations found in alignment cigar")
     ops, lens = map(np.array, zip(*cigar))
     assert ops.min() >= 0 and ops.max() <= 8, "invalid cigar op(s)"
     assert lens.min() >= 0, "cigar lengths may not be negative"
@@ -110,10 +115,6 @@ def make_sequence_coordinate_mapping(cigar):
 
 def compute_ref_to_signal(query_to_signal, cigar):
     ref_to_read_knots = make_sequence_coordinate_mapping(cigar)
-    assert query_to_signal.size == ref_to_read_knots[-1].astype(int) + 1, (
-        "discordant implied basecall lengths: move_table:"
-        f"{query_to_signal.size} cigar:{ref_to_read_knots[-1]}"
-    )
     return map_ref_to_signal(
         query_to_signal=query_to_signal, ref_to_query_knots=ref_to_read_knots
     )

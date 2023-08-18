@@ -1506,7 +1506,11 @@ class Read:
         tags = dict(alignment_record.tags)
         try:
             self.num_trimmed = tags["ts"]
-            self.dacs = self.dacs[self.num_trimmed :]
+            if self.num_trimmed > 0:
+                if reverse_signal:
+                    self.dacs = self.dacs[: -self.num_trimmed]
+                else:
+                    self.dacs = self.dacs[self.num_trimmed :]
         except KeyError:
             self.num_trimmed = 0
 
