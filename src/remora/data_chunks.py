@@ -1391,12 +1391,19 @@ class CoreRemoraDataset:
             )
         )
         shuf_indices = np.random.permutation(self.size)
-        for array in self.arrays:
+        for array_name in self.array_names:
+            LOGGER.debug(f"Shuffling {array_name} array")
+            # note that memmap array slice remains a reference to the memmap
+            # array so writes still apply here.
+            array = getattr(self, array_name)[
+                self.metadata.dataset_start : self.metadata.dataset_end
+            ]
             arr_copy = array.copy()
-            for b_st, b_en in b_ranges:
+            for b_idx, (b_st, b_en) in enumerate(b_ranges):
                 array[b_st : min(b_en, self.size)] = arr_copy[
                     shuf_indices[b_st:b_en]
                 ]
+                LOGGER.debug(f"{b_idx + 1}/{len(b_ranges)} batches complete")
 
     def trim_sb_kmer_context_bases(self, super_batch):
         """Trim super-batch sequence array to achieve loaded k-mer context
