@@ -1,6 +1,5 @@
 import re
 import os
-import gc
 import json
 import hashlib
 import dataclasses
@@ -1380,15 +1379,24 @@ class CoreRemoraDataset:
             )
         self.write_batch(chunk_dict)
 
-    def shuffle(self):
+    def shuffle(self, batch_size=100_000):
         # TODO add option to perform pseudo-shuffle without reading full
         # core arrays into memory.
         if self.mode != "w":
             raise RemoraError("Cannot write when mode is not 'w'")
+        b_ranges = list(
+            zip(
+                range(0, self.size, batch_size),
+                range(batch_size, self.size + batch_size, batch_size),
+            )
+        )
         shuf_indices = np.random.permutation(self.size)
         for array in self.arrays:
-            array = array[shuf_indices]
-            gc.collect()
+            arr_copy = array.copy()
+            for b_st, b_en in b_ranges:
+                array[b_st : min(b_en, self.size)] = arr_copy[
+                    shuf_indices[b_st:b_en]
+                ]
 
     def trim_sb_kmer_context_bases(self, super_batch):
         """Trim super-batch sequence array to achieve loaded k-mer context
