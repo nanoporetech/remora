@@ -1027,9 +1027,9 @@ class CoreRemoraDataset:
     def summary(self):
         return (
             f"                data_path : {self.data_path}\n"
-            f"                     size : {self.size}\n"
-            f"            dataset_start : {self.metadata.dataset_start}\n"
-            f"              dataset_end : {self.metadata.dataset_end}\n"
+            f"                     size : {self.size:,}\n"
+            f"            dataset_start : {self.metadata.dataset_start:,}\n"
+            f"              dataset_end : {self.metadata.dataset_end:,}\n"
             f"       label distribution : {self.label_summary}\n"
             "     modified_base_labels : "
             f"{self.metadata.modified_base_labels}\n"
@@ -1759,7 +1759,7 @@ class RemoraDataset(IterableDataset):
     @property
     def summary(self):
         return (
-            f"                     size : {self.size}\n"
+            f"                     size : {self.size:,}\n"
             "     modified_base_labels : "
             f"{self.metadata.modified_base_labels}\n"
             f"                mod_bases : {self.metadata.mod_bases}\n"
@@ -2137,8 +2137,8 @@ class RemoraDataset(IterableDataset):
             for ds_lc in ds_label_counts
         ]
         summ_strs = [
-            f"{ds_chunks_per_epoch/ds.size:.6%}\t{ds_chunks_per_epoch}\t"
-            f"{ds.size}\t"
+            f"{ds_chunks_per_epoch/ds.size:10.4%}\t{ds_chunks_per_epoch:,}\t"
+            f"{ds.size:,}\t"
             f"{ds_label_cols}\t"
             f"{ds.data_path}"
             for ds_chunks_per_epoch, ds, ds_label_cols in zip(
