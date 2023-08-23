@@ -344,6 +344,10 @@ def register_dataset_make_config(parser):
         will create config with weights equal to the size of each dataset
         (drawing chunks globally with equal probability)""",
     )
+    subparser.add_argument(
+        "--log-filename",
+        help="Log filename. Default: Don't output log file.",
+    )
     subparser.set_defaults(func=run_dataset_make_config)
 
 
@@ -358,6 +362,8 @@ def run_dataset_make_config(args):
         RemoraDataset,
     )
 
+    if args.log_filename is not None:
+        log.init_logger(args.log_filename)
     all_paths, all_weights = [], []
     for ds_path in args.dataset_paths:
         paths, weights, _ = load_dataset(ds_path)
@@ -372,6 +378,7 @@ def run_dataset_make_config(args):
     )
     with open(args.out_path, "w") as fh:
         json.dump(dataset.get_config(), fh)
+    LOGGER.info(dataset.summary)
 
 
 def register_dataset_inspect(parser):
