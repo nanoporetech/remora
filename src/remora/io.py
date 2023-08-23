@@ -1429,13 +1429,17 @@ class Read:
     @property
     def seq_len(self):
         if self.query_to_signal is None:
-            return None
+            if self.seq is None:
+                return None
+            return len(self.seq)
         return self.query_to_signal.size - 1
 
     @property
     def ref_seq_len(self):
         if self.ref_to_signal is None:
-            return None
+            if self.ref_seq is None:
+                return None
+            return len(self.ref_seq)
         return self.ref_to_signal.size - 1
 
     def with_duplex_alignment(self, duplex_read_alignment, duplex_orientation):
@@ -1522,6 +1526,7 @@ class Read:
                 reverse_signal=reverse_signal,
             )
         except KeyError:
+            LOGGER.debug(f"Move table not found for {self.read_id}")
             self.query_to_signal = self.mv_table = self.stride = None
 
         try:
@@ -1559,7 +1564,11 @@ class Read:
             if self.ref_seq is not None:
                 self.ref_seq = util.revcomp(self.ref_seq)
             self.cigar = self.cigar[::-1]
-        if self.ref_reg.ctg is not None and self.ref_seq is not None:
+        if (
+            self.ref_reg.ctg is not None
+            and self.ref_seq is not None
+            and self.query_to_signal is not None
+        ):
             self.ref_to_signal = DC.compute_ref_to_signal(
                 query_to_signal=self.query_to_signal,
                 cigar=self.cigar,
@@ -1603,7 +1612,7 @@ class Read:
         if use_reference_anchor:
             if self.ref_to_signal is None:
                 if self.cigar is None or self.ref_seq is None:
-                    raise RemoraError("missing reference alignment")
+                    raise RemoraError("Missing reference alignment")
                 self.ref_to_signal = DC.compute_ref_to_signal(
                     self.query_to_signal,
                     self.cigar,
@@ -1619,6 +1628,8 @@ class Read:
             shift_seq_to_sig = self.ref_to_signal - self.ref_to_signal[0]
             seq = self.ref_seq
         else:
+            if self.query_to_signal is None:
+                raise RemoraError("Missing query_to_signal (move table)")
             trim_dacs = self.dacs[
                 self.query_to_signal[0] : self.query_to_signal[-1]
             ]
@@ -1652,10 +1663,14 @@ class Read:
         remora_read = self.into_remora_read(ref_mapping)
         remora_read.refine_signal_mapping(sig_map_refiner)
         if ref_mapping:
+            if self.ref_to_signal is None:
+                raise RemoraError("Missing ref_to_signal (move table)")
             self.ref_to_signal = (
                 remora_read.seq_to_sig_map + self.ref_to_signal[0]
             )
         else:
+            if self.query_to_signal is None:
+                raise RemoraError("Missing query_to_signal (move table)")
             self.query_to_signal = (
                 remora_read.seq_to_sig_map + self.query_to_signal[0]
             )
@@ -1754,6 +1769,8 @@ class Read:
         Returns:
             ReadBasecallRegion object
         """
+        if self.query_to_signal is None:
+            raise RemoraError("Missing query_to_signal (move table)")
         start_base = start_base or 0
         end_base = end_base or self.seq_len
         reg_seq_to_sig = self.query_to_signal[start_base : end_base + 1].copy()
@@ -1779,9 +1796,7 @@ class Read:
             ReadRefReg object
         """
         if self.ref_to_signal is None:
-            raise RemoraError(
-                "Cannot extract reference region from unmapped read"
-            )
+            raise RemoraError("Missing ref_to_signal (move table)")
         if ref_reg.start >= self.ref_reg.start + self.ref_seq_len:
             raise RemoraError("Reference region starts after read ends")
         if ref_reg.end < self.ref_reg.start:
@@ -1840,7 +1855,8 @@ class Read:
             ref_anchored (bool): Compute metric against reference bases. If
                 False, return basecall anchored metrics.
             region (RefRegion): Reference region from which to extract metrics
-                of bases.
+                of bases. If ref_anchored is False, start and end coordinates
+                are in basecall sequence coordinates.
             signal_type (str): Type of signal. Should be one of: norm, pa, and
                 dac
             **kwargs: Extra args to pass through to metric computations
@@ -1859,8 +1875,12 @@ class Read:
             seq_to_sig = (
                 self.ref_to_signal if ref_anchored else self.query_to_signal
             )
+            if seq_to_sig is None:
+                raise RemoraError("Missing move table")
         else:
             if ref_anchored:
+                if self.ref_to_signal is None:
+                    raise RemoraError("Missing ref_to_signal (move table)")
                 if (
                     self.ref_reg.ctg != region.ctg
                     or self.ref_reg.strand != region.strand
@@ -1885,6 +1905,8 @@ class Read:
                     en_coord = self.ref_seq_len
                 seq_to_sig = self.ref_to_signal[st_coord : en_coord + 1]
             else:
+                if self.query_to_signal is None:
+                    raise RemoraError("Missing query_to_signal (move table)")
                 if region.start < 0 or region.start > self.seq_len:
                     raise RemoraError("Region does not overlap read.")
                 # TODO deal with partially overlapping region
