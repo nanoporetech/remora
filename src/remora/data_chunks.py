@@ -9,6 +9,7 @@ from itertools import chain
 
 import torch
 import numpy as np
+from tqdm import tqdm
 from torch.utils.data import IterableDataset
 
 from remora.refine_signal_map import SigMapRefiner
@@ -1386,7 +1387,7 @@ class CoreRemoraDataset:
             )
         self.write_batch(chunk_dict)
 
-    def shuffle(self, batch_size=100_000):
+    def shuffle(self, batch_size=100_000, show_prog=False):
         # TODO add option to perform pseudo-shuffle without reading full
         # core arrays into memory.
         if self.mode != "w":
@@ -1398,7 +1399,22 @@ class CoreRemoraDataset:
             )
         )
         shuf_indices = np.random.permutation(self.size)
+        if show_prog:
+            arr_pb = tqdm(
+                total=len(self.array_names),
+                smoothing=0,
+                position=0,
+                desc="Arrays",
+            )
         for array_name in self.array_names:
+            if show_prog:
+                b_pb = tqdm(
+                    total=len(b_ranges),
+                    smoothing=0,
+                    leave=False,
+                    position=1,
+                    desc="Batches",
+                )
             LOGGER.debug(f"Shuffling {array_name} array")
             # note that memmap array slice remains a reference to the memmap
             # array so writes still apply here.
@@ -1410,7 +1426,13 @@ class CoreRemoraDataset:
                 array[b_st : min(b_en, self.size)] = arr_copy[
                     shuf_indices[b_st:b_en]
                 ]
+                array.flush()
                 LOGGER.debug(f"{b_idx + 1}/{len(b_ranges)} batches complete")
+                if show_prog:
+                    b_pb.update()
+            if show_prog:
+                b_pb.close()
+                arr_pb.update()
 
     def adjust_batch_params(self):
         """Adjust super-batch parameters to be valid values. Including setting
@@ -1972,9 +1994,10 @@ class RemoraDataset(IterableDataset):
         super(RemoraDataset).__init__()
         self.datasets = datasets
         self.props = proportions
-        assert all(
-            0 <= prop <= 1 for prop in self.props
-        ), "Dataset proportions must be between 0 and 1."
+        if not all(0 <= prop <= 1 for prop in self.props):
+            raise RemoraError("Dataset proportions must be between 0 and 1.")
+        if len(self.datasets) != len(self.props):
+            raise RemoraError("Dataset and proportions must be same length.")
         self._hashes = hashes
         self.batch_size = batch_size
         self.super_batch_size = super_batch_size
