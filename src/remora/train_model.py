@@ -210,6 +210,7 @@ def train_model(
             )
 
     if ext_val is not None:
+        LOGGER.debug("Loading external test data")
         if ext_val_names is None:
             ext_val_names = [f"e_val_{idx}" for idx in range(len(ext_val))]
         else:
@@ -223,7 +224,6 @@ def train_model(
                     "do_check_super_batches": True,
                 },
                 batch_size=batch_size,
-                skip_hash=True,
                 super_batch_size=super_batch_size,
             )
             ext_val_ds.update_metadata(dataset)
@@ -266,7 +266,7 @@ def train_model(
         trn_ds,
         batch_size=None,
         pin_memory=True,
-        num_workers=8,
+        num_workers=2,
         persistent_workers=True,
         worker_init_fn=dataloader_worker_init,
     )

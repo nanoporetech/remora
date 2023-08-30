@@ -1279,6 +1279,13 @@ class CoreRemoraDataset:
                 ),
             )
 
+    def close_memmaps(self):
+        # in-memory dataset does not touch memmaps
+        if self.data_path is None:
+            return
+        for arr_name in self._core_arrays:
+            setattr(self, arr_name, None)
+
     def write_metadata(self):
         self.metadata.write(self.metadata_path, self.kmer_table_path)
 
@@ -1636,7 +1643,7 @@ def parse_dataset_config(config_path, used_configs=None):
     paths, weights, hashes = [], [], []
     config_path = util.resolve_path(config_path)
     if used_configs is None:
-        used_configs = set((config_path,))
+        used_configs = {config_path: config_path}
     with open(config_path) as config_fh:
         for ds_info in json.load(config_fh):
             if len(ds_info) == 2:
@@ -1665,10 +1672,11 @@ def parse_dataset_config(config_path, used_configs=None):
             else:
                 if ds_path in used_configs:
                     raise RemoraError(
-                        f"Circular dataset config refrence. {ds_path} "
-                        f"found in {config_path}"
+                        "Circular or repeated dataset config refrence. "
+                        f"{ds_path} found in {config_path} and previously "
+                        f"found in {used_configs[ds_path]}"
                     )
-                used_configs.add(ds_path)
+                used_configs[ds_path] = config_path
                 sub_paths, sub_weights, sub_hashs = parse_dataset_config(
                     ds_path, used_configs=used_configs
                 )
@@ -1815,7 +1823,7 @@ class RemoraDataset(IterableDataset):
                 ):
                     raise RemoraError(
                         f"All datasets must have same {attr_name} "
-                        f"{getattr(ds, attr_name)} != "
+                        f"{getattr(ds.metadata, attr_name)} != "
                         f"{getattr(self.metadata, attr_name)}"
                     )
             if set(ds.metadata.extra_array_names) != set(
@@ -1931,7 +1939,7 @@ class RemoraDataset(IterableDataset):
                 raise RemoraError(
                     f"Cannot update metadata with mismatching '{md_key}'. "
                     f"({getattr(self.metadata, md_key)} != "
-                    f"{getattr(other.metadata, md_key)}"
+                    f"{getattr(other.metadata, md_key)})"
                 )
         for ds in self.datasets:
             ds.update_metadata(other)
@@ -2084,6 +2092,8 @@ class RemoraDataset(IterableDataset):
             raise RemoraError("Cannot save all batches for infinite dataset")
         self._set_sub_ds_iters()
         self._all_batches = list(self.iter_batches())
+        for ds in self.datasets:
+            ds.close_memmaps()
 
     def __iter__(self):
         if self._all_batches is not None:
@@ -2101,6 +2111,11 @@ class RemoraDataset(IterableDataset):
 
     def get_label_counts(self):
         label_counts = np.zeros(self.metadata.num_labels, dtype=int)
+        if self._all_batches is not None:
+            for _, _, b_labels in self._all_batches:
+                for idx, idx_cnt in enumerate(np.bincount(b_labels)):
+                    label_counts[idx] += idx_cnt
+            return label_counts
         for ds in self.datasets:
             for idx, count in enumerate(ds.get_label_counts()):
                 label_counts[idx] += count
@@ -2128,12 +2143,23 @@ class RemoraDataset(IterableDataset):
             batches_per_epoch * ds_chunks_per_batch
             for ds_chunks_per_batch in self.batch_sizes
         ]
-        ds_label_counts = [
-            dict(zip(ds.metadata.labels, ds.get_label_counts()))
-            for ds in self.datasets
-        ]
+        if self._all_batches is not None:
+            ds_label_counts = [
+                dict((lab, "NA") for lab in self.metadata.labels)
+                for ds in self.datasets
+            ]
+        else:
+            ds_label_counts = [
+                dict(
+                    zip(
+                        ds.metadata.labels,
+                        [f"{lc:,}" for lc in ds.get_label_counts()],
+                    )
+                )
+                for ds in self.datasets
+            ]
         dss_label_cols = [
-            "\t".join(f"{ds_lc.get(lab, 0):,}" for lab in self.metadata.labels)
+            "\t".join(ds_lc.get(lab, "0") for lab in self.metadata.labels)
             for ds_lc in ds_label_counts
         ]
         summ_strs = [
