@@ -63,7 +63,7 @@ def prepare_out_dir(out_dir, overwrite):
         elif out_path.exists():
             out_path.unlink()
     elif out_path.exists():
-        raise RemoraError("Refusing to overwrite existing training directory.")
+        raise RemoraError("Refusing to overwrite existing directory.")
     out_path.mkdir(parents=True, exist_ok=True)
     log.init_logger(os.path.join(out_path, "log.txt"))
 

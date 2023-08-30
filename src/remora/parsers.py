@@ -427,6 +427,7 @@ def register_dataset_merge(parser):
 
 def run_dataset_merge(args):
     import numpy as np
+    from tqdm import tqdm
 
     from remora.data_chunks import (
         load_dataset,
@@ -465,15 +466,25 @@ def run_dataset_merge(args):
         metadata=merged_metadata,
     )
     merged_dataset.write_metadata()
-    for ds in dataset.datasets:
-        ds.adjust_batch_params()
+    LOGGER.info("Copying datasets")
+    for ds in tqdm(dataset.datasets, smoothing=0, desc="Datasets"):
+        chunks_per_sb, _ = ds.adjust_batch_params()
+        total_sbs = ds.size // chunks_per_sb
         LOGGER.debug(f"Adding dataset from {ds.data_path}")
-        for sb in ds.iter_super_batches():
+        for sb_idx, sb in tqdm(
+            enumerate(ds.iter_super_batches()),
+            smoothing=0,
+            total=total_sbs,
+            leave=False,
+            position=1,
+            desc="Batches",
+        ):
             merged_dataset.write_batch(sb)
             merged_dataset.flush()
             merged_dataset.write_metadata()
+            LOGGER.debug(f"{sb_idx + 1}/{total_sbs} super batches complete")
     LOGGER.info("Shuffling dataset")
-    merged_dataset.shuffle()
+    merged_dataset.shuffle(show_prog=True)
     LOGGER.info(f"Saved core dataset:\n{merged_dataset.summary}")
 
 
