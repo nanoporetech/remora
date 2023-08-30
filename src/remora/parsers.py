@@ -370,6 +370,11 @@ def run_dataset_make_config(args):
         all_paths.extend(paths)
         if not args.equal_weights:
             weights *= sum([CoreRemoraDataset(path).size for path in paths])
+        if any(weights == 0):
+            empty_datasets = ", ".join(
+                [p for p, w in zip(paths, weights) if w == 0]
+            )
+            raise RemoraError(f"Encountered empty dataset: {empty_datasets}")
         all_weights.extend(weights)
     all_weights = np.array(all_weights)
     dataset = RemoraDataset(
