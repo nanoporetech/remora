@@ -545,6 +545,7 @@ class ReadRefReg:
             self.norm_signal,
             self.seq_to_sig_map,
             rev_strand=self.ref_reg.strand == "-",
+            xlab="Reference Position",
             **kwargs,
         )
 
@@ -1025,6 +1026,7 @@ def plot_on_base_coords(
     levels_lw=8,
     ylim=None,
     t_as_u=False,
+    xlab="Base Position",
 ):
     """Plot a single read on base/sequence coordinates.
 
@@ -1092,7 +1094,7 @@ def plot_on_base_coords(
         )
     ax.set_ylim(*ylim)
     ax.set_ylabel("Normalized Signal", fontsize=45)
-    ax.set_xlabel("Base Position", fontsize=45)
+    ax.set_xlabel(xlab, fontsize=45)
     ax.tick_params(labelsize=36)
     return fig, ax
 

@@ -31,8 +31,8 @@ def run():
     """The main routine."""
     # prepare first level `remora -h` help, including description.
     desc = (
-        "********** Remora *********\n\nModified base model training and "
-        "application.\n\n"
+        "********** Remora *********\n\nModified base data preparation and "
+        "model training.\n\n"
     )
     parser = argparse.ArgumentParser(
         prog="remora",
