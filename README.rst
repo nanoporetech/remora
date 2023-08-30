@@ -6,7 +6,7 @@
 Remora
 """"""
 
-Remora models predict methylation/modified base separated from basecalling.
+Remora models predict methylation/modified base status separated from basecalling.
 The Remora repository is focused on the preparation of modified base training data and training modified base models.
 Some functionality for running Remora models and investigation of raw signal is also provided.
 For production modified base calling use `Dorado <https://github.com/nanoporetech/dorado>`_.
@@ -51,7 +51,7 @@ A fixed position within the chunk is defined as the "focus position" around whic
 By default, this position is the center of the "focus base" being interrogated by the model.
 
 The canonical bases and mapping to signal (a.k.a. "move table") are combined for input into the neural network in several steps.
-First each base is expanded to the k-mer surrounding that base (as defined by the ``--kmer-context-bases`` hyper parameter).
+First each base is expanded to the k-mer surrounding that base (as defined by the ``--kmer-context-bases`` hyper-parameter).
 Then each k-mer is expanded according to the move table.
 Finally each k-mer is one-hot encoded for input into the neural network.
 This procedure is depicted in the figure below.
@@ -65,9 +65,10 @@ Data Preparation
 
 Remora data preparation begins from a POD5 file containing signal data and a BAM file containing basecalls from the POD5 file.
 Note that the BAM file must contain the move table (``--emit-moves`` in Dorado) and the MD tag (default in Dorado with mapping and ``--MD`` argument for minimap2).
+If using minimap2 for alignment use ``samtools fastq -T "*" [in.bam] | minimap2 -y -ax map-ont [ref.fa] - | samtools view -b -o [out.bam]`` in order to transfer the move table tags through the alignment step since minimap2 does not support SAM/BAM input.
 
-The following example generates training data from canonical (PCR) and modified (M.SssI treatment) samples in the same fashion as the releasd 5mC CG-context models.
-Example reads can be found in the Remora respoitory (see ``test/data/`` directory).
+The following example generates training data from canonical (PCR) and modified (M.SssI treatment) samples in the same fashion as the released 5mC CG-context models.
+Example reads can be found in the Remora repository (see ``test/data/`` directory).
 
 K-mer tables for applicable conditions can be found in the `kmer_models repository <https://github.com/nanoporetech/kmer_models>`_.
 
@@ -93,26 +94,38 @@ K-mer tables for applicable conditions can be found in the `kmer_models reposito
     --mod-base m 5mC
 
 The above commands each produce a core Remora dataset stored in the directory defined by ``--output-path``.
-Each core dataset contains a memory mapped numpy file for each core array (chunk data) and a JSON format metadata config file.
+Core datasets contain memory mapped numpy files for each core array (chunk data) and a JSON format metadata config file.
 These memory mapped files allow efficient access to very large datasets.
 
 Before Remora, 3.0 datasets were stored as numpy array dictionaries.
 Updating datasets can be accomplished with the ``scripts/update_dataset.py`` script included in the repository.
 
+Composing Datasets
+******************
+
+Core datasets (or other composed datasets) can be composed to produce a new dataset.
+The ``remora dataset make_config`` command creates these config files specifying the composition of the new dataset.
+When reading batches from these combined datasets, the default behavior will be to draw chunks randomly from the entire set of chunks.
+This setting is useful for multiple flowcells of the same condition.
+
+The ``--dataset-weights`` argument produces a config which generates batches with a fixed proportion of chunks from each input dataset.
+This setting is useful when combining different data types, for example control and modified datasets.
+
+In addition, the ``remora dataset merge`` command is supplied to merge datasets, copying the data into a new core Remora dataset.
+This may increase efficiency of data access for datasets composed of many core datasets, but only supports the default behavior from the ``make_config`` command.
+
+Composed dataset config files can also be specified manually.
+Config files are JSON format files containing a single list, where each element is a list of two items.
+The first is the path to the dataset and the second is the weight (must be a positive value).
+The ``make_config`` output config file will also contain the dataset hash to ensure the contents of a dataset are unchanged, but this is an optional third field in the config.
+
+Metadata attributes from each core dataset are checked for compatibility and merged where applicable.
+Chunk raw data are loaded from each core dataset at specified proportions to construct batches at loading time.
+In a break from Remora <3.0, datasets allow "infinite iteration", where each core dataset is drawn from indefinitely and independently to supply training chunks.
+For validation from a fixed set of chunks, finite iteration is also supported.
+
 Model Training
 --------------
-
-Core datasets can be combined at training time via a JSON-format config file.
-Datasets can even be merged hierarchically (a training dataset config may point to a core dataset or another config).
-Metadata attributes are checked for compatibility and merged at training dataset loading time.
-Chunk raw data are loaded from each core dataset at specified proportions to construct batches for training.
-
-A training dataset config can be constructed from the above datasets with the following command.
-The ``1`` weights will produce training batches with equal numbers of chunks from the two core datasets.
-
-.. code-block:: bash
-
-  echo '[["./can_chunks", 1], ["./mod_chunks", 1]]' > train_dataset.jsn
 
 Models are trained with the ``remora model train`` command.
 For example a model can be trained with the following command.
@@ -133,6 +146,7 @@ Model Inference
 ---------------
 
 For testing purposes inference within Remora is provided.
+Note that for large scale using the exported Dorado model during basecalling is recommended.
 
 .. code-block:: bash
 
@@ -151,8 +165,9 @@ For testing purposes inference within Remora is provided.
     --out-file mod_infer.bam \
     --device 0
 
-Finally, ``Remora`` provides tools to validate these results.
-Ground truth BED files references positions where each read should be called as the modified or canonical base listed in the BED name field.
+Finally, Remora provides tools to validate these results.
+Ground truth `BED files <http://useast.ensembl.org/info/website/upload/bed.html>`_ reference positions where each read should be called as the modified or canonical base listed in the BED name field.
+Note in the test files where the control file has a ``C`` in the name field, while the modified BED file has ``m`` (single letter code for 5mC) in the name field.
 
 .. code-block:: bash
 
@@ -172,47 +187,17 @@ Models may be run from `Bonito <https://github.com/nanoporetech/bonito>`_.
 See Bonito documentation to apply Remora models.
 
 More advanced research models may be supplied via `Rerio <https://github.com/nanoporetech/rerio>`_.
+These files require download from Rerio and then the path to this download must be provided to Remora.
 Note that older ONNX format models require Remora version < 2.0.
 
 Python API and Raw Signal Analysis
 ----------------------------------
 
-The Remora API can be applied to make modified base calls given a basecalled read via a ``RemoraRead`` object.
-
-* ``dacs`` (Data acquisition values) should be an int16 numpy array.
-* ``shift`` and ``scale`` are float values to convert dacs to mean=0 SD=1 scaling (or similar) for input to the Remora neural network.
-* ``str_seq`` is a string derived from ``sig`` (can be either basecalls or other downstream derived sequence; e.g. mapped reference positions).
-* ``seq_to_sig_map`` should be an int32 numpy array of length ``len(seq) + 1`` and elements should be indices within ``sig`` array assigned to each base in ``seq``.
-
-.. code-block:: python
-
-  from remora.model_util import load_model
-  from remora.data_chunks import RemoraRead
-  from remora.inference import call_read_mods
-
-  model, model_metadata = load_model("remora_train_results/model_best.pt")
-  read = RemoraRead(dacs, shift, scale, seq_to_sig_map, str_seq=seq)
-  mod_probs, _, pos = call_read_mods(
-    read,
-    model,
-    model_metadata,
-    return_mod_probs=True,
-  )
-
-``mod_probs`` will contain the probability of each modeled modified base as found in model_metadata["mod_long_names"].
-For example, run ``mod_probs.argmax(axis=1)`` to obtain the prediction for each input unit.
-``pos`` contains the position (index in input sequence) for each prediction within ``mod_probs``.
-
-The python API also enables access to per-read, per-site raw signal metrics for more advanced statistical analysis.
-This API is primarily accessed via the ``remora.io.Read`` object.
-
-The iPython notebooks (see ``notebooks`` directory) included in this repository exemplify some common analyses.
-
-Raw signal plotting is also available via the ``remora analyze plot ref_region`` command.
-Additional commands will be added to this group to enable more common raw signal analysis tasks.
+Raw signal plotting is available via the ``remora analyze plot ref_region`` command.
 
 The ``plot ref_region`` command is useful for gaining intuition into signal attributes and visualize signal shifts around modified bases.
 As an example using the test data, the following command produces the plots below.
+Note that only a single POD5 file per sample is allowed as input and that the BAM records must contain the ``mv`` and ``MD`` tags (see the see "Data Preparation" section above for details).
 
 .. code-block:: bash
 
@@ -233,6 +218,24 @@ As an example using the test data, the following command produces the plots belo
 .. image:: images/plot_ref_region_rev.png
    :width: 600
    :alt: Plot reference region image (reverse strand)
+
+The Remora API has a simple interface to access and manipulate a nanopore read including signal, basecalls, reference mapping and links between each of these.
+The ``remora.io.Read`` object is the core object for joining these data types.
+The ``remora.io.Read.from_pod5_and_alignment`` class method is the simplest interface to initialize the object.
+This method takes ``pod5.Read`` and ``pysam.AlignedSegment`` objects as input.
+Remora also provides a method to generate an in-memory index of a BAM file (``remora.io.ReadIndexedBam``) for random access by read ID.
+
+Note that the input BAM file should contain ``mv`` (move table) and ``MD`` tags in order to access signal and reference information respectively.
+See the see "Data Preparation" section above for details.
+
+The ``notebooks/read_plotting.ipynb`` notebook included with this repository exemplifies some of the functionality provided via the ``io.Read`` object.
+
+A ``remora.data_chunks.RemoraRead`` object can extracted from an ``io.Read`` object with the ``into_remora_read`` method.
+The ``RemoraRead`` object is more specialized to contain just the information needed to create chunks for input into Remora modified base models.
+The ``RemoraRead`` object can be generated from either basecalled sequence or reference sequence via the ``use_reference_anchor``.
+The ``remora.inference.call_read_mods`` function runs a Remora model on a ``RemoraRead`` returning the probabilities for each modeled base and positions of those bases.
+
+The ``remora.io.Read`` API also enables access to per-read, per-site raw signal metrics for more advanced statistical analysis.
 
 Terms and Licence
 -----------------

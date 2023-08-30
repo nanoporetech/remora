@@ -1412,6 +1412,47 @@ class CoreRemoraDataset:
                 ]
                 LOGGER.debug(f"{b_idx + 1}/{len(b_ranges)} batches complete")
 
+    def adjust_batch_params(self):
+        """Adjust super-batch parameters to be valid values. Including setting
+        super batch size to no larger than the dataset and
+        """
+        if self.super_batch_size > self.size:
+            self.super_batch_size = self.size
+        if self.super_batch_sample_frac is None:
+            sb_select_num_chunks = None
+            chunks_per_sb = self.super_batch_size
+        else:
+            prev_batch_size = self.batch_size
+            prev_sb_size = self.super_batch_size
+            # round up to next number batch size and adjust other batch attrs
+            # accordingly
+            sb_select_num_chunks = int(
+                np.ceil(
+                    self.super_batch_size
+                    * self.super_batch_sample_frac
+                    / self.batch_size
+                )
+                * self.batch_size
+            )
+            if sb_select_num_chunks > self.super_batch_size:
+                sb_select_num_chunks -= self.batch_size
+            if sb_select_num_chunks == 0:
+                self.batch_size = int(
+                    self.super_batch_size * self.super_batch_sample_frac
+                )
+                sb_select_num_chunks = self.batch_size
+            if self.super_batch_sample_frac == 1.0:
+                # allow ragged batch from finite iterator if frac is 1.0
+                self.super_batch_size = sb_select_num_chunks
+            chunks_per_sb = sb_select_num_chunks
+            LOGGER.debug(
+                f"Adjusted values for super_batch_sample_frac: "
+                f"{self.super_batch_sample_frac}\tbatch_size: "
+                f"{prev_batch_size}->{self.batch_size}\tsuper_batch_size: "
+                f"{prev_sb_size}->{self.super_batch_size}"
+            )
+        return chunks_per_sb, sb_select_num_chunks
+
     def trim_sb_kmer_context_bases(self, super_batch):
         """Trim super-batch sequence array to achieve loaded k-mer context
         bases. Note that the end trimming is applied at the encoded k-mer
@@ -1579,41 +1620,7 @@ class CoreRemoraDataset:
         return batch
 
     def iter_batches(self, max_batches=None):
-        if self.super_batch_size > self.size:
-            self.super_batch_size = self.size
-        if self.super_batch_sample_frac is None:
-            sb_select_num_chunks = None
-            chunks_per_sb = self.super_batch_size
-        else:
-            prev_batch_size = self.batch_size
-            prev_sb_size = self.super_batch_size
-            # round up to next number batch size and adjust other batch attrs
-            # accordingly
-            sb_select_num_chunks = int(
-                np.ceil(
-                    self.super_batch_size
-                    * self.super_batch_sample_frac
-                    / self.batch_size
-                )
-                * self.batch_size
-            )
-            if sb_select_num_chunks > self.super_batch_size:
-                sb_select_num_chunks -= self.batch_size
-            if sb_select_num_chunks == 0:
-                self.batch_size = int(
-                    self.super_batch_size * self.super_batch_sample_frac
-                )
-                sb_select_num_chunks = self.batch_size
-            if self.super_batch_sample_frac == 1.0:
-                # allow ragged batch from finite iterator if frac is 1.0
-                self.super_batch_size = sb_select_num_chunks
-            chunks_per_sb = sb_select_num_chunks
-            LOGGER.debug(
-                f"Adjusted values for super_batch_sample_frac: "
-                f"{self.super_batch_sample_frac}\tbatch_size: "
-                f"{prev_batch_size}->{self.batch_size}\tsuper_batch_size: "
-                f"{prev_sb_size}->{self.super_batch_size}"
-            )
+        chunks_per_sb, sb_select_num_chunks = self.adjust_batch_params()
         super_batches = self.iter_super_batches(sb_select_num_chunks)
         batch_num = 0
         for super_batch in super_batches:

@@ -56,13 +56,14 @@ def register_dataset(parser):
     register_dataset_prepare(ssubparser)
     register_dataset_inspect(ssubparser)
     register_dataset_make_config(ssubparser)
+    register_dataset_merge(ssubparser)
 
 
 def register_dataset_prepare(parser):
     subparser = parser.add_parser(
         "prepare",
-        description="Prepare Remora training dataset",
-        help="Prepare Remora training dataset.",
+        description="Prepare a core Remora dataset",
+        help="Prepare a core Remora dataset",
         formatter_class=SubcommandHelpFormatter,
     )
     subparser.add_argument(
@@ -323,8 +324,10 @@ def run_dataset_prepare(args):
 def register_dataset_make_config(parser):
     subparser = parser.add_parser(
         "make_config",
-        description="Create a dataset config file",
-        help="Create a dataset config file",
+        description="""Create Remora dataset from core datasets. This will not
+        copy data. The config file points to the core datasets and generates
+        batches with specified proportions from each core dataset.""",
+        help="Create Remora dataset from core datasets",
         formatter_class=SubcommandHelpFormatter,
     )
     subparser.add_argument(
@@ -338,11 +341,13 @@ def register_dataset_make_config(parser):
         another config""",
     )
     subparser.add_argument(
-        "--equal-weights",
-        action="store_true",
-        help="""Should sub-datasets be combined with equal weight? Default
-        will create config with weights equal to the size of each dataset
-        (drawing chunks globally with equal probability)""",
+        "--dataset-weights",
+        type=float,
+        nargs="+",
+        help="""Specify weights to apply to each input dataset. Must be the
+        same length as the input datasets if provided. Default will create
+        config with weights equal to the size of each dataset (drawing chunks
+        globally with equal probability)""",
     )
     subparser.add_argument(
         "--log-filename",
@@ -364,26 +369,112 @@ def run_dataset_make_config(args):
 
     if args.log_filename is not None:
         log.init_logger(args.log_filename)
-    all_paths, all_weights = [], []
-    for ds_path in args.dataset_paths:
+    if args.dataset_weights is not None:
+        if len(args.dataset_weights) != len(args.dataset_paths):
+            raise RemoraError("Weights must be same length as input datasets.")
+        if any(w <= 0 for w in args.dataset_weights):
+            raise RemoraError("Weights must be positive.")
+    core_paths, core_weights = [], []
+    for ds_idx, ds_path in enumerate(args.dataset_paths):
         paths, weights, _ = load_dataset(ds_path)
-        all_paths.extend(paths)
-        if not args.equal_weights:
-            weights *= sum([CoreRemoraDataset(path).size for path in paths])
         if any(weights == 0):
             empty_datasets = ", ".join(
                 [p for p, w in zip(paths, weights) if w == 0]
             )
             raise RemoraError(f"Encountered empty dataset: {empty_datasets}")
-        all_weights.extend(weights)
-    all_weights = np.array(all_weights)
+        core_paths.extend(paths)
+        if args.dataset_weights is None:
+            weights *= sum([CoreRemoraDataset(path).size for path in paths])
+        else:
+            weights *= args.dataset_weights[ds_idx]
+        core_weights.extend(weights)
+    core_weights = np.array(core_weights)
     dataset = RemoraDataset(
-        [CoreRemoraDataset(path) for path in all_paths],
-        all_weights / all_weights.sum(),
+        [CoreRemoraDataset(path) for path in core_paths],
+        core_weights / core_weights.sum(),
     )
     with open(args.out_path, "w") as fh:
         json.dump(dataset.get_config(), fh)
     LOGGER.info(dataset.summary)
+
+
+def register_dataset_merge(parser):
+    subparser = parser.add_parser(
+        "merge",
+        description="""Merge core Remora datasets. This will duplicate the data
+        on disk, but allow more efficient data access. Also note that chunks
+        are selected randomly from merged datasets.""",
+        help="Merge core Remora datasets",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    subparser.add_argument(
+        "out_path",
+        help="Path to save new dataset.",
+    )
+    subparser.add_argument(
+        "dataset_paths",
+        nargs="+",
+        help="""Remora training dataset. May be either a core Remora dataset or
+        another config""",
+    )
+    subparser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing output directory if existing.",
+    )
+    subparser.set_defaults(func=run_dataset_merge)
+
+
+def run_dataset_merge(args):
+    import numpy as np
+
+    from remora.data_chunks import (
+        load_dataset,
+        CoreRemoraDataset,
+        RemoraDataset,
+    )
+    from remora.util import prepare_out_dir
+
+    prepare_out_dir(args.out_path, args.overwrite)
+    all_paths = [
+        sub_ds_path
+        for ds_path in args.dataset_paths
+        for sub_ds_path in load_dataset(ds_path)[0]
+    ]
+    dataset = RemoraDataset(
+        [
+            CoreRemoraDataset(
+                path, infinite_iter=False, do_check_super_batches=True
+            )
+            for path in all_paths
+        ],
+        np.ones(len(all_paths)),
+    )
+    LOGGER.info(f"Loaded dataset:\n{dataset.summary}")
+    merged_metadata = dataset.metadata.copy()
+    merged_metadata.allocate_size = sum(ds.size for ds in dataset.datasets)
+    merged_metadata.max_seq_len = max(
+        ds.metadata.max_seq_len for ds in dataset.datasets
+    )
+    merged_metadata.dataset_start = 0
+    merged_metadata.dataset_end = 0
+
+    merged_dataset = CoreRemoraDataset(
+        data_path=args.out_path,
+        mode="w",
+        metadata=merged_metadata,
+    )
+    merged_dataset.write_metadata()
+    for ds in dataset.datasets:
+        ds.adjust_batch_params()
+        LOGGER.debug(f"Adding dataset from {ds.data_path}")
+        for sb in ds.iter_super_batches():
+            merged_dataset.write_batch(sb)
+            merged_dataset.flush()
+            merged_dataset.write_metadata()
+    LOGGER.info("Shuffling dataset")
+    merged_dataset.shuffle()
+    LOGGER.info(f"Saved core dataset:\n{merged_dataset.summary}")
 
 
 def register_dataset_inspect(parser):
@@ -690,8 +781,8 @@ def run_model_train(args):
 def register_model_export(parser):
     subparser = parser.add_parser(
         "export",
-        description="Export a model to TorchScript format for inference.",
-        help="Export a model to TorchScript format for inference.",
+        description="Export a model to TorchScript format for inference",
+        help="Export a model to TorchScript format for inference",
         formatter_class=SubcommandHelpFormatter,
     )
     subparser.add_argument(
@@ -748,8 +839,8 @@ def run_model_export(args):
 def register_model_list_pretrained(parser):
     subparser = parser.add_parser(
         "list_pretrained",
-        description="List pre-trained modified base models.",
-        help="List pre-trained modified base models.",
+        description="List pre-trained modified base models",
+        help="List pre-trained modified base models",
         formatter_class=SubcommandHelpFormatter,
     )
     subparser.add_argument("--pore", help="specify pore type")
@@ -796,8 +887,8 @@ def run_list_pretrained(args):
 def register_model_download(parser):
     subparser = parser.add_parser(
         "download",
-        description="Download pre-trained modified base models.",
-        help="Download pre-trained modified base models.",
+        description="Download pre-trained modified base models",
+        help="Download pre-trained modified base models",
         formatter_class=SubcommandHelpFormatter,
     )
     subparser.add_argument("--pore", help="specify pore type")
