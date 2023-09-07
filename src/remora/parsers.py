@@ -374,9 +374,9 @@ def run_dataset_make_config(args):
             raise RemoraError("Weights must be same length as input datasets.")
         if any(w <= 0 for w in args.dataset_weights):
             raise RemoraError("Weights must be positive.")
-    core_paths, core_weights = [], []
+    core_paths, core_weights, core_hashes = [], [], []
     for ds_idx, ds_path in enumerate(args.dataset_paths):
-        paths, weights, _ = load_dataset(ds_path)
+        paths, weights, hashes = load_dataset(ds_path)
         if any(weights == 0):
             empty_datasets = ", ".join(
                 [p for p, w in zip(paths, weights) if w == 0]
@@ -388,10 +388,15 @@ def run_dataset_make_config(args):
         else:
             weights *= args.dataset_weights[ds_idx]
         core_weights.extend(weights)
+        if hashes is None or core_hashes is None:
+            core_hashes = None
+            continue
+        core_hashes.extend(hashes)
     core_weights = np.array(core_weights)
     dataset = RemoraDataset(
         [CoreRemoraDataset(path) for path in core_paths],
         core_weights / core_weights.sum(),
+        core_hashes,
     )
     with open(args.out_path, "w") as fh:
         json.dump(dataset.get_config(), fh)
