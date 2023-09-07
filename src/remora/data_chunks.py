@@ -1788,7 +1788,9 @@ class RemoraDataset(IterableDataset):
 
     @property
     def hashes(self):
-        if self._hashes is None:
+        if self._hashes is None or any(
+            ds_hash is None for ds_hash in self._hashes
+        ):
             LOGGER.debug("Computing dataset hashes")
             self._hashes = [ds.hash(ds.data_path) for ds in self.datasets]
         return self._hashes
@@ -2005,6 +2007,13 @@ class RemoraDataset(IterableDataset):
         self.seed = seed
 
         self.batch_sizes = compute_best_split(batch_size, proportions)
+        bs_str = "\n".join(
+            (
+                f"{bs}\t{ds.data_path}"
+                for bs, ds in zip(self.batch_sizes, self.datasets)
+            )
+        )
+        LOGGER.debug(f"Dataset batch sizes:\n{bs_str}")
         # RemoraDataset is infinite iter if all core datasets are infinite
         self.infinite_iter = all(ds.infinite_iter for ds in self.datasets)
         self.set_global_metadata()

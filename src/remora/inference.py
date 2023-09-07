@@ -92,6 +92,7 @@ def prepare_reads(read_errs, model_metadata, ref_anchored):
         )
         if len(chunks) == 0:
             out_read_errs.append((None, None, "No mod calls"))
+            continue
         # clear larger memory arrays (for quicker queue transfer)
         io_read.sig_len = io_read.dacs.size
         io_read.dacs = None
@@ -139,6 +140,7 @@ def prep_nn_input(read_errs):
     for io_read, read_dataset, err in read_errs:
         if err is not None:
             read_nn_inputs.append((io_read, None, err))
+            continue
         r_chunks = next(iter(read_dataset))
         del r_chunks["labels"]
         read_nn_inputs.append((io_read, r_chunks, None))
