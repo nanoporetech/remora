@@ -189,7 +189,9 @@ class RemoraRead:
     @property
     def sig(self):
         if self._sig is None:
-            self._sig = (self.dacs - self.shift) / self.scale
+            self._sig = ((self.dacs - self.shift) / self.scale).astype(
+                np.float32
+            )
         return self._sig
 
     @property
@@ -580,6 +582,12 @@ class Chunk:
                 f"FAILED_CHUNK: no_sig {self.read_id} {self.read_focus_base}"
             )
             raise RemoraError("No signal for chunk")
+        if np.any(np.isnan(self.signal)):
+            LOGGER.debug(
+                f"FAILED_CHUNK: NaN signal {self.read_id} "
+                f"{self.read_focus_base}"
+            )
+            raise RemoraError("Signal contains NaN")
         if (
             self.seq_w_context.size - sum(self.kmer_context_bases)
             != self.seq_to_sig_map.size - 1
