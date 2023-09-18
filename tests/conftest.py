@@ -319,6 +319,90 @@ def chunks(tmpdir_factory, can_chunks, mod_chunks):
     return chunks_path
 
 
+@pytest.fixture(scope="session")
+def mod_chebi_chunks(tmpdir_factory, mod_pod5, mod_mappings):
+    """Run `remora dataset prepare` on modified data with chebi code."""
+    print("\nRunning `remora dataset prepare` on modified data")
+    out_dir = tmpdir_factory.mktemp("remora_tests")
+    chunks_path = out_dir / "mod_chebi_chunks"
+    print(f"Output file: {chunks_path}")
+    check_call(
+        [
+            "remora",
+            "dataset",
+            "prepare",
+            str(mod_pod5),
+            str(mod_mappings),
+            "--output-path",
+            str(chunks_path),
+            "--mod-base",
+            "27551",
+            "5-methylcytosine",
+            "--motif",
+            "CG",
+            "0",
+            "--num-extract-alignment-workers",
+            "1",
+            "--num-extract-chunks-workers",
+            "1",
+        ],
+    )
+    return chunks_path
+
+
+@pytest.fixture(scope="session")
+def mod_chebi2_chunks(tmpdir_factory, mod_pod5, mod_mappings):
+    """Run `remora dataset prepare` on modified data with chebi code."""
+    print("\nRunning `remora dataset prepare` on modified data")
+    out_dir = tmpdir_factory.mktemp("remora_tests")
+    chunks_path = out_dir / "mod_chebi_chunks"
+    print(f"Output file: {chunks_path}")
+    check_call(
+        [
+            "remora",
+            "dataset",
+            "prepare",
+            str(mod_pod5),
+            str(mod_mappings),
+            "--output-path",
+            str(chunks_path),
+            "--mod-base",
+            "76792",
+            "5-hydroxymethylcytosine",
+            "--motif",
+            "CG",
+            "0",
+            "--num-extract-alignment-workers",
+            "1",
+            "--num-extract-chunks-workers",
+            "1",
+        ],
+    )
+    return chunks_path
+
+
+@pytest.fixture(scope="session")
+def chebi_chunks(
+    tmpdir_factory, can_chunks, mod_chunks, mod_chebi_chunks, mod_chebi2_chunks
+):
+    """Run `remora dataset merge`."""
+    out_dir = tmpdir_factory.mktemp("remora_tests")
+    chunks_path = out_dir / "chunks.cfg"
+    check_call(
+        [
+            "remora",
+            "dataset",
+            "make_config",
+            chunks_path,
+            str(can_chunks),
+            str(mod_chunks),
+            str(mod_chebi_chunks),
+            str(mod_chebi2_chunks),
+        ],
+    )
+    return chunks_path
+
+
 ########################
 # Train Model Fixtures #
 ########################
@@ -391,6 +475,33 @@ def fw_mod_model_dir(fw_model_path, tmpdir_factory, chunks, train_cli_args):
             "model",
             "train",
             str(chunks),
+            "--output-path",
+            str(out_dir),
+            "--model",
+            str(fw_model_path),
+            *train_cli_args,
+        ],
+    )
+    return out_dir
+
+
+@pytest.fixture(scope="session")
+def fw_mod_chebi_model_dir(
+    fw_model_path, tmpdir_factory, chebi_chunks, train_cli_args
+):
+    """Run `train_model` on the command line."""
+    print(
+        f"\nRunning command line `remora train_model` with model "
+        f"{fw_model_path}"
+    )
+    out_dir = tmpdir_factory.mktemp("remora_tests") / "train_mod_model"
+    print(f"Output file: {out_dir}")
+    check_call(
+        [
+            "remora",
+            "model",
+            "train",
+            str(chebi_chunks),
             "--output-path",
             str(out_dir),
             "--model",

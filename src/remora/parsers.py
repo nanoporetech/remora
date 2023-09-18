@@ -239,8 +239,11 @@ def register_dataset_prepare(parser):
     label_grp.add_argument(
         "--mod-base",
         nargs=2,
-        metavar=("SINGLE_LETTER_CODE", "MOD_BASE"),
-        help="Modified base information. Example: `--mod-base m 5mC`",
+        metavar=("SHORT_NAME", "LONG_NAME"),
+        help="""Modified base information. The short name should be a single
+        letter modified base code or ChEBI identifier as defined in the SAM
+        tags specificaions. The long name may be any longer identifier.
+        Example: `--mod-base m 5mC`""",
     )
     label_grp.add_argument(
         "--mod-base-control",

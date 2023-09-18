@@ -473,7 +473,7 @@ def parse_mod_bam(
             second level keys are reference positions pointing to a ground truth
             modified base single letter code.
         gt_ranges (dict): Min and max values from gt_sites dict values
-        alphabet (str): Canonical base followed by modified bases found in
+        alphabet (list): Canonical base followed by modified bases found in
             ground truth data. Other modified bases in BAM file will be ignored.
         full_fh (File): File handle to write full results.
         context_bases (int): Number of context bases to include in full output
@@ -577,7 +577,7 @@ def validate_modbams(
     if len(can_base) == 0:
         raise RemoraError("No canonical bases found in ground truth.")
     mod_bases = all_mods.difference("ACGTU")
-    alphabet = "".join(can_base) + "".join(sorted(mod_bases))
+    alphabet = list(can_base) + sorted(mod_bases)
 
     LOGGER.info("Parsing modBAM files")
     all_probs, all_labels = [], []

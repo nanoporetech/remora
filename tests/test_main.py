@@ -53,6 +53,17 @@ def test_prep_mod(mod_chunks):
 
 @pytest.mark.unit
 @pytest.mark.etl
+def test_prep_mod_chebi(mod_chebi_chunks):
+    dataset = CoreRemoraDataset(
+        str(mod_chebi_chunks),
+        batch_size=10,
+    )
+    assert dataset.size == EXPECTED_MOD_SIZE
+    assert dataset.get_label_counts()[1] == EXPECTED_MOD_SIZE
+
+
+@pytest.mark.unit
+@pytest.mark.etl
 def test_remora_dataset(chunks):
     dataset = RemoraDataset.from_config(
         str(chunks),
@@ -63,6 +74,22 @@ def test_remora_dataset(chunks):
     assert dataset.size == EXPECTED_CAN_SIZE + EXPECTED_MOD_SIZE
     assert label_counts[0] == EXPECTED_CAN_SIZE
     assert label_counts[1] == EXPECTED_MOD_SIZE
+
+
+@pytest.mark.unit
+@pytest.mark.etl
+def test_remora_dataset_chebi(chebi_chunks):
+    dataset = RemoraDataset.from_config(
+        str(chebi_chunks),
+        batch_size=10,
+    )
+    label_counts = dataset.get_label_counts()
+    assert label_counts.size == 4, "label counts sie should be 4"
+    assert dataset.size == EXPECTED_CAN_SIZE + (3 * EXPECTED_MOD_SIZE)
+    assert label_counts[0] == EXPECTED_CAN_SIZE
+    assert label_counts[1] == EXPECTED_MOD_SIZE
+    assert label_counts[2] == EXPECTED_MOD_SIZE
+    assert label_counts[3] == EXPECTED_MOD_SIZE
 
 
 @pytest.mark.unit
@@ -78,6 +105,25 @@ def test_dataset_inspect(chunks, tmpdir_factory):
             "dataset",
             "inspect",
             str(chunks),
+            "--out-path",
+            str(out_path),
+        ],
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.etl
+def test_chebi_dataset_inspect(chebi_chunks, tmpdir_factory):
+    """Run `dataset inspect` on the command line."""
+    print(f"Running command line `remora dataset inspect` on {chebi_chunks}")
+    out_path = tmpdir_factory.mktemp("remora_tests") / "dataset_inspect.cfg"
+    print(f"Output config path: {out_path}")
+    check_call(
+        [
+            "remora",
+            "dataset",
+            "inspect",
+            str(chebi_chunks),
             "--out-path",
             str(out_path),
         ],
@@ -102,6 +148,28 @@ def test_train(model_path, tmpdir_factory, chunks, train_cli_args):
             "model",
             "train",
             str(chunks),
+            "--output-path",
+            str(out_dir),
+            "--model",
+            model_path,
+            *train_cli_args,
+        ],
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model_path", MODEL_PATHS)
+def test_chebi_train(model_path, tmpdir_factory, chebi_chunks, train_cli_args):
+    """Run `model train` on the command line."""
+    print(f"Running command line `remora model train` with model {model_path}")
+    out_dir = tmpdir_factory.mktemp("remora_tests") / "train_mod_model"
+    print(f"Output file: {out_dir}")
+    check_call(
+        [
+            "remora",
+            "model",
+            "train",
+            str(chebi_chunks),
             "--output-path",
             str(out_dir),
             "--model",
@@ -220,6 +288,32 @@ def test_mod_infer(tmpdir_factory, can_pod5, can_mappings, fw_mod_model_dir):
 
 
 @pytest.mark.unit
+def test_chebi_mod_infer(
+    tmpdir_factory, can_pod5, can_mappings, fw_mod_chebi_model_dir
+):
+    # TODO use this output bam to test validate from modbams
+    out_dir = tmpdir_factory.mktemp("remora_tests")
+    print(f"Output dir: {out_dir}")
+    out_file = out_dir / "mod_infer.bam"
+    log_file = out_dir / "mod_infer.log"
+    check_call(
+        [
+            "remora",
+            "infer",
+            "from_pod5_and_bam",
+            can_pod5,
+            can_mappings,
+            "--model",
+            str(fw_mod_chebi_model_dir / FINAL_MODEL_FILENAME),
+            "--out-bam",
+            out_file,
+            "--log-filename",
+            log_file,
+        ],
+    )
+
+
+@pytest.mark.unit
 @pytest.mark.duplex
 def test_mod_infer_duplex(
     tmpdir_factory,
@@ -286,6 +380,32 @@ def test_mod_validate_from_dataset(tmpdir_factory, chunks, fw_mod_model_dir):
             "validate",
             "from_remora_dataset",
             chunks,
+            "--model",
+            str(fw_mod_model_dir / FINAL_MODEL_FILENAME),
+            "--batch-size",
+            "20",
+            "--out-file",
+            out_file,
+            "--full-results-filename",
+            full_file,
+        ],
+    )
+
+
+@pytest.mark.unit
+def test_chebi_mod_validate_from_dataset(
+    tmpdir_factory, chebi_chunks, fw_mod_model_dir
+):
+    out_dir = tmpdir_factory.mktemp("remora_tests")
+    print(f"Trained validate results output: {out_dir}")
+    out_file = out_dir / "mod_validate.txt"
+    full_file = out_dir / "mod_validate_full.txt"
+    check_call(
+        [
+            "remora",
+            "validate",
+            "from_remora_dataset",
+            chebi_chunks,
             "--model",
             str(fw_mod_model_dir / FINAL_MODEL_FILENAME),
             "--batch-size",

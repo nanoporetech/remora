@@ -590,6 +590,20 @@ class NamedMPQueue(AbstractNamedQueue):
         self.maxsize = kwargs.get("maxsize")
         self.name = kwargs.get("name")
         self.queue = mp.Queue(maxsize=self.maxsize)
+        self.size = mp.Value("i", 0)
+
+    def put(self, *args, **kwargs):
+        with self.size.get_lock():
+            self.size.value += 1
+        self.queue.put(*args, **kwargs)
+
+    def get(self, *args, **kwargs):
+        with self.size.get_lock():
+            self.size.value -= 1
+        return self.queue.get(*args, **kwargs)
+
+    def qsize(self):
+        return self.size.value
 
 
 class NamedQueue(AbstractNamedQueue):
@@ -597,6 +611,9 @@ class NamedQueue(AbstractNamedQueue):
         self.maxsize = kwargs.get("maxsize")
         self.name = kwargs.get("name")
         self.queue = queue.Queue(maxsize=self.maxsize)
+
+    def qsize(self):
+        return self.queue.qsize()
 
 
 def _put_item(item, out_q):
