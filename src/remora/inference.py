@@ -488,7 +488,7 @@ def infer_from_pod5_and_bam(
             LOGGER.debug(
                 "QueuesStatus: "
                 + "\t".join(
-                    [f"{q.name}: {q.queue.qsize()}/{q.maxsize}" for q in all_qs]
+                    [f"{q.name}: {q.qsize()}/{q.maxsize}" for q in all_qs]
                 )
             )
             if err is not None:

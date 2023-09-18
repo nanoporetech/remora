@@ -158,7 +158,7 @@ def extract_chunk_dataset(
         metadata=DatasetMetadata(
             allocate_size=max_chunks_per_read * num_reads,
             max_seq_len=max_seq_len,
-            mod_bases="" if mod_base_control else mod_base[0],
+            mod_bases=[] if mod_base_control else [mod_base[0]],
             mod_long_names=[] if mod_base_control else [mod_base[1]],
             motif_sequences=[motif.raw_motif for motif in motifs],
             motif_offsets=[motif.focus_pos for motif in motifs],

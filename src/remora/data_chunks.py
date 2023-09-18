@@ -647,7 +647,8 @@ class DatasetMetadata:
         allocate_size (int): Size (number of chunks) allocated for dataset
         max_seq_len (int): Maximum sequence length of a chunk (used to set
             dimension for seq arrays.
-        mod_bases (str): Modified base single letter codes represented by labels
+        mod_bases (list): Modified base short names represented by labels
+            (single letter or ChEBI codes)
         mod_long_names (list): Modified base long names represented by labels
         motifs_sequences (list): Sequences at which model trained from chunks
             is applicable
@@ -680,7 +681,7 @@ class DatasetMetadata:
     allocate_size: int
     max_seq_len: int
     # labels
-    mod_bases: str
+    mod_bases: list
     mod_long_names: list
     # chunk extract
     motif_sequences: list
@@ -824,6 +825,11 @@ class DatasetMetadata:
             )
 
     def __post_init__(self):
+        # Support original single letter codes or new list short names
+        # (including ChEBI codes)
+        if isinstance(self.mod_bases, str):
+            self.mod_bases = list(self.mod_bases)
+        self.mod_bases = list(map(str, self.mod_bases))
         self.chunk_context = tuple(self.chunk_context)
         self.kmer_context_bases = tuple(self.kmer_context_bases)
         if self._stored_chunk_context is not None:
@@ -1143,7 +1149,11 @@ class CoreRemoraDataset:
                     self.label_conv[0] = 0
                     for in_lab, mod_base in enumerate(self.metadata.mod_bases):
                         # apply at super chunks and label access
-                        self.label_conv[in_lab + 1] = md_val.find(mod_base) + 1
+                        self.label_conv[in_lab + 1] = next(
+                            idx + 1
+                            for idx, mb in enumerate(md_val)
+                            if mb == mod_base
+                        )
                     LOGGER.debug(
                         f"Setting label conversion: {self.label_conv} "
                         f"{self.data_path}"
@@ -1894,7 +1904,7 @@ class RemoraDataset(IterableDataset):
                     )
                 else:
                     # add mod base to super dataset metadata
-                    self.metadata.mod_bases += mb
+                    self.metadata.mod_bases.append(mb)
                     self.metadata.mod_long_names.append(mln)
 
             # kmer_context bases can be reduced
@@ -1954,13 +1964,12 @@ class RemoraDataset(IterableDataset):
                 self.metadata.check_motifs()
 
         # sort modified bases alphabetically
-        mod_bases = ""
-        mod_long_names = []
+        mod_bases, mod_long_names = [], []
         for idx in sorted(
             range(len(self.metadata.mod_bases)),
             key=self.metadata.mod_bases.__getitem__,
         ):
-            mod_bases += self.metadata.mod_bases[idx]
+            mod_bases.append(self.metadata.mod_bases[idx])
             mod_long_names.append(self.metadata.mod_long_names[idx])
         self.metadata.mod_bases = mod_bases
         self.metadata.mod_long_names = mod_long_names

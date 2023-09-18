@@ -4,8 +4,6 @@ import json
 import toml
 import datetime
 import importlib
-import pkg_resources
-from pathlib import Path
 from os.path import isfile
 
 import torch
@@ -14,9 +12,15 @@ import pandas as pd
 from torch import nn
 from torch.nn.utils.fusion import fuse_conv_bn_eval
 
+import remora
 from remora.download import ModelDownload
 from remora import log, RemoraError, constants
 from remora.refine_signal_map import SigMapRefiner
+
+try:
+    from importlib.resources import files as importlib_resources_files
+except ImportError:
+    from importlib_resources import files as importlib_resources_files
 
 LOGGER = log.get_logger()
 
@@ -534,11 +538,7 @@ def load_model(
         )
 
     remora_model_version = f"v{remora_model_version}"
-    path = pkg_resources.resource_filename(
-        "remora",
-        constants.MODEL_DATA_DIR_NAME,
-    )
-    path = Path(path)
+    path = importlib_resources_files(remora) / constants.MODEL_DATA_DIR_NAME
     path.mkdir(parents=True, exist_ok=True)
     model_name = "_".join(
         [
