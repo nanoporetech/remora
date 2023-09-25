@@ -57,6 +57,9 @@ def compute_metrics(probs, labels, filt_frac):
         filt_thr *= 0.999999
     conf_chunks = pred_probs > filt_thr
     filt_labels = labels[conf_chunks]
+    # if all probs are NAN
+    if filt_labels.size == 0:
+        return acc, conf_mat, 1.0, np.NAN, np.array([]), np.NAN
     filt_acc = correctly_labeled[conf_chunks].sum() / filt_labels.size
     filt_conf_mat = confusion_matrix(filt_labels, pred_labels[conf_chunks])
     filt_frac = 1 - (filt_labels.size / labels.size)

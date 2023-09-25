@@ -91,8 +91,10 @@ def make_sequence_coordinate_mapping(cigar):
     if len(cigar) == 0:
         raise RemoraError("No match operations found in alignment cigar")
     ops, lens = map(np.array, zip(*cigar))
-    assert ops.min() >= 0 and ops.max() <= 8, "invalid cigar op(s)"
-    assert lens.min() >= 0, "cigar lengths may not be negative"
+    if ops.min() < 0 or ops.max() > 8:
+        raise RemoraError("Invalid cigar op(s)")
+    if lens.min() < 0:
+        raise RemoraError("Cigar lengths may not be negative")
 
     is_match = MATCH_OPS[ops]
     match_counts = lens[is_match]

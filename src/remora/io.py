@@ -20,7 +20,7 @@ from matplotlib import pyplot as plt
 
 from remora.metrics import METRIC_FUNCS
 from remora.constants import PA_TO_NORM_SCALING_FACTOR, DEFAULT_PLOT_FIG_SIZE
-from remora import log, util, data_chunks as DC, duplex_utils as DU, RemoraError
+from remora import log, util, data_chunks, duplex_utils as DU, RemoraError
 
 LOGGER = log.get_logger()
 
@@ -289,18 +289,19 @@ class ReadIndexedBam:
                 if self.read_id_converter is None
                 else self.read_id_converter(bam_read.query_name)
             )
-            assert index_read_id == read_id, (
-                f"Read ID {read_id} does not match extracted BAM record "
-                f"{index_read_id} at {read_ptr}. ReadIndexedBam may "
-                "be corrupted."
-            )
+            if index_read_id != read_id:
+                LOGGER.debug(
+                    f"Read ID {read_id} does not match extracted BAM record "
+                    f"{index_read_id} at {read_ptr}. ReadIndexedBam may "
+                    "be corrupted."
+                )
+                raise RemoraError("Read ID does not match BAM record")
             yield bam_read
 
     def get_first_alignment(self, read_id):
         return next(self.get_alignments(read_id))
 
     def __contains__(self, read_id):
-        assert isinstance(read_id, str)
         return read_id in self._bam_idx
 
     def __getitem__(self, read_id):
@@ -394,7 +395,6 @@ def iter_signal(pod5_path, num_reads=None, read_ids=None, rev_sig=False):
             shift_dacs_to_pa=pod5_read.calibration.offset,
             scale_dacs_to_pa=pod5_read.calibration.scale,
         )
-
         yield read, None
     LOGGER.debug("Completed signal worker")
 
@@ -422,8 +422,10 @@ def extract_alignments(read_err, bam_idx, rev_sig=False):
             align_read.add_alignment(bam_read, reverse_signal=rev_sig)
             read_alignments.append(tuple((align_read, None)))
     except KeyError:
+        LOGGER.debug(f"{io_read.read_id} Read id not found in BAM file")
         return [tuple((None, "Read id not found in BAM file"))]
     except RemoraError as e:
+        LOGGER.debug(f"{io_read.read_id} Extract alignment error: {e}")
         return [tuple((None, str(e)))]
     return read_alignments
 
@@ -1407,8 +1409,8 @@ class Read:
         from the instrument. These values are generally not recommended for any
         type of analysis.
         """
-        assert self.scale_dacs_to_pa is not None
-        assert self.shift_dacs_to_pa is not None
+        if self.scale_dacs_to_pa is None or self.shift_dacs_to_pa is None:
+            raise RemoraError("pA scaling factors not set")
         return self.scale_dacs_to_pa * (self.dacs + self.shift_dacs_to_pa)
 
     @property
@@ -1417,8 +1419,8 @@ class Read:
         mean=0 and SD=1, though different methods may be applied to perform
         this operation robustly.
         """
-        assert self.scale_dacs_to_norm is not None
-        assert self.shift_dacs_to_norm is not None
+        if self.scale_dacs_to_norm is None or self.shift_dacs_to_norm is None:
+            raise RemoraError("Norm scaling factors not set")
         return (self.dacs - self.shift_dacs_to_norm) / self.scale_dacs_to_norm
 
     def compute_pa_to_norm_scaling(self, factor=PA_TO_NORM_SCALING_FACTOR):
@@ -1453,13 +1455,12 @@ class Read:
             duplex_orientation (bool): Is duplex mapping in the same
                 orientation as this simplex read.
         """
-        assert self.query_to_signal is not None, "requires query_to_signal"
-        assert (
-            duplex_read_alignment.query_sequence is not None
-        ), "no duplex base call sequence?"
-        assert (
-            len(duplex_read_alignment.query_sequence) > 0
-        ), "duplex base call sequence is empty string?"
+        if self.query_to_signal is None:
+            raise RemoraError("requires query_to_signal")
+        if duplex_read_alignment.query_sequence is None:
+            raise RemoraError("no duplex base call sequence?")
+        if len(duplex_read_alignment.query_sequence) <= 0:
+            raise RemoraError("duplex base call sequence is empty string?")
 
         read = copy(self)
 
@@ -1479,7 +1480,7 @@ class Read:
         # duplex_read_to_signal is a mapping of each position in the duplex
         # sequence to a signal datum from the read
         query_to_signal = read.query_to_signal
-        duplex_to_read_signal = DC.map_ref_to_signal(
+        duplex_to_read_signal = data_chunks.map_ref_to_signal(
             query_to_signal=query_to_signal,
             ref_to_query_knots=simplex_duplex_mapping.duplex_to_simplex_mapping,
         )
@@ -1545,7 +1546,7 @@ class Read:
         self.seq = alignment_record.query_sequence
         if alignment_record.is_reverse:
             self.seq = util.revcomp(self.seq)
-        if not parse_ref_align:
+        if not parse_ref_align or alignment_record.is_unmapped:
             return
 
         self.ref_reg = RefRegion(
@@ -1571,15 +1572,17 @@ class Read:
             and self.ref_seq is not None
             and self.query_to_signal is not None
         ):
-            self.ref_to_signal = DC.compute_ref_to_signal(
+            self.ref_to_signal = data_chunks.compute_ref_to_signal(
                 query_to_signal=self.query_to_signal,
                 cigar=self.cigar,
             )
             # +1 because knots include the end position of the last base
-            assert self.ref_to_signal.size == len(self.ref_seq) + 1, (
-                "discordant ref seq lengths: move+cigar:"
-                f"{self.ref_to_signal.size} ref_seq:{len(self.ref_seq)}"
-            )
+            if self.ref_to_signal.size != len(self.ref_seq) + 1:
+                LOGGER.debug(
+                    f"{self.read_id} discordant ref seq lengths: move+cigar:"
+                    f"{self.ref_to_signal.size} ref_seq:{len(self.ref_seq)}"
+                )
+                raise RemoraError("Discordant ref seq lengths")
             self.ref_reg.end = self.ref_reg.start + self.ref_to_signal.size - 1
 
     @classmethod
@@ -1615,14 +1618,17 @@ class Read:
             if self.ref_to_signal is None:
                 if self.cigar is None or self.ref_seq is None:
                     raise RemoraError("Missing reference alignment")
-                self.ref_to_signal = DC.compute_ref_to_signal(
+                self.ref_to_signal = data_chunks.compute_ref_to_signal(
                     self.query_to_signal,
                     self.cigar,
                 )
-                assert self.ref_to_signal.size == len(self.ref_seq) + 1, (
-                    "discordant ref seq lengths: move+cigar:"
-                    f"{self.ref_to_signal.size} ref_seq:{len(self.ref_seq)}"
-                )
+                if self.ref_to_signal.size != len(self.ref_seq) + 1:
+                    LOGGER.debug(
+                        f"{self.read_id} discordant ref seq lengths: "
+                        f"move+cigar:{self.ref_to_signal.size - 1} "
+                        f"ref_seq:{len(self.ref_seq)}"
+                    )
+                    raise RemoraError("Discordant ref seq lengths")
 
             trim_dacs = self.dacs[
                 self.ref_to_signal[0] : self.ref_to_signal[-1]
@@ -1637,7 +1643,7 @@ class Read:
             ]
             shift_seq_to_sig = self.query_to_signal - self.query_to_signal[0]
             seq = self.seq
-        remora_read = DC.RemoraRead(
+        remora_read = data_chunks.RemoraRead(
             dacs=trim_dacs,
             shift=self.shift_dacs_to_norm,
             scale=self.scale_dacs_to_norm,
@@ -1739,7 +1745,9 @@ class Read:
         )
         # mapping of reference sequence positions to base call sequence
         # positions
-        mapping = DC.make_sequence_coordinate_mapping(self.cigar).astype(int)
+        mapping = data_chunks.make_sequence_coordinate_mapping(
+            self.cigar
+        ).astype(int)
 
         reference_motif_positions = (
             util.find_focus_bases_in_int_sequence(reference_int_seq, motifs)
@@ -1869,9 +1877,8 @@ class Read:
         """
         if metric is not None:
             metric_func = METRIC_FUNCS[metric]
-        assert (
-            metric_func is not None
-        ), "Must provide either metric or metric_func"
+        if metric_func is None:
+            raise RemoraError("Must provide either metric or metric_func")
         st_buf = en_buf = 0
         if region is None:
             seq_to_sig = (
@@ -1921,7 +1928,7 @@ class Read:
         elif signal_type == "dac":
             sig = self.dacs
         else:
-            assert False, "signal_type must be norm, pa or dac"
+            raise RemoraError("signal_type must be norm, pa or dac")
 
         metrics_vals = metric_func(sig, seq_to_sig, **kwargs)
         if max(st_buf, en_buf) > 0:
