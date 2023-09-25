@@ -57,6 +57,7 @@ def register_dataset(parser):
     register_dataset_inspect(ssubparser)
     register_dataset_make_config(ssubparser)
     register_dataset_merge(ssubparser)
+    register_dataset_head(ssubparser)
 
 
 def register_dataset_prepare(parser):
@@ -494,6 +495,89 @@ def run_dataset_merge(args):
     LOGGER.info("Shuffling dataset")
     merged_dataset.shuffle(show_prog=True)
     LOGGER.info(f"Saved core dataset:\n{merged_dataset.summary}")
+
+
+def register_dataset_head(parser):
+    subparser = parser.add_parser(
+        "head",
+        description="""Create new dataset with a selection of the first reads
+        from another dataset.""",
+        help="Create new dataset from beginning of another",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    subparser.add_argument(
+        "out_path",
+        help="Path to save new dataset.",
+    )
+    subparser.add_argument(
+        "in_path",
+        help="""Input core Remora dataset (cannot be a config dataset).""",
+    )
+    subparser.add_argument(
+        "num_chunks",
+        type=int,
+        help="""Number of chunks to select""",
+    )
+    subparser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing output directory if existing.",
+    )
+    subparser.set_defaults(func=run_dataset_head)
+
+
+def run_dataset_head(args):
+    from tqdm import tqdm
+
+    from remora.util import prepare_out_dir
+    from remora.data_chunks import CoreRemoraDataset
+
+    prepare_out_dir(args.out_path, args.overwrite)
+    in_ds = CoreRemoraDataset(
+        args.in_path, infinite_iter=False, do_check_super_batches=True
+    )
+    LOGGER.info(f"Loaded dataset:\n{in_ds.summary}")
+    head_metadata = in_ds.metadata.copy()
+    head_metadata.allocate_size = args.num_chunks
+    head_metadata.dataset_start = 0
+    head_metadata.dataset_end = 0
+
+    head_dataset = CoreRemoraDataset(
+        data_path=args.out_path,
+        mode="w",
+        metadata=head_metadata,
+    )
+    head_dataset.write_metadata()
+    LOGGER.info("Extracting head data")
+    for sb_idx, sb in tqdm(
+        enumerate(in_ds.iter_super_batches()),
+        smoothing=0,
+        leave=False,
+        position=1,
+        desc="Batches",
+    ):
+        if (
+            head_dataset.metadata.dataset_end + sb["labels"].size
+            >= args.num_chunks
+        ):
+            num_chunks = args.num_chunks - head_dataset.metadata.dataset_end
+            sb = dict(
+                (arr_name, arr[:num_chunks]) for arr_name, arr in sb.items()
+            )
+            # add last batch and exit
+            head_dataset.write_batch(sb)
+            head_dataset.flush()
+            head_dataset.write_metadata()
+            LOGGER.debug(f"{sb_idx + 1} super batches complete (last batch)")
+            break
+        head_dataset.write_batch(sb)
+        head_dataset.flush()
+        head_dataset.write_metadata()
+        LOGGER.debug(f"{sb_idx + 1} super batches complete")
+
+    LOGGER.info("Shuffling dataset")
+    head_dataset.shuffle(show_prog=True)
+    LOGGER.info(f"Saved core dataset:\n{head_dataset.summary}")
 
 
 def register_dataset_inspect(parser):
@@ -1508,7 +1592,11 @@ def run_validate_from_remora_dataset(args):
     from remora.util import parse_device
     from remora.model_util import load_model
     from remora.validate import ValidationLogger
-    from remora.data_chunks import RemoraDataset
+    from remora.data_chunks import (
+        RemoraDataset,
+        CoreRemoraDataset,
+        load_dataset,
+    )
 
     if args.log_filename is not None:
         log.init_logger(args.log_filename)
@@ -1532,12 +1620,20 @@ def run_validate_from_remora_dataset(args):
         "kmer_context_bases"
     ]
     override_metadata["chunk_context"] = model_metadata["chunk_context"]
-    dataset = RemoraDataset.from_config(
-        args.remora_dataset_path,
-        override_metadata=override_metadata,
+    paths, props, hashes = load_dataset(args.remora_dataset_path)
+    dataset = RemoraDataset(
+        [
+            CoreRemoraDataset(
+                path,
+                override_metadata=override_metadata,
+                infinite_iter=False,
+                do_check_super_batches=True,
+            )
+            for path in paths
+        ],
+        props,
+        hashes,
         batch_size=args.batch_size,
-        super_batch_sample_frac=None,
-        ds_kwargs={"infinite_iter": False, "do_check_super_batches": True},
     )
     LOGGER.info(f"Loaded dataset summary:\n{dataset.summary}")
     if not args.read_batches_from_disk:
