@@ -77,8 +77,12 @@ def prepare_reads(read_errs, model_metadata, ref_anchored):
         try:
             remora_read = io_read.into_remora_read(ref_anchored)
         except RemoraError as e:
-            LOGGER.debug(f"Remora read prep error: {e}")
-            out_read_errs.append((None, None, "Remora read prep error"))
+            LOGGER.debug(f"{io_read.read_id} Remora read prep error: {e}")
+            out_read_errs.append((None, None, f"Remora read prep error: {e}"))
+            continue
+        except Exception as e:
+            LOGGER.debug(f"{io_read.read_id} Unexpected error: {e}")
+            out_read_errs.append((None, None, f"Unexpected error: {e}"))
             continue
         remora_read.set_motif_focus_bases(motifs)
         remora_read.refine_signal_mapping(model_metadata["sig_map_refiner"])
@@ -91,6 +95,7 @@ def prepare_reads(read_errs, model_metadata, ref_anchored):
             )
         )
         if len(chunks) == 0:
+            LOGGER.debug(f"{io_read.read_id} No mod calls")
             out_read_errs.append((None, None, "No mod calls"))
             continue
         # clear larger memory arrays (for quicker queue transfer)
@@ -274,15 +279,22 @@ def unbatch_reads(curr_read, b_nn_out, b_read_pos, b_reads):
     comp_reads = []
     for io_read, b_st, b_en, err in b_reads:
         if err is not None:
+            if curr_read is not None:
+                comp_reads.append(curr_read)
             comp_reads.append((io_read, None, None, err))
             curr_read = None
             continue
         # end of read from previous batch
         if b_st is None:
-            assert (
-                curr_read is not None
-                and curr_read[0].read_id == io_read.read_id
-            )
+            if curr_read is None:
+                LOGGER.debug("Unbatching encountered None read")
+                raise RemoraError("Unbatching encountered None read")
+            if curr_read[0].read_id != io_read.read_id:
+                LOGGER.debug(
+                    "Unbatching encountered mismatching reads "
+                    f"{curr_read[0].read_id} != {io_read.read_id}"
+                )
+                raise RemoraError("Unbatching encountered mismatching reads")
             io_read, r_nn_out, r_read_pos, _ = curr_read
             # update curr_read
             curr_read = (
@@ -831,7 +843,6 @@ def infer_duplex(
             return None, err
         mod_tags = caller.call_duplex_read_mods(duplex_read)
         mod_tags = list(mod_tags)
-        assert len(mod_tags) == 2
         record = duplex_read.duplex_alignment
         record = copy(record)
         record["tags"] = [
