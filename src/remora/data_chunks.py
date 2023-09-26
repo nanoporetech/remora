@@ -2002,6 +2002,17 @@ class RemoraDataset(IterableDataset):
         ):
             setattr(self.metadata, md_key, getattr(other.metadata, md_key))
 
+    def set_batch_size(self, batch_size):
+        self.batch_size = batch_size
+        self.batch_sizes = compute_best_split(self.batch_size, self.props)
+        bs_str = "\n".join(
+            (
+                f"{bs}\t{ds.data_path}"
+                for bs, ds in zip(self.batch_sizes, self.datasets)
+            )
+        )
+        LOGGER.debug(f"Dataset batch sizes:\n{bs_str}")
+
     def __init__(
         self,
         datasets,
@@ -2020,19 +2031,11 @@ class RemoraDataset(IterableDataset):
         if len(self.datasets) != len(self.props):
             raise RemoraError("Dataset and proportions must be same length.")
         self._hashes = hashes
-        self.batch_size = batch_size
+        self.set_batch_size(batch_size)
         self.super_batch_size = super_batch_size
         self.super_batch_sample_frac = super_batch_sample_frac
         self.seed = seed
 
-        self.batch_sizes = compute_best_split(batch_size, proportions)
-        bs_str = "\n".join(
-            (
-                f"{bs}\t{ds.data_path}"
-                for bs, ds in zip(self.batch_sizes, self.datasets)
-            )
-        )
-        LOGGER.debug(f"Dataset batch sizes:\n{bs_str}")
         # RemoraDataset is infinite iter if all core datasets are infinite
         self.infinite_iter = all(ds.infinite_iter for ds in self.datasets)
         self.set_global_metadata()
@@ -2201,36 +2204,56 @@ class RemoraDataset(IterableDataset):
             batches_per_epoch * ds_chunks_per_batch
             for ds_chunks_per_batch in self.batch_sizes
         ]
-        if self._all_batches is not None:
-            ds_label_counts = [
-                dict((lab, "NA") for lab in self.metadata.labels)
-                for ds in self.datasets
-            ]
-        else:
-            ds_label_counts = [
-                dict(
-                    zip(
-                        ds.metadata.labels,
-                        [f"{lc:,}" for lc in ds.get_label_counts()],
-                    )
+        dss_lab_counts = [
+            dict(
+                zip(
+                    ds.metadata.labels,
+                    ds.get_label_counts(),
                 )
-                for ds in self.datasets
-            ]
-        dss_label_cols = [
-            "\t".join(ds_lc.get(lab, "0") for lab in self.metadata.labels)
-            for ds_lc in ds_label_counts
+            )
+            for ds in self.datasets
+        ]
+        dss_lab_props = []
+        for ds_lab_counts in dss_lab_counts:
+            ds_tot = sum(ds_lab_counts.values())
+            dss_lab_props.append(
+                dict((lab, cnt / ds_tot) for lab, cnt in ds_lab_counts.items())
+            )
+        # compute the number of chunks of each label extracted from each dataset
+        # each batch
+        batch_lab_cols = [
+            "\t".join(
+                f"{np.ceil(ds_lp.get(lab, 0) * ds_bs).astype(int):,}"
+                for lab in self.metadata.labels
+            )
+            for ds_lp, ds_bs in zip(dss_lab_props, self.batch_sizes)
+        ]
+        dss_lab_cols = [
+            "\t".join(f"{ds_lc.get(lab, 0):,}" for lab in self.metadata.labels)
+            for ds_lc in dss_lab_counts
         ]
         summ_strs = [
-            f"{ds_chunks_per_epoch/ds.size:10.4%}\t{ds_chunks_per_epoch:,}\t"
+            f"{ds_chunks_per_epoch/ds.size:10.4%}\t"
+            f"{b_lab_cols}\t"
+            f"{ds_chunks_per_epoch:,}\t"
             f"{ds.size:,}\t"
-            f"{ds_label_cols}\t"
+            f"{ds_lab_cols}\t"
             f"{ds.data_path}"
-            for ds_chunks_per_epoch, ds, ds_label_cols in zip(
-                epoch_chunk_totals, self.datasets, dss_label_cols
+            for ds_chunks_per_epoch, b_lab_cols, ds, ds_lab_cols in zip(
+                epoch_chunk_totals,
+                batch_lab_cols,
+                self.datasets,
+                dss_lab_cols,
             )
         ]
-        labels_header = "\t".join(self.metadata.labels)
+        b_labels_header = "\t".join(
+            (f"batch_{lab}" for lab in self.metadata.labels)
+        )
+        ds_labels_header = "\t".join(
+            (f"dataset_{lab}" for lab in self.metadata.labels)
+        )
         return (
-            "percent_of_dataset_per_epoch\tdataset_chunks_per_epoch\t"
-            f"dataset_size\t{labels_header}\tpath\n"
+            f"percent_of_dataset_per_epoch\t{b_labels_header}\t"
+            f"dataset_chunks_per_epoch\tdataset_size\t{ds_labels_header}\t"
+            "path\n"
         ) + "\n".join(summ_strs)
