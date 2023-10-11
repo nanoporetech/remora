@@ -60,16 +60,10 @@ def map_ref_to_signal(*, query_to_signal, ref_to_query_knots):
         query_to_signal (np.array): Query to signal coordinate mapping
         ref_to_query_knots (np.array): Reference to query coordinate mapping
     """
-    query_to_ref_coords = np.interp(
-        np.arange(query_to_signal.size), 
-        np.arange(ref_to_query_knots.size), 
-        ref_to_query_knots
-    ).astype(int)
-
     return np.floor(
         np.interp(
             ref_to_query_knots,
-            query_to_ref_coords,
+            np.arange(query_to_signal.size),
             query_to_signal,
         )
     ).astype(int)
@@ -115,7 +109,7 @@ def get_ref_coords(ops, lens):
     '''
     Map query base to reference coordinates (1-based). 
     Returns 
-        array shape (ref_len+1,); ref_len = len(aln.get_reference_sequences())
+        array shape (ref_len,); ref_len = len(aln.get_reference_sequences())
     '''
     starts = np.cumsum(np.where(REF_OPS[ops], lens, 0)) - np.where(REF_OPS[ops], lens, 0)
     ranges = [
