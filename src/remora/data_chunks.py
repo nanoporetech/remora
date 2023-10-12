@@ -25,8 +25,7 @@ MATCH_OPS = np.array(
     [True, False, False, False, False, False, False, True, True]
 )
 QUERY_OPS = np.array([True, True, False, False, True, False, False, True, True])
-REF_OPS = np.array([True, False, True, True, False, False, False, True, True])
-REFCOORD_OPS = np.array([True, False, True, False, False, False, False, True, True])
+REF_OPS = np.array([True, False, True, False, False, False, False, True, True])
 CIGAR_CODES = ["M", "I", "D", "N", "S", "H", "P", "=", "X"]
 CODE_TO_OP = {
     "M": 0,
@@ -99,26 +98,9 @@ def make_sequence_coordinate_mapping(cigar):
     query_knots = np.concatenate(
         [[0], (query_knots[is_match] - offsets).T.flatten(), [query_knots[-1]]]
     )
-    ref_coords = get_ref_coords(ops, lens)
-    knots = np.interp(np.concatenate([[0], ref_coords]), ref_knots, query_knots)
+    knots = np.interp(np.arange(ref_knots[-1] + 1), ref_knots, query_knots)
 
     return knots
-
-
-def get_ref_coords(ops, lens):
-    '''
-    Map query base to reference coordinates (1-based). 
-    Returns 
-        array shape (ref_len,); ref_len = len(aln.get_reference_sequences())
-    '''
-    starts = np.cumsum(np.where(REF_OPS[ops], lens, 0)) - np.where(REF_OPS[ops], lens, 0)
-    ranges = [
-        np.arange(start, start + l)
-        for op, start, l in zip(ops, starts, lens)
-        if REFCOORD_OPS[op]
-    ]
-    ref_coords = np.concatenate(ranges) + 1
-    return ref_coords
 
 
 def compute_ref_to_signal(query_to_signal, cigar):
