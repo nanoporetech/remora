@@ -25,7 +25,7 @@ MATCH_OPS = np.array(
     [True, False, False, False, False, False, False, True, True]
 )
 QUERY_OPS = np.array([True, True, False, False, True, False, False, True, True])
-REF_OPS = np.array([True, False, True, True, False, False, False, True, True])
+REF_OPS = np.array([True, False, True, False, False, False, False, True, True])
 CIGAR_CODES = ["M", "I", "D", "N", "S", "H", "P", "=", "X"]
 CODE_TO_OP = {
     "M": 0,

@@ -492,6 +492,24 @@ def compute_base_space_sig_coords(seq_to_sig_map):
         np.arange(seq_to_sig_map.size),
     )
 
+REF_OPS = np.array([True, False, True, True, False, False, False, True, True])
+REFSEQ_OPS = np.array([True, False, True, False, False, False, False, True, True])
+def get_ref_seq_pos(cigar, ref_start):
+    '''
+    Map query base to reference coordinates (0-based)
+    Returns
+        array shape (ref_len,); ref_len = len(aln.get_reference_sequences())
+    '''
+    ops, lens = map(np.array, zip(*cigar))
+    starts = np.cumsum(np.where(REF_OPS[ops], lens, 0)) - np.where(REF_OPS[ops], lens, 0)
+    ranges = [
+        np.arange(start, start + l)
+        for op, start, l in zip(ops, starts, lens)
+        if REFSEQ_OPS[op]
+    ]
+    ref_coords = ref_start + np.concatenate(ranges)
+    return ref_coords
+
 
 @dataclass
 class ReadRefReg:
@@ -1532,6 +1550,8 @@ class Read:
             )
             self.ref_seq = None
         self.cigar = alignment_record.cigartuples
+        self.ref_pos = get_ref_seq_pos(self.cigar, self.ref_reg.start)
+        self.ref_pos = np.concatenate([self.ref_pos, [self.ref_pos[-1]+1]])
         if alignment_record.is_reverse:
             if self.ref_seq is not None:
                 self.ref_seq = util.revcomp(self.ref_seq)
@@ -1546,7 +1566,7 @@ class Read:
                 "discordant ref seq lengths: move+cigar:"
                 f"{self.ref_to_signal.size} ref_seq:{len(self.ref_seq)}"
             )
-            self.ref_reg.end = self.ref_reg.start + self.ref_to_signal.size - 1
+            self.ref_reg.end = alignment_record.reference_end
 
     @classmethod
     def from_pod5_and_alignment(
@@ -1757,17 +1777,21 @@ class Read:
             raise RemoraError(
                 "Cannot extract reference region from unmapped read"
             )
-        if ref_reg.start >= self.ref_reg.start + self.ref_seq_len:
+        if ref_reg.start >= self.ref_reg.end:
             raise RemoraError("Reference region starts after read ends")
         if ref_reg.end < self.ref_reg.start:
             raise RemoraError("Reference region ends before read starts")
 
+        reg_within_read = self.ref_pos[(self.ref_pos >= ref_reg.start) & (self.ref_pos <= ref_reg.end)]
+        st_idx, = np.where(self.ref_pos == min(reg_within_read))
+        en_idx, = np.where(self.ref_pos == max(reg_within_read))
+
         if self.ref_reg.strand == "+":
-            reg_st_within_read = max(0, ref_reg.start - self.ref_reg.start)
-            reg_en_within_read = ref_reg.end - self.ref_reg.start
+            reg_st_within_read = st_idx[0]
+            reg_en_within_read = en_idx[0]
         else:
-            reg_st_within_read = max(0, self.ref_reg.end - ref_reg.end)
-            reg_en_within_read = self.ref_reg.end - ref_reg.start
+            reg_st_within_read = en_idx[0]
+            reg_en_within_read = st_idx[0]
         reg_seq_to_sig = self.ref_to_signal[
             reg_st_within_read : reg_en_within_read + 1
         ].copy()
