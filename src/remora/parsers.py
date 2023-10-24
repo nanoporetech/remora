@@ -602,11 +602,17 @@ def register_dataset_inspect(parser):
 def run_dataset_inspect(args):
     import json
 
-    from remora.data_chunks import RemoraDataset
-
-    dataset = RemoraDataset.from_config(
-        args.remora_dataset_path, ds_kwargs={"do_check_super_batches": True}
+    from remora.data_chunks import (
+        load_dataset,
+        CoreRemoraDataset,
+        RemoraDataset,
     )
+
+    paths, props, hashes = load_dataset(args.remora_dataset_path)
+    datasets = [
+        CoreRemoraDataset(path, do_check_super_batches=True) for path in paths
+    ]
+    dataset = RemoraDataset(datasets, props, hashes)
     print(f"Dataset summary:\n{dataset.summary}")
     if args.out_path is not None:
         with open(args.out_path, "w") as fh:
