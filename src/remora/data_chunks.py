@@ -832,6 +832,10 @@ class DatasetMetadata:
         if isinstance(self.mod_bases, str):
             self.mod_bases = list(self.mod_bases)
         self.mod_bases = list(map(str, self.mod_bases))
+        assert len(self.mod_bases) == len(self.mod_long_names), (
+            f"mod_bases ({self.mod_bases}) must be the same length as "
+            f"mod_long_names ({self.mod_long_names})"
+        )
         self.chunk_context = tuple(self.chunk_context)
         self.kmer_context_bases = tuple(self.kmer_context_bases)
         if self._stored_chunk_context is not None:
