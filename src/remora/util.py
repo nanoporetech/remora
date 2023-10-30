@@ -593,14 +593,15 @@ class NamedMPQueue(AbstractNamedQueue):
         self.size = mp.Value("i", 0)
 
     def put(self, *args, **kwargs):
+        self.queue.put(*args, **kwargs)
         with self.size.get_lock():
             self.size.value += 1
-        self.queue.put(*args, **kwargs)
 
     def get(self, *args, **kwargs):
+        rval = self.queue.get(*args, **kwargs)
         with self.size.get_lock():
             self.size.value -= 1
-        return self.queue.get(*args, **kwargs)
+        return rval
 
     def qsize(self):
         return self.size.value
