@@ -36,11 +36,11 @@ def export_model_torchscript(ckpt, model, save_filename):
     meta["creation_date"] = datetime.datetime.now().strftime(
         "%m/%d/%Y, %H:%M:%S"
     )
-    meta["kmer_context_bases"] = ckpt["kmer_context_bases"]
-    meta["chunk_context"] = ckpt["chunk_context"]
 
     # add simple metadata
     for ckpt_key in (
+        "kmer_context_bases",
+        "chunk_context",
         "modified_base_labels",
         "mod_bases",
         "reverse_signal",
@@ -60,13 +60,11 @@ def export_model_torchscript(ckpt, model, save_filename):
             meta[f"mod_long_names_{mod_idx}"] = str(
                 ckpt["mod_long_names"][mod_idx]
             )
-    meta["num_motifs"] = str(ckpt["num_motifs"])
     for idx, (motif, motif_offset) in enumerate(ckpt["motifs"]):
         m_key = f"motif_{idx}"
         mo_key = f"motif_offset_{idx}"
         meta[m_key] = str(motif)
         meta[mo_key] = str(motif_offset)
-
     meta["num_motifs"] = str(len(ckpt["motifs"]))
 
     # store refine arrays as bytes
@@ -376,6 +374,69 @@ def repr_model_metadata(metadata):
     )
 
 
+def _raw_load_torchscript_model(model_filename, device=None):
+    # values will be replaced with data
+    extra_files = {"meta.txt": ""}
+    if device is None:
+        model = torch.jit.load(
+            model_filename, _extra_files=extra_files, map_location="cpu"
+        )
+    else:
+        model = torch.jit.load(
+            model_filename,
+            _extra_files=extra_files,
+            map_location=device,
+        )
+    return model, json.loads(extra_files["meta.txt"])
+
+
+def _extract_essential_metadata(model_metadata):
+    """Extract metadata required by model_util.export_model_torchscript from
+    metadata loaded with model_util._raw_load_torchscript_model. Note that
+    when model_util.load_torchscript_model is run some metadata is lost or
+    converted. This function is primarily a conveniece for loading a model,
+    adjusting metadata and saving a new torchscript model
+    """
+    metadata = {}
+    metadata["refine_kmer_levels"] = np.frombuffer(
+        model_metadata["refine_kmer_levels"].encode("cp437"),
+        dtype=np.float32,
+    )
+    metadata["refine_sd_arr"] = np.frombuffer(
+        model_metadata["refine_sd_arr"].encode("cp437"), dtype=np.float32
+    )
+    metadata["mod_long_names"] = [
+        model_metadata[f"mod_long_names_{mod_idx}"]
+        for mod_idx in range(len(model_metadata["mod_bases"]))
+    ]
+    metadata["motifs"] = [
+        (
+            model_metadata[f"motif_{motif_idx}"],
+            int(model_metadata[f"motif_offset_{motif_idx}"]),
+        )
+        for motif_idx in range(int(model_metadata["num_motifs"]))
+    ]
+    for md_key in [
+        "kmer_context_bases",
+        "chunk_context",
+        "modified_base_labels",
+        "mod_bases",
+        "reverse_signal",
+        "base_start_justify",
+        "offset",
+        "model_params",
+        "num_motifs",
+        "model_version",
+        "refine_kmer_center_idx",
+        "refine_do_rough_rescale",
+        "refine_scale_iters",
+        "refine_algo",
+        "refine_half_bandwidth",
+    ]:
+        metadata[md_key] = model_metadata[md_key]
+    return metadata
+
+
 def load_torchscript_model(
     model_filename, device=None, quiet=False, eval_only=False
 ):
@@ -395,20 +456,10 @@ def load_torchscript_model(
           1. Compiled model object for calling mods
           2. Model metadata dictionary with information concerning data prep
     """
+    model, model_metadata = _raw_load_torchscript_model(
+        model_filename, device=device
+    )
 
-    # values will be replaced with data
-    extra_files = {"meta.txt": ""}
-    if device is None:
-        model = torch.jit.load(
-            model_filename, _extra_files=extra_files, map_location="cpu"
-        )
-    else:
-        model = torch.jit.load(
-            model_filename,
-            _extra_files=extra_files,
-            map_location=device,
-        )
-    model_metadata = json.loads(extra_files["meta.txt"])
     add_derived_metadata(model_metadata)
     if not quiet:
         md_str = repr_model_metadata(model_metadata)
