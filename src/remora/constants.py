@@ -71,7 +71,10 @@ _kit14_5mc_CG_models = {
 # kit14 400bps 5hmc_5mC CG-context models (contains 5kHz and 4kHz models)
 _kit14_5hmc_5mc_CG_models = {
     "sup": {
-        "v4.2.0": {2: "dna_r10.4.1_e8.2_5khz_400bps_sup_v4.2.0_5hmc_5mc_CG_v2"},
+        "v4.2.0": {
+            3: "dna_r10.4.1_e8.2_5khz_400bps_sup_v4.2.0_5hmc_5mc_CG_v3",
+            2: "dna_r10.4.1_e8.2_5khz_400bps_sup_v4.2.0_5hmc_5mc_CG_v2",
+        },
         "v4.1.0": {2: "dna_r10.4.1_e8.2_4khz_400bps_sup_v4.1.0_5hmc_5mc_CG_v2"},
         "v4.0.0": {2: "dna_r10.4.1_e8.2_400bps_sup_v4.0.0_5hmc_5mc_CG_v2"},
     },
@@ -90,7 +93,6 @@ _kit14_5hmc_5mc_CG_models = {
         "v4.0.0": {2: "dna_r10.4.1_e8.2_400bps_fast_v4.0.0_5hmc_5mc_CG_v2"},
     },
 }
-
 # kit14 260bps 5hmC_5mC CG-context models
 _kit14_260bps_5hmc_5mc_CG_models = {
     "sup": {
@@ -111,9 +113,17 @@ _kit14_5mc_ac_models = {
         "v4.0.1": {2: "res_dna_r10.4.1_e8.2_4khz_400bps_sup_v4.0.1_5mc_v2"},
     },
 }
+_kit14_5hmc_5mc_ac_models = {
+    "sup": {
+        "v4.2.0": {1: "dna_r10.4.1_e8.2_5khz_400bps_sup_v4.2.0_5hmc_5mc_v1"},
+    }
+}
 _kit14_6ma_ac_models = {
     "sup": {
-        "v4.2.0": {2: "dna_r10.4.1_e8.2_5khz_400bps_sup_v4.2.0_6ma_v2"},
+        "v4.2.0": {
+            3: "dna_r10.4.1_e8.2_5khz_400bps_sup_v4.2.0_6ma_v3",
+            2: "dna_r10.4.1_e8.2_5khz_400bps_sup_v4.2.0_6ma_v2",
+        },
         "v4.0.1": {2: "res_dna_r10.4.1_e8.2_4khz_400bps_sup_v4.0.1_6mA_v2"},
     },
 }
@@ -134,6 +144,7 @@ MODEL_DICT = {
         },
         "5hmc_5mc": {
             "CG": _kit14_5hmc_5mc_CG_models,
+            "C": _kit14_5hmc_5mc_ac_models,
         },
     },
     "dna_r10.4.1_e8.2_260bps": {
