@@ -99,7 +99,8 @@ def prepare_reads(read_errs, model_metadata, ref_anchored):
             out_read_errs.append((None, None, "No mod calls"))
             continue
         # clear larger memory arrays (for quicker queue transfer)
-        io_read.sig_len = io_read.dacs.size
+        # access sig len to save the value
+        io_read.sig_len
         io_read.dacs = None
         io_read.mv_table = None
         io_read.query_to_signal = None

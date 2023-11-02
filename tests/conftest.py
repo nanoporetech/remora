@@ -78,7 +78,7 @@ def pytest_collection_modifyitems(session, config, items):
         if (
             len(
                 set(mark.name for mark in item.iter_markers()).intersection(
-                    ("format", "unit")
+                    ("format", "unit", "notebooks")
                 )
             )
             == 0
@@ -193,7 +193,7 @@ def pretrain_model_args():
         "--remora-model-type",
         "CG",
         "--remora-model-version",
-        "0",
+        "2",
         "--modified-bases",
         "5mC",
     )

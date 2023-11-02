@@ -970,16 +970,23 @@ def register_model_list_pretrained(parser):
         help="Specify model motif (sequence context)",
     )
     subparser.add_argument(
-        "--remora-model-version", help="Specify Remora model version"
+        "--remora-model-version", type=int, help="Specify Remora model version"
     )
     subparser.set_defaults(func=run_list_pretrained)
 
 
 def run_list_pretrained(args):
-    from remora.model_util import get_pretrained_models
-    from tabulate import tabulate
+    import polars as pl
 
-    models, header = get_pretrained_models(
+    from remora.model_util import get_pretrained_models
+
+    pl.Config.set_tbl_hide_column_data_types(True)
+    pl.Config.set_tbl_hide_dataframe_shape(True)
+    pl.Config.set_tbl_width_chars(200)
+    pl.Config.set_fmt_str_lengths(250)
+    pl.Config.set_tbl_rows(50)
+
+    models = get_pretrained_models(
         args.pore,
         args.basecall_model_type,
         args.basecall_model_version,
@@ -987,10 +994,7 @@ def run_list_pretrained(args):
         args.remora_model_type,
         args.remora_model_version,
     )
-    LOGGER.info(
-        "Remora pretrained modified base models:\n"
-        + tabulate(models, headers=header, showindex=False)
-    )
+    LOGGER.info("Remora pretrained modified base models:\n" + str(models))
 
 
 def register_model_download(parser):
@@ -1783,23 +1787,6 @@ def register_plot_ref_region(parser):
         LIMIT will be penalized a value of `WEIGHT * (dwell - TARGET)^2`.""",
     )
 
-    plt_grp = subparser.add_argument_group("Plot Arguments")
-    plt_grp.add_argument(
-        "--figsize",
-        nargs=2,
-        type=int,
-        metavar=("HEIGHT", "WIDTH"),
-        default=constants.DEFAULT_PLOT_FIG_SIZE,
-        help="Figure size",
-    )
-    plt_grp.add_argument(
-        "--ylim",
-        nargs=2,
-        type=int,
-        metavar=("MIN", "MAX"),
-        help="Signal plotting limits",
-    )
-
     out_grp = subparser.add_argument_group("Output Arguments")
     out_grp.add_argument(
         "--plots-filename",
@@ -1817,10 +1804,11 @@ def register_plot_ref_region(parser):
 def run_plot_ref_region(args):
     import pod5
     import pysam
-    from matplotlib import pyplot as plt
-    from matplotlib.backends.backend_pdf import PdfPages
+    import plotnine as p9
 
     from remora import log, io, refine_signal_map
+
+    p9.theme_set(p9.theme_minimal() + p9.theme(figure_size=(8, 3)))
 
     if args.log_filename is not None:
         log.init_logger(args.log_filename)
@@ -1840,31 +1828,28 @@ def run_plot_ref_region(args):
     if args.highlight_ranges is not None:
         highlight_ranges = io.parse_bed(args.highlight_ranges)
 
-    with PdfPages(args.plots_filename) as pdf_fh:
-        for ref_reg in io.parse_bed_lines(args.ref_regions):
-            reg_highlight_ranges = None
-            if highlight_ranges is not None:
-                try:
-                    reg_highlight_ranges = [
-                        (pos, pos + 1, args.highlight_color)
-                        for pos in highlight_ranges[
-                            (ref_reg.ctg, ref_reg.strand)
-                        ]
-                        if ref_reg.start <= pos < ref_reg.end
-                    ]
-                except KeyError:
-                    LOGGER.debug(f"No highlight values for region {ref_reg}")
-                    pass
-            fig, ax = plt.subplots(figsize=args.figsize)
+    plots = []
+    for ref_reg in io.parse_bed_lines(args.ref_regions):
+        reg_highlight_ranges = None
+        if highlight_ranges is not None:
+            try:
+                reg_highlight_ranges = [
+                    (pos, pos + 1, args.highlight_color)
+                    for pos in highlight_ranges[(ref_reg.ctg, ref_reg.strand)]
+                    if ref_reg.start <= pos < ref_reg.end
+                ]
+            except KeyError:
+                LOGGER.debug(f"No highlight values for region {ref_reg}")
+                pass
+        plots.append(
             io.plot_signal_at_ref_region(
                 ref_reg,
                 zip(pod5_fhs, bam_fhs),
                 sig_map_refiner,
-                fig_ax=(fig, ax),
-                ylim=args.ylim,
                 highlight_ranges=reg_highlight_ranges,
             )
-            pdf_fh.savefig(fig, bbox_inches="tight")
+        )
+    p9.save_as_pdf_pages(plots, args.plots_filename)
     LOGGER.info("Done")
 
 

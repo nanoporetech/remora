@@ -2,6 +2,7 @@ from itertools import product
 from dataclasses import dataclass, field
 
 import numpy as np
+import polars as pl
 from scipy import stats
 
 from remora import RemoraError, log
@@ -169,6 +170,7 @@ class SigMapRefiner:
     _levels_array: np.ndarray = None
     str_kmer_levels: dict = None
     kmer_len: int = None
+    kmer_idx_stats = None
     center_idx: int = -1
     is_loaded: bool = False
 
@@ -260,7 +262,7 @@ class SigMapRefiner:
         sorted_kmers = sorted(
             (level, kmer) for kmer, level in self.str_kmer_levels.items()
         )
-        kmer_idx_stats = []
+        self.kmer_idx_stats = []
         kmer_summ = ""
         for kmer_idx in range(self.kmer_len):
             kmer_idx_pos = []
@@ -274,9 +276,9 @@ class SigMapRefiner:
                 )
             # compute Kruskal-Wallis H-test statistics for non-random ordering
             # of groups, indicating the dominant position within the k-mer
-            kmer_idx_stats.append(stats.kruskal(*kmer_idx_pos)[0])
-            kmer_summ += f"\t{kmer_idx}\t{kmer_idx_stats[-1]:10.2f}\n"
-        self.center_idx = np.argmax(kmer_idx_stats)
+            self.kmer_idx_stats.append(stats.kruskal(*kmer_idx_pos)[0])
+            kmer_summ += f"\t{kmer_idx}\t{self.kmer_idx_stats[-1]:10.2f}\n"
+        self.center_idx = np.argmax(self.kmer_idx_stats)
         LOGGER.debug(f"K-mer index stats:\n{kmer_summ}")
         LOGGER.debug(f"Choosen central position: {self.center_idx}")
 
@@ -355,6 +357,11 @@ class SigMapRefiner:
             for kmer, level in self.str_kmer_levels.items():
                 self._levels_array[index_from_kmer(kmer)] = level
         return self._levels_array
+
+    @property
+    def kmers(self):
+        for kmer in product("ACGT", repeat=self.kmer_len):
+            yield "".join(kmer)
 
     def rough_rescale(
         self,
@@ -568,6 +575,54 @@ class SigMapRefiner:
                 self.half_bandwidth == other.half_bandwidth,
                 np.array_equal(self.sd_arr, other.sd_arr),
             )
+        )
+
+    def get_sub_kmer_table(self, sub_kmer_size):
+        """Return polars array with expected levels for a smaller k-mer than
+        stored in current kmer array
+        """
+        if sub_kmer_size >= self.kmer_len:
+            raise RemoraError(
+                "Sub k-mer size must be smaller than stored k-mer size"
+            )
+        if self.kmer_idx_stats is None:
+            self.determine_dominant_pos()
+        sub_kmer_range = [self.center_idx, self.center_idx + 1]
+        dominant_base = 0
+        while sub_kmer_range[1] - sub_kmer_range[0] < sub_kmer_size:
+            if sub_kmer_range[0] == 0:
+                sub_kmer_range[1] += 1
+            elif sub_kmer_range[1] == self.kmer_len:
+                dominant_base += 1
+                sub_kmer_range[0] -= 1
+            else:
+                if (
+                    self.kmer_idx_stats[sub_kmer_range[0] - 1]
+                    > self.kmer_idx_stats[sub_kmer_range[1]]
+                ):
+                    dominant_base += 1
+                    sub_kmer_range[0] -= 1
+                else:
+                    sub_kmer_range[1] += 1
+        kmers_df = pl.DataFrame(
+            [self.levels_array, self.kmers],
+            schema=["Expected Signal Level", "K-mer"],
+            orient="col",
+        )
+        return (
+            kmers_df.with_columns(
+                pl.col("K-mer")
+                .str.slice(sub_kmer_range[0], sub_kmer_size)
+                .alias("K-mer")
+            )
+            .groupby("K-mer")
+            .mean()
+            .with_columns(
+                pl.col("K-mer")
+                .str.slice(dominant_base, 1)
+                .alias("Dominant Base")
+            )
+            .sort("Expected Signal Level")
         )
 
 
