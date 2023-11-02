@@ -163,7 +163,7 @@ def to_str(value):
     try:
         return value.decode()
     except AttributeError:
-        return value
+        return str(value)
 
 
 def softmax_axis1(x):
@@ -798,7 +798,12 @@ class BackgroundIter:
         ).start()
         # processes take a second to start up on mac
         if platform.system() == "Darwin":
-            sleep(1)
+            wait_time = os.environ.get("MP_WAIT_TIME", 1)
+            LOGGER.debug(
+                f"MacOS requires that we wait, set MP_WAIT_TIME to modulate, "
+                f"waiting {wait_time}s before starting {self.name}"
+            )
+            sleep(int(wait_time))
 
     def __iter__(self):
         try:

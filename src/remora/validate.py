@@ -6,7 +6,6 @@ from collections import defaultdict, namedtuple
 import torch
 import pysam
 import numpy as np
-import pandas as pd
 from tqdm import tqdm
 from sklearn.metrics import confusion_matrix
 
@@ -100,74 +99,6 @@ def add_unmodeled_labels(output, unmodeled_labels):
     return new_output
 
 
-def _validate_model(
-    model,
-    model_mod_bases,
-    criterion,
-    dataset,
-    filt_frac=constants.DEFAULT_FILT_FRAC,
-    full_results_fh=None,
-    disable_pbar=False,
-):
-    device = next(model.parameters()).device
-    unmodeled_labels = np.array(
-        [
-            idx + 1
-            for idx, mb in enumerate(dataset.metadata.mod_bases)
-            if mb not in model_mod_bases
-        ]
-    )
-    model.eval()
-    torch.set_grad_enabled(False)
-
-    bb, ab = dataset.metadata.kmer_context_bases
-    all_labels = []
-    all_outputs = []
-    all_loss = []
-
-    if os.environ.get("LOG_SAFE", False):
-        disable_pbar = True
-    for enc_kmers, sigs, labels in tqdm(
-        dataset,
-        smoothing=0,
-        desc="Batches",
-        disable=disable_pbar,
-    ):
-        all_labels.append(labels.cpu().numpy())
-        sigs = sigs.to(device)
-        enc_kmers = enc_kmers.to(device)
-        output = model(sigs, enc_kmers).detach().cpu().numpy()
-        output = add_unmodeled_labels(output, unmodeled_labels)
-        all_outputs.append(output)
-        all_loss.append(
-            criterion(torch.from_numpy(output), labels).detach().cpu().numpy()
-        )
-        if full_results_fh is not None:
-            full_results_fh.write_results(output, labels)
-    all_outputs = np.concatenate(all_outputs, axis=0)
-    all_labels = np.concatenate(all_labels)
-    torch.set_grad_enabled(True)
-    all_probs = softmax_axis1(all_outputs)
-    (
-        acc,
-        conf_mat,
-        filt_frac,
-        filt_acc,
-        filt_conf_mat,
-        filt_thr,
-    ) = compute_metrics(all_probs, all_labels, filt_frac)
-    return VAL_METRICS(
-        loss=np.mean(all_loss),
-        acc=acc,
-        num_calls=all_labels.size,
-        conf_mat=conf_mat,
-        filt_frac=filt_frac,
-        filt_acc=filt_acc,
-        filt_conf_mat=filt_conf_mat,
-        filt_thresh=filt_thr,
-    )
-
-
 def process_mods_probs(probs, labels, allow_unbalanced, pct_filt, name):
     if not allow_unbalanced:
         nlabs = labels.max() + 1
@@ -219,33 +150,6 @@ def process_mods_probs(probs, labels, allow_unbalanced, pct_filt, name):
     LOGGER.info(val_output)
 
 
-class ResultsWriter:
-    def __init__(self, out_fh):
-        self.sep = "\t"
-        self.out_fh = out_fh
-        df = pd.DataFrame(
-            columns=[
-                "read_id",
-                "read_focus_base",
-                "label",
-                "class_pred",
-                "class_probs",
-            ]
-        )
-        df.to_csv(self.out_fh, sep=self.sep, index=False)
-
-    def write_results(self, output, labels):
-        class_preds = output.argmax(axis=1)
-        str_probs = [",".join(map(str, r)) for r in softmax_axis1(output)]
-        pd.DataFrame(
-            {
-                "label": labels,
-                "class_pred": class_preds,
-                "class_probs": str_probs,
-            }
-        ).to_csv(self.out_fh, header=False, index=False, sep=self.sep)
-
-
 class ValidationLogger:
     HEADER = "\t".join(
         (
@@ -262,14 +166,93 @@ class ValidationLogger:
             "Filtered_Threshold",
         )
     )
+    FULL_HEADER = "\t".join(["label", "class_pred", "class_probs"])
 
     def __init__(self, fp, full_results_fh=None):
         self.fp = fp
         self.fp.write(self.HEADER + "\n")
-        if full_results_fh is None:
-            self.full_results_fh = None
-        else:
-            self.full_results_fh = ResultsWriter(full_results_fh)
+        self.full_fh = None
+        if full_results_fh is not None:
+            self.full_fh = full_results_fh
+            self.full_fh.write(self.FULL_HEADER + "\n")
+
+    def write_full_results(self, output, labels):
+        str_labels = map(str, labels.tolist())
+        class_preds = map(str, output.argmax(axis=1))
+        str_probs = [",".join(map(str, r)) for r in softmax_axis1(output)]
+        for res_row in zip(str_labels, class_preds, str_probs):
+            self.full_fh.write("\t".join(res_row) + "\n")
+
+    def run_validation(
+        self,
+        model,
+        model_mod_bases,
+        criterion,
+        dataset,
+        filt_frac=constants.DEFAULT_FILT_FRAC,
+        full_results_fh=None,
+        disable_pbar=False,
+    ):
+        device = next(model.parameters()).device
+        unmodeled_labels = np.array(
+            [
+                idx + 1
+                for idx, mb in enumerate(dataset.metadata.mod_bases)
+                if mb not in model_mod_bases
+            ]
+        )
+        model.eval()
+        torch.set_grad_enabled(False)
+
+        bb, ab = dataset.metadata.kmer_context_bases
+        all_labels = []
+        all_outputs = []
+        all_loss = []
+
+        if os.environ.get("LOG_SAFE", False):
+            disable_pbar = True
+        for enc_kmers, sigs, labels in tqdm(
+            dataset,
+            smoothing=0,
+            desc="Batches",
+            disable=disable_pbar,
+        ):
+            all_labels.append(labels.cpu().numpy())
+            sigs = sigs.to(device)
+            enc_kmers = enc_kmers.to(device)
+            output = model(sigs, enc_kmers).detach().cpu().numpy()
+            output = add_unmodeled_labels(output, unmodeled_labels)
+            all_outputs.append(output)
+            all_loss.append(
+                criterion(torch.from_numpy(output), labels)
+                .detach()
+                .cpu()
+                .numpy()
+            )
+            if self.full_fh is not None:
+                self.write_full_results(output, labels)
+        all_outputs = np.concatenate(all_outputs, axis=0)
+        all_labels = np.concatenate(all_labels)
+        torch.set_grad_enabled(True)
+        all_probs = softmax_axis1(all_outputs)
+        (
+            acc,
+            conf_mat,
+            filt_frac,
+            filt_acc,
+            filt_conf_mat,
+            filt_thr,
+        ) = compute_metrics(all_probs, all_labels, filt_frac)
+        return VAL_METRICS(
+            loss=np.mean(all_loss),
+            acc=acc,
+            num_calls=all_labels.size,
+            conf_mat=conf_mat,
+            filt_frac=filt_frac,
+            filt_acc=filt_acc,
+            filt_conf_mat=filt_conf_mat,
+            filt_thresh=filt_thr,
+        )
 
     def validate_model(
         self,
@@ -283,13 +266,12 @@ class ValidationLogger:
         niter=0,
         disable_pbar=False,
     ):
-        ms = _validate_model(
+        ms = self.run_validation(
             model,
             model_mod_bases,
             criterion,
             dataset,
             filt_frac,
-            full_results_fh=self.full_results_fh,
             disable_pbar=disable_pbar,
         )
         self.fp.write(

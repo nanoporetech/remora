@@ -12,23 +12,21 @@ from functools import cached_property
 import pod5
 import pysam
 import numpy as np
-import pandas as pd
+import polars as pl
+import plotnine as p9
 from tqdm import tqdm
-import seaborn as sns
 from pysam import AlignedSegment
-from matplotlib import pyplot as plt
 
 from remora.metrics import METRIC_FUNCS
-from remora.constants import PA_TO_NORM_SCALING_FACTOR, DEFAULT_PLOT_FIG_SIZE
-from remora import log, util, data_chunks, duplex_utils as DU, RemoraError
+from remora.constants import PA_TO_NORM_SCALING_FACTOR
+from remora import log, util, data_chunks, duplex_utils, RemoraError
 
 LOGGER = log.get_logger()
 
 _SIG_PROF_FN = os.getenv("REMORA_EXTRACT_SIGNAL_PROFILE_FILE")
 _ALIGN_PROF_FN = os.getenv("REMORA_EXTRACT_ALIGN_PROFILE_FILE")
 
-SIG_PCTL_RANGE = (0.2, 99.8)
-SAMPLE_COLORS = ["k", "tab:red", "tab:cyan", "tab:pink", "tab:orange"]
+METRIC_PCTL_RANGE = (0.2, 99.8)
 BASE_COLORS = {
     "A": "#00CC00",
     "C": "#0000CC",
@@ -157,11 +155,20 @@ def read_is_primary(read):
 
 
 def strands_match(strand, bam_read):
+    if strand is None:
+        return True
     return (
         strand not in "+-"
         or (strand == "+" and bam_read.is_forward)
         or (strand == "-" and bam_read.is_reverse)
     )
+
+
+def get_bam_filename(bam_fh):
+    if bam_fh.reference_filename is not None:
+        return util.to_str(bam_fh.reference_filename)
+    if bam_fh.filename is not None:
+        return util.to_str(bam_fh.filename)
 
 
 @dataclass
@@ -186,10 +193,27 @@ class ReadIndexedBam:
     read_id_converter: Callable = None
     read_ids_subset: set = None
 
+    @property
+    def reference_filename(self):
+        """Alias to mimic AlignmentFile attribute"""
+        return self.bam_path
+
+    @property
+    def filename(self):
+        """Alias to mimic AlignmentFile attribute"""
+        return self.bam_path
+
+    def has_index(self):
+        """Alias to mimic AlignmentFile attribute"""
+        if self.bam_fh is None:
+            self.open()
+        return self.bam_fh.has_index()
+
     def __post_init__(self):
         self.num_reads = None
         self.bam_fh = None
         self._bam_idx = None
+        self._iter = None
         self.compute_read_index()
 
     def open(self):
@@ -198,17 +222,22 @@ class ReadIndexedBam:
         self.bam_fh = pysam.AlignmentFile(
             self.bam_path, mode="rb", check_sq=False
         )
+        return self
 
     def close(self):
         self.bam_fh.close()
         self.bam_fh = None
         pysam.set_verbosity(self.pysam_save)
 
-    def fetch(self, ref_reg):
+    def fetch(self, ctg, start, end, strand=None):
         if self.bam_fh is None:
             self.open()
-        for read in self.bam_fh.fetch(ref_reg.ctg, ref_reg.start, ref_reg.end):
-            if strands_match(ref_reg.strand, read):
+        if not self.has_index():
+            pysam.index(util.to_str(self.bam_path))
+            self.close()
+            self.open()
+        for read in self.bam_fh.fetch(ctg, start, end):
+            if strands_match(strand, read):
                 yield read
 
     def compute_read_index(self):
@@ -314,6 +343,16 @@ class ReadIndexedBam:
     @cached_property
     def read_ids(self):
         return list(self._bam_idx.keys())
+
+    def __iter__(self):
+        self.bam_fh.reset()
+        self._iter = iter(self.bam_fh)
+        return self._iter
+
+    def __next__(self):
+        if self._iter is None:
+            self._iter = iter(self.bam_fh)
+        return next(self._iter)
 
 
 def parse_move_tag(
@@ -460,6 +499,10 @@ def iter_regions(bam_fh, reg_len=100_000):
 
 
 def get_reg_bam_reads(ref_reg, bam_fh):
+    if not bam_fh.has_index():
+        bam_path = get_bam_filename(bam_fh)
+        pysam.index(bam_path)
+        bam_fh = pysam.AlignmentFile(bam_path)
     return [
         bam_read
         for bam_read in bam_fh.fetch(ref_reg.ctg, ref_reg.start, ref_reg.end)
@@ -542,10 +585,10 @@ class ReadRefReg:
         plot_on_base_coords function for kwargs.
         """
         return plot_on_base_coords(
-            self.ref_reg.start,
             self.seq,
             self.norm_signal,
             self.seq_to_sig_map,
+            start_base=self.ref_reg.start,
             rev_strand=self.ref_reg.strand == "-",
             xlab="Reference Position",
             **kwargs,
@@ -578,10 +621,10 @@ class ReadBasecallRegion:
         plot_on_base_coords function for kwargs.
         """
         return plot_on_base_coords(
-            self.start,
             self.seq,
             self.norm_signal,
             self.seq_to_sig_map,
+            start_base=self.start,
             **kwargs,
         )
 
@@ -748,22 +791,23 @@ def get_ref_reg_sample_metrics(
         io_read.compute_per_base_metric(metric, region=ref_reg, **kwargs)
         for io_read in io_reads
     ]
-    if len(sample_metrics) > 0:
-        reg_metrics = dict(
-            (
-                metric_name,
-                np.stack([mv[metric_name] for mv in sample_metrics]),
-            )
-            for metric_name in sample_metrics[0].keys()
+    if len(sample_metrics) <= 0:
+        return
+    reg_metrics = dict(
+        (
+            metric_name,
+            np.stack([mv[metric_name] for mv in sample_metrics]),
         )
-        # ref_anchored read metrics are read oriented. Thus if ref_orient=True,
-        # need to flip metrics
-        if ref_orient and ref_reg.strand == "-":
-            return dict(
-                (metric_name, vals[:, ::-1])
-                for metric_name, vals in reg_metrics.items()
-            )
-        return reg_metrics
+        for metric_name in sample_metrics[0].keys()
+    )
+    # ref_anchored read metrics are read oriented. Thus if ref_orient=True,
+    # need to flip metrics
+    if ref_orient and ref_reg.strand == "-":
+        return dict(
+            (metric_name, vals[:, ::-1])
+            for metric_name, vals in reg_metrics.items()
+        )
+    return reg_metrics
 
 
 def get_ref_reg_samples_metrics(
@@ -932,15 +976,16 @@ def plot_on_signal_coords(
     seq,
     sig,
     seq_to_sig_map,
-    rev_strand=False,
     levels=None,
-    fig_ax=None,
-    figsize=DEFAULT_PLOT_FIG_SIZE,
-    sig_lw=8,
-    levels_lw=8,
-    ylim=None,
-    t_as_u=False,
     sig_start=0,
+    sig_lw=0.5,
+    levels_lw=1,
+    ylim=None,
+    rev_strand=False,
+    t_as_u=False,
+    xlab="Signal Position",
+    base_dividers=False,
+    sig_pctl_range=METRIC_PCTL_RANGE,
 ):
     """Plot a single read on signal coordinates.
 
@@ -948,87 +993,115 @@ def plot_on_signal_coords(
         seq (str): Sequence to plot
         sig (np.array): Signal to plot
         seq_to_sig_map (np.array): Mapping from sequence to signal coordinates
-        rev_strand (bool): Plot seq with 180 rotation
         levels (np.array): Expected signal levels for bases in region
-        fig_ax (tuple): If None, new figure/axes will be opened
-        figsize (tuple): option to pass to plt.subplots if ax is None
+        sig_start (int): Signal start value
         sig_lw (int): Linewidth for signal lines
         levels_lw (int): Linewidth for level lines (if applicable)
         ylim (tuple): 2-tuple with y-axis limits
+        rev_strand (bool): Plot bases upside down
         t_as_u (bool): Plot T bases as U (RNA)
+        xlab (str): X-axis Label
+        base_dividers (bool): Add vertical lines separating bases
 
     Returns:
-        matplotlib axis
+        plotnine plot object. Use print(return_value) to display plot in in
+        a notebook or return_value.save("remora_plot.pdf") to save to file.
     """
-    if fig_ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
-    else:
-        fig, ax = fig_ax
     if ylim is None:
-        sig_min, sig_max = np.percentile(sig, SIG_PCTL_RANGE)
+        sig_min, sig_max = np.percentile(sig, sig_pctl_range)
         sig_diff = sig_max - sig_min
         ylim = (sig_min - sig_diff * 0.01, sig_max + sig_diff * 0.01)
-    base_text_loc = ylim[0] + ((ylim[1] - ylim[0]) * 0.02)
 
-    # plot vertical base lines
-    for b in seq_to_sig_map:
-        ax.axvline(x=sig_start + b, color="k", alpha=0.1, lw=1)
-    # plot read signal
-    sig_len = seq_to_sig_map[-1] - seq_to_sig_map[0]
-    ax.plot(
-        np.arange(sig_start, sig_start + sig_len),
-        sig,
-        color="k",
-        alpha=0.5,
-        lw=sig_lw,
+    sig_df = pl.DataFrame(
+        [sig, np.arange(sig_start, sig_start + sig.size)],
+        schema=["Signal", xlab],
+        orient="col",
     )
-    # plot levels
-    if levels is not None:
-        for b_lev, b_st, b_en in zip(
-            levels, seq_to_sig_map[:-1], seq_to_sig_map[1:]
-        ):
-            ax.plot(
-                [sig_start + b_st, sig_start + b_en],
-                [b_lev] * 2,
-                linestyle="-",
-                color="y",
-                alpha=0.5,
-                lw=levels_lw,
-            )
-    # plot bases
     if t_as_u:
         seq = util.t_to_u(seq)
-    for b_st, b_en, base in zip(seq_to_sig_map[:-1], seq_to_sig_map[1:], seq):
-        ax.text(
-            sig_start + (b_en + b_st) / 2,
-            base_text_loc,
-            base,
-            color=BASE_COLORS[base],
-            ha="center",
-            size=30,
-            rotation=180 if rev_strand else 0,
+    base_coords = pl.DataFrame(
+        [
+            sig_start + seq_to_sig_map[:-1],
+            sig_start + seq_to_sig_map[1:],
+            list(seq),
+        ],
+        schema=["base_st", "base_en", "base"],
+        orient="col",
+    )
+    p = (
+        p9.ggplot()
+        + p9.geom_rect(
+            p9.aes(
+                xmin="base_st",
+                xmax="base_en",
+                fill="base",
+                ymin=sig_min,
+                ymax=sig_max,
+            ),
+            data=base_coords,
+            alpha=0.1,
         )
-    ax.set_ylim(*ylim)
-    ax.set_ylabel("Normalized Signal", fontsize=45)
-    ax.set_xlabel("Signal Position", fontsize=45)
-    ax.tick_params(labelsize=36)
-    return fig, ax
+        + p9.geom_text(
+            p9.aes(x="base_st", label="base", color="base", y=sig_min),
+            data=base_coords,
+            va="bottom",
+            ha="left",
+            size=8,
+            angle=180 if rev_strand else 0,
+        )
+        + p9.scale_fill_manual(BASE_COLORS, guide=False)
+        + p9.scale_color_manual(BASE_COLORS, guide=False)
+        + p9.geom_line(p9.aes(x=xlab, y="Signal"), size=sig_lw, data=sig_df)
+        + p9.labels.ylab("Normalized Signal")
+        + p9.labels.xlab(xlab)
+        + p9.coords.coord_cartesian(ylim=ylim)
+        + p9.theme(
+            panel_grid_major_x=p9.element_blank(),
+            panel_grid_minor_x=p9.element_blank(),
+        )
+    )
+    if base_dividers:
+        p += p9.geom_vline(
+            p9.aes(xintercept="base_st"),
+            data=base_coords[1:],
+            color="black",
+            alpha=0.5,
+            size=0.05,
+        )
+    if levels is not None:
+        level_df = pl.DataFrame(
+            [
+                sig_start + seq_to_sig_map[:-1],
+                sig_start + seq_to_sig_map[1:],
+                levels,
+            ],
+            schema=["base_st", "base_en", "level"],
+            orient="col",
+        )
+        p += p9.geom_segment(
+            p9.aes(x="base_st", xend="base_en", y="level", yend="level"),
+            color="orange",
+            alpha=0.5,
+            size=levels_lw,
+            data=level_df,
+        )
+    return p
 
 
 def plot_on_base_coords(
-    start_base,
     seq,
     sig,
     seq_to_sig_map,
     levels=None,
-    rev_strand=False,
-    fig_ax=None,
-    figsize=DEFAULT_PLOT_FIG_SIZE,
-    sig_lw=8,
-    levels_lw=8,
+    start_base=0,
+    sig_lw=0.5,
+    levels_lw=1,
     ylim=None,
+    rev_strand=False,
     t_as_u=False,
     xlab="Base Position",
+    base_dividers=False,
+    sig_pctl_range=METRIC_PCTL_RANGE,
 ):
     """Plot a single read on base/sequence coordinates.
 
@@ -1038,153 +1111,362 @@ def plot_on_base_coords(
         sig (np.array): Signal to plot
         seq_to_sig_map (np.array): Mapping from sequence to signal coordinates
         levels (np.array): Expected signal levels for bases in region
-        rev_strand (bool): Plot bases upside down
-        fig_ax (tuple): If None, new figure/axes will be opened
-        figsize (tuple): option to pass to plt.subplots if ax is None
         sig_lw (int): Linewidth for signal lines
         levels_lw (int): Linewidth for level lines (if applicable)
         ylim (tuple): 2-tuple with y-axis limits
+        rev_strand (bool): Plot bases upside down
         t_as_u (bool): Plot T bases as U (RNA)
+        xlab (str): X-axis Label
+        base_dividers (bool): Add vertical lines separating bases
 
     Returns:
-        matplotlib axis
+        plotnine plot objects. Use print(return_value) to display plot in in
+        a notebook or return_value.save("remora_plot.pdf") to save to file.
     """
-    if fig_ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
-    else:
-        fig, ax = fig_ax
     if ylim is None:
-        sig_min, sig_max = np.percentile(sig, SIG_PCTL_RANGE)
+        sig_min, sig_max = np.percentile(sig, sig_pctl_range)
         sig_diff = sig_max - sig_min
         ylim = (sig_min - sig_diff * 0.01, sig_max + sig_diff * 0.01)
-    base_text_loc = ylim[0] + ((ylim[1] - ylim[0]) * 0.02)
 
-    # plot vertical base lines
-    for b in np.arange(start_base, start_base + seq_to_sig_map.size):
-        ax.axvline(x=b, color="k", alpha=0.1, lw=1)
-    # plot read signal
-    ax.plot(
-        compute_base_space_sig_coords(seq_to_sig_map) + start_base,
-        sig,
-        color="k",
-        alpha=0.5,
-        lw=sig_lw,
+    sig_df = pl.DataFrame(
+        [
+            sig,
+            compute_base_space_sig_coords(seq_to_sig_map) + start_base,
+        ],
+        schema=["Signal", xlab],
+        orient="col",
     )
-    # plot levels
-    if levels is not None:
-        for b_num, b_lev in enumerate(levels):
-            ax.plot(
-                [start_base + b_num, start_base + b_num + 1],
-                [b_lev] * 2,
-                linestyle="-",
-                color="y",
-                alpha=0.5,
-                lw=levels_lw,
-            )
-    # plot bases
     if t_as_u:
         seq = util.t_to_u(seq)
-    for b_num, base in enumerate(seq):
-        ax.text(
-            start_base + b_num + 0.5,
-            base_text_loc,
-            base,
-            color=BASE_COLORS[base],
-            ha="center",
-            size=30,
-            rotation=180 if rev_strand else 0,
+    base_coords = pl.DataFrame(
+        [
+            np.arange(start_base, start_base + len(seq)),
+            np.arange(start_base + 1, start_base + len(seq) + 1),
+            list(seq),
+        ],
+        schema=["base_st", "base_en", "base"],
+        orient="col",
+    )
+    p = (
+        p9.ggplot()
+        + p9.geom_rect(
+            p9.aes(
+                xmin="base_st",
+                xmax="base_en",
+                fill="base",
+                ymin=sig_min,
+                ymax=sig_max,
+            ),
+            data=base_coords,
+            alpha=0.1,
         )
-    ax.set_ylim(*ylim)
-    ax.set_ylabel("Normalized Signal", fontsize=45)
-    ax.set_xlabel(xlab, fontsize=45)
-    ax.tick_params(labelsize=36)
-    return fig, ax
+        + p9.geom_text(
+            p9.aes(x="base_st", label="base", color="base", y=sig_min),
+            data=base_coords,
+            va="bottom",
+            ha="left",
+            size=8,
+            angle=180 if rev_strand else 0,
+        )
+        + p9.scale_fill_manual(BASE_COLORS, guide=False)
+        + p9.scale_color_manual(BASE_COLORS, guide=False)
+        + p9.geom_line(p9.aes(x=xlab, y="Signal"), size=sig_lw, data=sig_df)
+        + p9.labels.ylab("Normalized Signal")
+        + p9.labels.xlab(xlab)
+        + p9.coords.coord_cartesian(ylim=ylim)
+        + p9.theme(
+            panel_grid_major_x=p9.element_blank(),
+            panel_grid_minor_x=p9.element_blank(),
+        )
+    )
+    if base_dividers:
+        p += p9.geom_vline(
+            p9.aes(xintercept="base_st"),
+            data=base_coords[1:],
+            color="black",
+            alpha=0.5,
+            size=0.05,
+        )
+    if levels is not None:
+        level_df = pl.DataFrame(
+            [
+                np.arange(start_base, start_base + len(seq)),
+                np.arange(start_base + 1, start_base + len(seq) + 1),
+                levels,
+            ],
+            schema=["base_st", "base_en", "level"],
+            orient="col",
+        )
+        p += p9.geom_segment(
+            p9.aes(x="base_st", xend="base_en", y="level", yend="level"),
+            color="orange",
+            alpha=0.5,
+            size=levels_lw,
+            data=level_df,
+        )
+    return p
+
+
+def plot_align(
+    io_read,
+    sig_st,
+    sig_en,
+    sig_mp=0,
+    t_as_u=False,
+    xlab="Signal Position",
+    sig_pctl_range=METRIC_PCTL_RANGE,
+):
+    """Plot a single read in signal space with basecalls and reference
+    alignment bases annotated.
+
+    Args:
+        io_read (Read): remora.io.Read object
+        sig_st (int): Signal start coordinate
+        sig_en (int): Signal end coordinate
+        sig_mp (int): Signal midpoint (default 0)
+        t_as_u (bool): Plot T bases as U (RNA)
+        xlab (str): X-axis label
+
+    Returns:
+        plotnine plot object. Use print(return_value) to display plot in in
+        a notebook or return_value.save("remora_plot.pdf") to save to file.
+    """
+    ref_st = np.searchsorted(io_read.ref_to_signal[:-1], sig_st - 1)
+    ref_en = np.searchsorted(io_read.ref_to_signal[:-1], sig_en)
+    ref_seq = io_read.ref_seq[ref_st:ref_en]
+    if t_as_u:
+        ref_seq = util.t_to_u(ref_seq)
+    ref_coords = pl.DataFrame(
+        [
+            io_read.ref_to_signal[ref_st:ref_en].clip(sig_st, sig_en),
+            io_read.ref_to_signal[ref_st + 1 : ref_en + 1].clip(sig_st, sig_en),
+            list(ref_seq),
+        ],
+        schema=["sig_st", "sig_en", "base"],
+        orient="col",
+    )
+    bc_st = np.searchsorted(io_read.query_to_signal, sig_st - 1)
+    bc_en = np.searchsorted(io_read.query_to_signal, sig_en)
+    bc_seq = io_read.seq[bc_st:bc_en]
+    if t_as_u:
+        bc_seq = util.t_to_u(bc_seq)
+    bc_coords = pl.DataFrame(
+        [
+            io_read.query_to_signal[bc_st:bc_en].clip(sig_st, sig_en),
+            io_read.query_to_signal[bc_st + 1 : bc_en + 1].clip(sig_st, sig_en),
+            list(bc_seq),
+        ],
+        schema=["sig_st", "sig_en", "base"],
+        orient="col",
+    )
+
+    sig = io_read.norm_signal[sig_st:sig_en]
+    sig_min, sig_max = np.percentile(sig, sig_pctl_range)
+    sig_diff = sig_max - sig_min
+    ylim = (sig_min - sig_diff * 0.02, sig_max + sig_diff * 0.03)
+    if sig_mp is None:
+        sig_mp = sum(ylim) / 2
+
+    return (
+        p9.ggplot()
+        + p9.geom_rect(
+            p9.aes(
+                xmin="sig_st",
+                xmax="sig_en",
+                fill="base",
+                ymin=sig_mp,
+                ymax=sig_max,
+            ),
+            data=ref_coords,
+            alpha=0.3,
+        )
+        + p9.geom_text(
+            p9.aes(x="sig_st", label="base", color="base", y=sig_max),
+            data=ref_coords,
+            va="top",
+            ha="left",
+        )
+        + p9.geom_rect(
+            p9.aes(
+                xmin="sig_st",
+                xmax="sig_en",
+                fill="base",
+                ymin=sig_min,
+                ymax=sig_mp,
+            ),
+            data=bc_coords,
+            alpha=0.3,
+        )
+        + p9.geom_text(
+            p9.aes(x="sig_st", label="base", color="base", y=sig_min),
+            data=bc_coords,
+            va="bottom",
+            ha="left",
+        )
+        + p9.scale_fill_manual(BASE_COLORS, guide=False)
+        + p9.scale_color_manual(BASE_COLORS, guide=False)
+        + p9.geom_text(
+            p9.aes(
+                y=[sig_min, sig_max],
+                label=["Basecalls", "Reference"],
+                va=["top", "bottom"],
+            ),
+            x=sig_st,
+            ha="left",
+        )
+        + p9.geom_hline(yintercept=sig_mp, linetype="dashed", alpha=0.2)
+        + p9.geom_line(p9.aes(x=np.arange(sig_st, sig_en), y=sig))
+        + p9.labels.ylab("Normalized Signal")
+        + p9.labels.xlab(xlab)
+        + p9.coords.coord_cartesian(ylim=ylim)
+        + p9.theme(
+            panel_grid_major_x=p9.element_blank(),
+            panel_grid_minor_x=p9.element_blank(),
+        )
+    )
 
 
 def plot_ref_region_reads(
     ref_reg,
-    ref_reg_reads,
+    samples_read_ref_regs,
     seq,
     levels,
-    max_reads=50,
-    fig_ax=None,
-    figsize=DEFAULT_PLOT_FIG_SIZE,
-    sig_lw=2,
-    sig_cols=SAMPLE_COLORS,
-    levels_lw=6,
+    sig_lw=0.5,
+    levels_lw=1,
+    sample_names=None,
+    sample_colors=None,
     ylim=None,
     highlight_ranges=None,
     t_as_u=False,
+    sig_pctl_range=METRIC_PCTL_RANGE,
 ):
-    # start plotting
-    if fig_ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
-    else:
-        fig, ax = fig_ax
+    """Plot read signals over reference region
 
-    # plot highlight regions
-    if highlight_ranges is not None:
-        for st, en, col in highlight_ranges:
-            ax.axvspan(st, en, facecolor=col, alpha=0.4)
-    # plot vertical base lines
-    for b in np.arange(ref_reg.start, ref_reg.end + 1):
-        ax.axvline(x=b, color="k", alpha=0.1, lw=1)
-    # plot read signal
-    for sample_col, sample_reads in zip(sig_cols, ref_reg_reads):
-        for read_reg in sample_reads:
-            ax.plot(
-                read_reg.ref_sig_coords,
-                read_reg.norm_signal,
-                color=sample_col,
-                alpha=0.1,
-                lw=sig_lw,
-            )
-    # plot levels
-    if levels is not None:
-        for b_num, b_lev in enumerate(levels):
-            ax.plot(
-                [ref_reg.start + b_num, ref_reg.start + b_num + 1],
-                [b_lev] * 2,
-                linestyle="-",
-                color="y",
-                alpha=0.5,
-                lw=levels_lw,
-            )
-    # plot bases
-    if ylim is None:
-        sig_min, sig_max = np.percentile(
-            np.concatenate([r.norm_signal for r in chain(*ref_reg_reads)]),
-            SIG_PCTL_RANGE,
+    Args:
+        sample_names (list): Sample names. Default: ["Sample1", "Sample2", ... ]
+
+    Returns:
+        plotnine plot object. Use print(return_value) to display plot in in
+        a notebook or return_value.save("remora_plot.pdf") to save to file.
+    """
+    if sample_names is None:
+        sample_names = [
+            f"Sample{samp_idx}"
+            for samp_idx in range(len(samples_read_ref_regs))
+        ]
+    sig_df = []
+    for sample_name, s_reads in zip(sample_names, samples_read_ref_regs):
+        sig_df.append(
+            pl.DataFrame(
+                [
+                    np.concatenate([read.ref_sig_coords for read in s_reads]),
+                    np.concatenate([read.norm_signal for read in s_reads]),
+                    [
+                        f"{sample_name}_{read_idx}"
+                        for read_idx, read in enumerate(s_reads)
+                        for _ in range(read.norm_signal.size)
+                    ],
+                ],
+                schema=["Reference Position", "Signal", "Read"],
+                orient="col",
+            ).with_columns(pl.lit(sample_name).alias("Sample"))
         )
+    sig_df = pl.concat(sig_df)
+    if ylim is None:
+        sig_min, sig_max = np.percentile(sig_df["Signal"], sig_pctl_range)
         sig_diff = sig_max - sig_min
         ylim = (sig_min - sig_diff * 0.01, sig_max + sig_diff * 0.01)
-    base_text_loc = ylim[0] + ((ylim[1] - ylim[0]) * 0.02)
-    rotation = 0 if ref_reg.strand == "+" else 180
+    level_df = pl.DataFrame(
+        [
+            np.arange(ref_reg.start, ref_reg.end),
+            np.arange(ref_reg.start + 1, ref_reg.end + 1),
+            levels,
+        ],
+        schema=["base_st", "base_en", "level"],
+        orient="col",
+    )
     if t_as_u:
         seq = util.t_to_u(seq)
-    for b_num, base in enumerate(seq):
-        ax.text(
-            ref_reg.start + b_num + 0.5,
-            base_text_loc,
-            base,
-            color=BASE_COLORS[base],
-            ha="center",
-            size=30,
-            rotation=rotation,
-        )
-    ax.set_ylim(*ylim)
-    ax.set_xlim(ref_reg.start, ref_reg.end)
-    ax.set_title(ref_reg.ctg, fontsize=50)
-    ax.set_ylabel("Normalized Signal", fontsize=45)
-    ax.set_xlabel("Reference Position", fontsize=45)
-    ax.tick_params(labelsize=36)
-    # shift tick labels left by 0.5 plot units to match genome browsers
-    xticks = np.array(
-        [int(xt) for xt in ax.get_xticks() if ref_reg.start < xt < ref_reg.end]
+    base_coords = pl.DataFrame(
+        [
+            np.arange(ref_reg.start, ref_reg.end),
+            seq,
+        ],
+        schema=["pos", "base"],
+        orient="col",
     )
-    ax.set_xticks(xticks - 0.5)
-    ax.set_xticklabels(xticks)
-    return fig, ax
+    p = p9.ggplot()
+    if highlight_ranges is not None:
+        # plot highlight regions first to be behind signal
+        highlight_df = pl.DataFrame(
+            highlight_ranges,
+            schema=["start", "end", "color"],
+            orient="row",
+        ).with_columns(
+            pl.lit(sig_min).alias("sig_min"), pl.lit(sig_max).alias("sig_max")
+        )
+        p = (
+            p
+            + p9.geom_rect(
+                p9.aes(
+                    xmin="start",
+                    xmax="end",
+                    ymin="sig_min",
+                    ymax="sig_max",
+                ),
+                # keep fill out of legends (in case fill is used later)
+                fill=highlight_df["color"],
+                data=highlight_df,
+                alpha=0.2,
+            )
+            + p9.scale_fill_manual(dict((c, c) for _, _, c in highlight_ranges))
+        )
+    p = (
+        p
+        + p9.geom_text(
+            p9.aes(x="pos", label="base", y=sig_min),
+            # keep color out of legend (used for sample names in this plot)
+            color=[BASE_COLORS[b] for b in seq],
+            data=base_coords,
+            va="bottom",
+            ha="left",
+            size=8,
+            angle=180 if ref_reg.strand == "-" else 0,
+        )
+        + p9.geom_vline(
+            p9.aes(xintercept="pos"),
+            data=base_coords[1:],
+            color="black",
+            alpha=0.5,
+            size=0.02,
+        )
+        + p9.geom_line(
+            p9.aes(
+                x="Reference Position", y="Signal", color="Sample", group="Read"
+            ),
+            alpha=0.2,
+            size=sig_lw,
+            data=sig_df,
+        )
+        + p9.geom_segment(
+            p9.aes(x="base_st", xend="base_en", y="level", yend="level"),
+            color="orange",
+            alpha=0.5,
+            size=levels_lw,
+            data=level_df,
+        )
+        + p9.ylim(*ylim)
+        + p9.xlim(ref_reg.start, ref_reg.end)
+        + p9.labels.ylab("Normalized Signal")
+        + p9.labels.xlab("Reference Position")
+        + p9.theme(
+            panel_grid_major_x=p9.element_blank(),
+            panel_grid_minor_x=p9.element_blank(),
+        )
+    )
+    if sample_colors is not None:
+        p = p + p9.scale_color_manual(sample_colors, limits=sample_names)
+    return p
 
 
 def plot_signal_at_ref_region(
@@ -1194,38 +1476,26 @@ def plot_signal_at_ref_region(
     skip_sig_map_refine=False,
     max_reads=50,
     reverse_signal=False,
-    t_as_u=False,
-    fig_ax=None,
-    figsize=DEFAULT_PLOT_FIG_SIZE,
-    sig_lw=2,
-    levels_lw=6,
-    ylim=None,
-    highlight_ranges=None,
+    **kwargs,
 ):
     """Plot signal from reads at a reference region.
 
     Args:
-        bam_fhs (pysam.AlignmentFile): Sorted and indexed BAM file handle or
-            a list of them
-        pod5_fhs (str): POD5 file handles or a list of them
         ref_reg (RefRegion): Reference position at which to plot signal
+        pod5_and_bam_fhs (list): List of samples. Each element should be a
+            2-tuple of 1. Sorted and indexed BAM file handle and
+            2. pod5.Reader file handle
         sig_map_refiner (SigMapRefiner): For signal mapping and level extract
         skip_sig_map_refine (bool): Skip signal mapping refinement
         max_reads (int): Maximum reads to plot (TODO: add overplotting options)
         reverse_signal (bool): Is nanopore signal 3'>5' orientation?
-        t_as_u (bool): Plot T bases as U (RNA)
-        fig_ax (tuple): If None, new figure/axes will be opened
-        figsize (tuple): option to pass to plt.subplots if ax is None
-        sig_lw (int): Linewidth for signal lines
-        levels_lw (int): Linewidth for level lines (if applicable)
-        ylim (tuple): 2-tuple with y-axis limits
-        highlight_ranges (iterable): Elements should be 3-tuples containing
-            reference start, end and color values.
+        **kwargs: Passed on to plot_ref_region_reads
 
     Returns:
-        matplotlib axis
+        plotnine plot object. Use print(return_value) to display plot in in
+        a notebook or return_value.save("remora_plot.pdf") to save to file.
     """
-    read_ref_regs, reg_bam_reads = get_reads_reference_regions(
+    samples_read_ref_regs, reg_bam_reads = get_reads_reference_regions(
         ref_reg,
         pod5_and_bam_fhs,
         sig_map_refiner=sig_map_refiner,
@@ -1236,84 +1506,83 @@ def plot_signal_at_ref_region(
     seq, levels = get_ref_seq_and_levels_from_reads(
         ref_reg, chain(*reg_bam_reads), sig_map_refiner
     )
-    fig_ax = plot_ref_region_reads(
+    return plot_ref_region_reads(
         ref_reg,
-        read_ref_regs,
+        samples_read_ref_regs,
         seq,
         levels,
-        fig_ax=fig_ax,
-        figsize=figsize,
-        sig_lw=sig_lw,
-        levels_lw=levels_lw,
-        ylim=ylim,
-        highlight_ranges=highlight_ranges,
-        t_as_u=t_as_u,
+        **kwargs,
     )
-    return fig_ax
 
 
 def plot_ref_region_metrics(
     ref_reg,
     samples_metrics,
-    fig_axs=None,
-    fig_width=DEFAULT_PLOT_FIG_SIZE[0],
-    facet_height=DEFAULT_PLOT_FIG_SIZE[1],
-    highlight_ranges=None,
+    all_bam_reads,
     sample_names=None,
-    t_as_u=False,
+    sample_colors=None,
+    geom=p9.geom_boxplot,
+    geom_kwargs=None,
+    metric_pctl_range=METRIC_PCTL_RANGE,
 ):
+    ref_pos = list(range(ref_reg.start, ref_reg.end))
     metric_names = list(samples_metrics[0].keys())
-    if fig_axs is None:
-        fig, axs = plt.subplots(
-            len(metric_names),
-            figsize=(fig_width, facet_height * len(metric_names)),
-            sharex=True,
-        )
-    else:
-        fig, axs = fig_axs
     if sample_names is None:
         sample_names = [f"Sample{idx}" for idx in range(len(samples_metrics))]
-
-    for ax, metric_name in zip(axs, metric_names):
-        samples_num_reads = np.array(
-            [sm[metric_name].shape[0] for sm in samples_metrics]
-        )
-        plot_data = pd.DataFrame(
-            {
-                metric_name: np.concatenate(
-                    [sm[metric_name].flatten() for sm in samples_metrics]
-                ),
-                "Position": np.tile(
-                    np.arange(ref_reg.len), [samples_num_reads.sum()]
-                ),
-                "Sample": np.repeat(
-                    sample_names, samples_num_reads * ref_reg.len
-                ),
-            }
-        )
-        plot_data = plot_data.loc[~np.isnan(plot_data[metric_name])]
-
-        with np.errstate(invalid="ignore"):
-            _ = sns.boxplot(
-                data=plot_data,
-                x="Position",
-                y=metric_name,
-                hue="Sample",
-                ax=ax,
+    dfs = dict((metric, []) for metric in metric_names)
+    for samp_name, metric_arrs, samp_bam_reads in zip(
+        sample_names, samples_metrics, all_bam_reads
+    ):
+        for metric, metric_arr in metric_arrs.items():
+            df = pl.from_numpy(
+                metric_arr, schema=list(map(str, ref_pos))
+            ).with_columns(
+                [
+                    pl.Series(
+                        name="read_id",
+                        values=[read.query_name for read in samp_bam_reads],
+                    ),
+                    pl.lit(samp_name).alias("Sample"),
+                ]
             )
-        ax.set_xlabel("", fontsize=45)
-        if metric_name == "dwell":
-            ax.set_ylim(2, 80)
-            ax.set_yscale("log")
-        if metric_name.endswith("mean"):
-            ax.set_ylim(-1.5, 2)
-        if metric_name.endswith("sd"):
-            ax.set_ylim(-0.005, 0.3)
-            ax.set_xlabel("Position", fontsize=45)
-        ax.set_ylabel(metric_name, fontsize=45)
-        ax.tick_params(labelsize=16, axis="x")
-        ax.tick_params(labelsize=32, axis="y")
-    return fig, axs
+            dfs[metric].append(
+                df.melt(
+                    id_vars=["read_id", "Sample"],
+                    variable_name="Position",
+                ).with_columns(
+                    [
+                        pl.col("Position").cast(pl.Int32),
+                        pl.col("value").cast(pl.Float64),
+                    ]
+                )
+            )
+    dfs = dict((metric, pl.concat(mdfs)) for metric, mdfs in dfs.items())
+
+    if geom_kwargs is None:
+        geom_kwargs = {}
+    plots = []
+    for metric in samples_metrics[0].keys():
+        m_min, m_max = np.nanpercentile(dfs[metric]["value"], metric_pctl_range)
+        m_diff = m_max - m_min
+        ylim = (m_min - m_diff * 0.01, m_max + m_diff * 0.01)
+        plots.append(
+            p9.ggplot(dfs[metric])
+            + geom(
+                p9.aes(y="value", x="factor(Position)", fill="Sample"),
+                **geom_kwargs,
+            )
+            + p9.scale_x_discrete(
+                labels=[str(rp) if rp % 5 == 0 else "" for rp in ref_pos]
+            )
+            + p9.ylim(*ylim)
+            + p9.labels.ylab(metric)
+            + p9.labels.xlab("Reference Position")
+        )
+        if sample_colors is not None:
+            plots[-1] = plots[-1] + p9.scale_fill_manual(
+                sample_colors, limits=sample_names
+            )
+    return plots
 
 
 def plot_metric_at_ref_region(
@@ -1321,14 +1590,12 @@ def plot_metric_at_ref_region(
     pod5_and_bam_fhs,
     metric="dwell_trimmean",
     sig_map_refiner=None,
-    skip_sig_map_refine=False,
     max_reads=None,
     reverse_signal=False,
-    t_as_u=False,
-    fig_axs=None,
-    fig_width=DEFAULT_PLOT_FIG_SIZE[0],
-    facet_height=DEFAULT_PLOT_FIG_SIZE[1],
-    highlight_ranges=None,
+    sample_names=None,
+    sample_colors=None,
+    geom=p9.geom_boxplot,
+    geom_kwargs=None,
     **kwargs,
 ):
     """Plot signal from reads at a reference region.
@@ -1340,41 +1607,31 @@ def plot_metric_at_ref_region(
         metric (str): Named metric (e.g. dwell, mean, sd). Should be a key
             in metrics.METRIC_FUNCS
         sig_map_refiner (SigMapRefiner): For signal mapping and level extract
-        skip_sig_map_refine (bool): Skip signal mapping refinement
         max_reads (int): Maximum reads to plot
         reverse_signal (bool): Is nanopore signal 3'>5' orientation?
-        t_as_u (bool): Plot T bases as U (RNA)
-        fig_axs (tuple): If None, new figure/axes will be opened. Should be
-            same length as the number of metrics computed.
-        fig_width (float): Figure width
-        facet_height (float): Height of each facet (one per metric)
-        highlight_ranges (iterable): Elements should be 3-tuples containing
-            reference start, end and color values.
 
     Returns:
-        matplotlib axis
+        plotnine plot objects. Use print(return_value) to display plot in in
+        a notebook or return_value.save("remora_plot.pdf") to save to file.
     """
     samples_metrics, all_bam_reads = get_ref_reg_samples_metrics(
         ref_reg,
         pod5_and_bam_fhs,
         metric=metric,
         sig_map_refiner=sig_map_refiner,
-        skip_sig_map_refine=skip_sig_map_refine,
         max_reads=max_reads,
         reverse_signal=reverse_signal,
         **kwargs,
     )
-    fig_axs = plot_ref_region_metrics(
+    return plot_ref_region_metrics(
         ref_reg,
         samples_metrics,
-        fig_axs=fig_axs,
-        fig_width=fig_width,
-        facet_height=facet_height,
-        highlight_ranges=highlight_ranges,
-        t_as_u=t_as_u,
+        all_bam_reads,
+        sample_names=sample_names,
+        sample_colors=sample_colors,
+        geom=geom,
+        geom_kwargs=geom_kwargs,
     )
-    plt.tight_layout()
-    return fig_axs
 
 
 ###########
@@ -1402,6 +1659,7 @@ class Read:
     cigar: list = None
     ref_to_signal: np.ndarray = None
     full_align: str = None
+    _sig_len: int = None
 
     @property
     def pa_signal(self):
@@ -1429,6 +1687,12 @@ class Read:
             1.0,
             np.median(np.abs(self.pa_signal - self.shift_pa_to_norm)) * factor,
         )
+
+    @property
+    def sig_len(self):
+        if self._sig_len is None and self.dacs is not None:
+            self._sig_len = self.dacs.size
+        return self._sig_len
 
     @property
     def seq_len(self):
@@ -1474,7 +1738,7 @@ class Read:
         # base in the duplex sequence, so we infer it by alignment. Using the
         # simplex sequence as the query sequence is somewhat arbitrary, but it
         # makes the downstream coordinate mappings more convenient
-        simplex_duplex_mapping = DU.map_simplex_to_duplex(
+        simplex_duplex_mapping = duplex_utils.map_simplex_to_duplex(
             simplex_seq=read.seq, duplex_seq=duplex_read_sequence
         )
         # duplex_read_to_signal is a mapping of each position in the duplex
@@ -1859,9 +2123,9 @@ class Read:
         Args:
             metric (str): Named metric (e.g. dwell, mean, sd). Should be a key
                 in metrics.METRIC_FUNCS
-            metric_func (Callable): Function taking three arguments sequence,
-                signal and a sequence to signal mapping and return a dict of
-                metric names to per base metric values.
+            metric_func (Callable): Function taking two arguments signal and
+                a sequence to signal mapping and return a dict of metric names
+                to per base metric arrays.
             ref_anchored (bool): Compute metric against reference bases. If
                 False, return basecall anchored metrics.
             region (RefRegion): Reference region from which to extract metrics

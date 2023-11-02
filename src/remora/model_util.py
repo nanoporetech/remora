@@ -1,5 +1,4 @@
 import os
-import sys
 import json
 import toml
 import datetime
@@ -8,7 +7,7 @@ from os.path import isfile
 
 import torch
 import numpy as np
-import pandas as pd
+import polars as pl
 from torch import nn
 from torch.nn.utils.fusion import fuse_conv_bn_eval
 
@@ -20,6 +19,7 @@ from remora.refine_signal_map import SigMapRefiner
 try:
     from importlib.resources import files as importlib_resources_files
 except ImportError:
+    # python3.8 requires backport
     from importlib_resources import files as importlib_resources_files
 
 LOGGER = log.get_logger()
@@ -591,23 +591,13 @@ def load_model(
     remora_model_version = f"v{remora_model_version}"
     path = importlib_resources_files(remora) / constants.MODEL_DATA_DIR_NAME
     path.mkdir(parents=True, exist_ok=True)
-    model_name = "_".join(
-        [
-            pore,
-            basecall_model_type,
-            basecall_model_version,
-            modified_bases,
-            remora_model_type,
-            remora_model_version,
-        ]
-    )
-    model_name = f"{model_name}.pt"
-    full_path = os.path.join(path, model_name)
+    constants.MODEL_DICT
+    full_path = os.path.join(path, f"{url}.pt")
     if not os.path.exists(full_path):
         LOGGER.info(
             f"No pre-trained Remora model found for "
-            f"this configuration {model_name} at {path}.\n"
-            f"Attempting to download {model_name}"
+            f"this configuration {url}.pt at {path}.\n"
+            f"Attempting to download {url}"
         )
         md = ModelDownload(path)
         md.download(url)
@@ -625,39 +615,6 @@ def get_pretrained_models(
     remora_model_type=None,
     remora_model_version=None,
 ):
-    def filter_dataframe(models, args):
-        running_sequence = []
-        for x, y in zip(args, models.columns):
-            if x is None:
-                continue
-            else:
-                if y in ["Pore", "Basecall_Model_Type"]:
-                    x = x.lower()
-                elif y in ["Modified_Bases"]:
-                    x = "_".join(sorted(z.lower() for z in x))
-                elif y in ["Remora_Model_Type"]:
-                    x = x.upper()
-                running_sequence.append(x)
-                models = models[models[y] == x]
-                if len(models) == 0:
-                    LOGGER.info(
-                        f" {y} {','.join(running_sequence)} not found in "
-                        "library of pre-trained models."
-                    )
-                    sys.exit(1)
-
-        return models
-
-    header = [
-        "Pore",
-        "Basecall_Model_Type",
-        "Basecall_Model_Version",
-        "Modified_Bases",
-        "Remora_Model_Type",
-        "Remora_Model_Version",
-        "Remora_Model_URL",
-    ]
-
     models = []
     for pore_type, mod_bases in constants.MODEL_DICT.items():
         for mod_base, remora_types in mod_bases.items():
@@ -676,18 +633,38 @@ def get_pretrained_models(
                                     remora_url,
                                 )
                             )
-    models = pd.DataFrame(models)
-    models.columns = header
-
-    args = [
-        pore,
-        basecall_model_type,
-        basecall_model_version,
-        modified_bases,
-        remora_model_type,
-        remora_model_version,
+    header = [
+        "Pore",
+        "Basecall\nModel\nType",
+        "Basecall\nModel\nVersion",
+        "Modified\nBases",
+        "Remora\nModel\nType",
+        "Remora\nModel\nVersion",
+        "Remora\nModel\nURL",
     ]
+    models = pl.DataFrame(models, schema=header)
+    for key, val in zip(
+        header,
+        [
+            pore,
+            basecall_model_type,
+            basecall_model_version,
+            modified_bases,
+            remora_model_type,
+            remora_model_version,
+        ],
+    ):
+        if val is None:
+            continue
+        else:
+            if key in ["Pore", "Basecall\nModel\nType"]:
+                val = val.lower()
+            elif key == "Modified\nBases":
+                val = "_".join(sorted(mb.lower() for mb in val))
+            elif key == "Remora\nModel\nType":
+                val = val.upper()
+            models = models.filter(pl.col(key) == pl.lit(val))
+            if models.height == 0:
+                raise RemoraError("No models found satisfying filter criteria")
 
-    models = filter_dataframe(models, args)
-
-    return models, header
+    return models

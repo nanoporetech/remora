@@ -400,6 +400,7 @@ def test_chebi_mod_validate_from_dataset(
     print(f"Trained validate results output: {out_dir}")
     out_file = out_dir / "mod_validate.txt"
     full_file = out_dir / "mod_validate_full.txt"
+    log_file = out_dir / "mod_validate.log"
     check_call(
         [
             "remora",
@@ -414,6 +415,8 @@ def test_chebi_mod_validate_from_dataset(
             out_file,
             "--full-results-filename",
             full_file,
+            "--log-filename",
+            log_file,
         ],
     )
 
