@@ -128,6 +128,12 @@ _kit14_6ma_ac_models = {
     },
 }
 
+_rna004_m6A_drach_models = {
+    "sup": {
+        "v3.0.1": {1: "rna004_130bps_sup@v3.0.1_m6A_DRACH@v1"},
+    },
+}
+
 MODEL_DICT = {
     "dna_r9.4.1_e8": {
         "5mc": {
@@ -150,6 +156,11 @@ MODEL_DICT = {
     "dna_r10.4.1_e8.2_260bps": {
         "5hmc_5mc": {
             "CG": _kit14_260bps_5hmc_5mc_CG_models,
+        },
+    },
+    "rna004_130bps": {
+        "m6A": {
+            "DRACH": _rna004_m6A_drach_models,
         },
     },
 }

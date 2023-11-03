@@ -314,6 +314,18 @@ def test_chebi_mod_infer(
 
 
 @pytest.mark.unit
+def test_model_download(pretrain_model_args):
+    check_call(
+        [
+            "remora",
+            "model",
+            "download",
+            *pretrain_model_args,
+        ],
+    )
+
+
+@pytest.mark.unit
 @pytest.mark.duplex
 def test_mod_infer_duplex(
     tmpdir_factory,
