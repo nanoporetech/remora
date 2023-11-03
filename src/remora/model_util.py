@@ -663,7 +663,7 @@ def get_pretrained_models(
                 val = "_".join(sorted(mb.lower() for mb in val))
             elif key == "Remora\nModel\nType":
                 val = val.upper()
-            models = models.filter(pl.col(key) == pl.lit(val))
+            models = models.filter(pl.col(key).cast(str) == pl.lit(val))
             if models.height == 0:
                 raise RemoraError("No models found satisfying filter criteria")
 

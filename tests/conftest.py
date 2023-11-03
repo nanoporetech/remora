@@ -189,13 +189,13 @@ def pretrain_model_args():
         "--basecall-model-type",
         "hac",
         "--basecall-model-version",
-        "v3.5.1",
+        "v4.2.0",
         "--remora-model-type",
         "CG",
         "--remora-model-version",
         "2",
         "--modified-bases",
-        "5mC",
+        "5hmC_5mC",
     )
 
 

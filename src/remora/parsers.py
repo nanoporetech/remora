@@ -1033,7 +1033,7 @@ def run_download(args):
     from remora.download import ModelDownload
     from remora.model_util import get_pretrained_models
 
-    models, header = get_pretrained_models(
+    models = get_pretrained_models(
         args.pore,
         args.basecall_model_type,
         args.basecall_model_version,
@@ -1048,7 +1048,7 @@ def run_download(args):
     out_path = Path(path)
     out_path.mkdir(parents=True, exist_ok=True)
     model_dl = ModelDownload(out_path)
-    for model_url in models["Remora_Model_URL"]:
+    for model_url in models["Remora\nModel\nURL"]:
         if model_url != "":
             model_dl.download(model_url)
     LOGGER.info("Done")
