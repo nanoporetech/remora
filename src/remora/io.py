@@ -393,12 +393,12 @@ def iter_pod5_reads(pod5_path, num_reads=None, read_ids=None):
         read_ids (iterable): Read IDs to extract
 
     Yields:
-        Requested pod5.reader.ReadRecord objects
+        Requested pod5.ReadRecord objects
     """
     LOGGER.debug(f"Reading from POD5 at {pod5_path}")
-    with pod5.Reader(Path(pod5_path)) as pod5_fh:
+    with pod5.DatasetReader(Path(pod5_path)) as pod5_dr:
         for read_num, read in enumerate(
-            pod5_fh.reads(selection=read_ids, preload=["samples"])
+            pod5_dr.reads(selection=read_ids, preload=["samples"])
         ):
             if num_reads is not None and read_num >= num_reads:
                 LOGGER.debug(
@@ -715,16 +715,16 @@ def get_ref_seq_and_levels_from_reads(
     return seq, levels
 
 
-def get_pod5_reads(pod5_fh, read_ids):
+def get_pod5_reads(pod5_dr, read_ids):
     return dict(
         (str(pod5_read.read_id), pod5_read)
-        for pod5_read in pod5_fh.reads(selection=read_ids, preload=["samples"])
+        for pod5_read in pod5_dr.reads(selection=read_ids, preload=["samples"])
     )
 
 
-def get_io_reads(bam_reads, pod5_fh, reverse_signal=False, missing_ok=False):
+def get_io_reads(bam_reads, pod5_dr, reverse_signal=False, missing_ok=False):
     pod5_reads = get_pod5_reads(
-        pod5_fh, [bam_read.query_name for bam_read in bam_reads]
+        pod5_dr, [bam_read.query_name for bam_read in bam_reads]
     )
     io_reads = []
     for bam_read in bam_reads:
@@ -745,7 +745,7 @@ def get_io_reads(bam_reads, pod5_fh, reverse_signal=False, missing_ok=False):
 
 def get_reads_reference_regions(
     ref_reg,
-    pod5_and_bam_fhs,
+    pod5_bam_pairs,
     sig_map_refiner=None,
     skip_sig_map_refine=False,
     max_reads=50,
@@ -753,14 +753,14 @@ def get_reads_reference_regions(
 ):
     all_bam_reads = []
     samples_read_ref_regs = []
-    for pod5_fh, bam_fh in pod5_and_bam_fhs:
+    for pod5_dr, bam_fh in pod5_bam_pairs:
         sample_bam_reads = get_reg_bam_reads(ref_reg, bam_fh)
         if len(sample_bam_reads) == 0:
             raise RemoraError("No reads covering region")
         if max_reads is not None and len(sample_bam_reads) > max_reads:
             sample_bam_reads = random.sample(sample_bam_reads, max_reads)
         all_bam_reads.append(sample_bam_reads)
-        io_reads = get_io_reads(sample_bam_reads, pod5_fh, reverse_signal)
+        io_reads = get_io_reads(sample_bam_reads, pod5_dr, reverse_signal)
         if sig_map_refiner is not None and not skip_sig_map_refine:
             for io_read in io_reads:
                 io_read.set_refine_signal_mapping(
@@ -774,7 +774,7 @@ def get_reads_reference_regions(
 
 def get_ref_reg_sample_metrics(
     ref_reg,
-    pod5_fh,
+    pod5_dr,
     bam_reads,
     metric,
     sig_map_refiner,
@@ -783,7 +783,7 @@ def get_ref_reg_sample_metrics(
     ref_orient=True,
     **kwargs,
 ):
-    io_reads = get_io_reads(bam_reads, pod5_fh, reverse_signal)
+    io_reads = get_io_reads(bam_reads, pod5_dr, reverse_signal)
     if sig_map_refiner is not None and not skip_sig_map_refine:
         for io_read in io_reads:
             io_read.set_refine_signal_mapping(sig_map_refiner, ref_mapping=True)
@@ -812,7 +812,7 @@ def get_ref_reg_sample_metrics(
 
 def get_ref_reg_samples_metrics(
     ref_reg,
-    pod5_and_bam_fhs,
+    pod5_bam_pairs,
     sig_map_refiner=None,
     skip_sig_map_refine=False,
     max_reads=None,
@@ -822,7 +822,7 @@ def get_ref_reg_samples_metrics(
 ):
     all_bam_reads = []
     samples_metrics = []
-    for pod5_fh, bam_fh in pod5_and_bam_fhs:
+    for pod5_dr, bam_fh in pod5_bam_pairs:
         sample_bam_reads = get_reg_bam_reads(ref_reg, bam_fh)
         if len(sample_bam_reads) == 0:
             raise RemoraError("No reads covering region")
@@ -831,7 +831,7 @@ def get_ref_reg_samples_metrics(
         all_bam_reads.append(sample_bam_reads)
         sample_metrics = get_ref_reg_sample_metrics(
             ref_reg,
-            pod5_fh,
+            pod5_dr,
             sample_bam_reads,
             metric,
             sig_map_refiner,
@@ -852,7 +852,7 @@ def get_ref_reg_samples_metrics(
 
 def get_region_kmers(
     reg_and_bam_reads,
-    pod5_fh,
+    pod5_dr,
     sig_map_refiner,
     kmer_context_bases,
     min_cov=10,
@@ -869,7 +869,7 @@ def get_region_kmers(
         ]
     reg_metrics = get_ref_reg_sample_metrics(
         reg,
-        pod5_fh,
+        pod5_dr,
         bam_reads,
         "dwell_trimmean",
         sig_map_refiner,
@@ -907,7 +907,7 @@ def get_region_kmers(
 
 def prep_region_kmers(*args, **kwargs):
     args = list(args)
-    args[0] = pod5.Reader(args[0])
+    args[0] = pod5.DatasetReader(args[0])
     return tuple(args), kwargs
 
 
@@ -1471,7 +1471,7 @@ def plot_ref_region_reads(
 
 def plot_signal_at_ref_region(
     ref_reg,
-    pod5_and_bam_fhs,
+    pod5_bam_pairs,
     sig_map_refiner=None,
     skip_sig_map_refine=False,
     max_reads=50,
@@ -1482,9 +1482,8 @@ def plot_signal_at_ref_region(
 
     Args:
         ref_reg (RefRegion): Reference position at which to plot signal
-        pod5_and_bam_fhs (list): List of samples. Each element should be a
-            2-tuple of 1. Sorted and indexed BAM file handle and
-            2. pod5.Reader file handle
+        pod5_bam_pairs (list): List of samples. Each element should be a
+            2-tuple of 1. pod5.DatasetReader and 2. pysam.AlignmentFile
         sig_map_refiner (SigMapRefiner): For signal mapping and level extract
         skip_sig_map_refine (bool): Skip signal mapping refinement
         max_reads (int): Maximum reads to plot (TODO: add overplotting options)
@@ -1497,7 +1496,7 @@ def plot_signal_at_ref_region(
     """
     samples_read_ref_regs, reg_bam_reads = get_reads_reference_regions(
         ref_reg,
-        pod5_and_bam_fhs,
+        pod5_bam_pairs,
         sig_map_refiner=sig_map_refiner,
         skip_sig_map_refine=skip_sig_map_refine,
         max_reads=max_reads,
@@ -1587,7 +1586,7 @@ def plot_ref_region_metrics(
 
 def plot_metric_at_ref_region(
     ref_reg,
-    pod5_and_bam_fhs,
+    pod5_bam_pairs,
     metric="dwell_trimmean",
     sig_map_refiner=None,
     max_reads=None,
@@ -1602,8 +1601,8 @@ def plot_metric_at_ref_region(
 
     Args:
         ref_reg (RefRegion): Reference position to plot
-        pod5_and_bam_fhs (list): List of 2-tuples containing sorted and indexed
-            BAM file handles and POD5 file handles
+        pod5_bam_pairs (list): List of samples. Each element should be a
+            2-tuple of 1. pod5.DatasetReader and 2. pysam.AlignmentFile
         metric (str): Named metric (e.g. dwell, mean, sd). Should be a key
             in metrics.METRIC_FUNCS
         sig_map_refiner (SigMapRefiner): For signal mapping and level extract
@@ -1616,7 +1615,7 @@ def plot_metric_at_ref_region(
     """
     samples_metrics, all_bam_reads = get_ref_reg_samples_metrics(
         ref_reg,
-        pod5_and_bam_fhs,
+        pod5_bam_pairs,
         metric=metric,
         sig_map_refiner=sig_map_refiner,
         max_reads=max_reads,
@@ -2278,7 +2277,7 @@ class DuplexPairsBuilder:
         """
         self.simplex_index = simplex_index
         self.pod5_path = pod5_path
-        self.reader = pod5.Reader(Path(pod5_path))
+        self.reader = pod5.DatasetReader(Path(pod5_path))
 
     def make_read_pair(self, read_id_pair):
         """Make read pair

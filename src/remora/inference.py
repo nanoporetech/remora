@@ -385,8 +385,8 @@ def infer_from_pod5_and_bam(
     ref_anchored=False,
 ):
     bam_idx = ReadIndexedBam(in_bam_path, skip_non_primary, req_tags={"mv"})
-    with pod5.Reader(Path(pod5_path)) as pod5_fh:
-        read_ids, num_reads = get_read_ids(bam_idx, pod5_fh, num_reads)
+    with pod5.DatasetReader(Path(pod5_path)) as pod5_dr:
+        read_ids, num_reads = get_read_ids(bam_idx, pod5_dr, num_reads)
 
     signals = BackgroundIter(
         iter_signal,
@@ -730,7 +730,7 @@ def prep_duplex_read_builder(simplex_index, pod5_path):
 
     Args:
         simplex_index (io.ReadIndexedBam): Read indexed BAM file handle
-        pod5_path (pod5.reader.Reader): POD5 file handle
+        pod5_path (str): POD5 file handle
     """
     builder = DuplexPairsBuilder(
         simplex_index=simplex_index,

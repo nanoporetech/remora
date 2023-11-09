@@ -487,6 +487,7 @@ def test_plot_ref_region(
     print("Running command line `remora analyze plot ref_region`")
     out_dir = tmpdir_factory.mktemp("plot_ref_region")
     log_path = out_dir / "log.txt"
+    plot_path = out_dir / "remora_raw_signal_plot.pdf"
     print(f"Output dir: {out_dir}")
     check_call(
         [
@@ -509,6 +510,8 @@ def test_plot_ref_region(
             "--refine-rough-rescale",
             "--refine-scale-iters",
             "0",
+            "--plots-filename",
+            plot_path,
             "--log-filename",
             log_path,
         ],
