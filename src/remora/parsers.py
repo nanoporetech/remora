@@ -69,7 +69,7 @@ def register_dataset_prepare(parser):
     )
     subparser.add_argument(
         "pod5",
-        help="POD5 file corresponding to bam file.",
+        help="POD5 (file or directory) matched to bam file.",
     )
     subparser.add_argument(
         "bam",
@@ -1083,7 +1083,7 @@ def register_infer_from_pod5_and_bam(parser):
     )
     subparser.add_argument(
         "pod5",
-        help="POD5 file corresponding to bam file.",
+        help="POD5 (file or directory) matched to bam file.",
     )
     subparser.add_argument(
         "in_bam",
@@ -1205,7 +1205,7 @@ def register_infer_duplex_from_pod5_and_bam(parser):
     )
     subparser.add_argument(
         "pod5",
-        help="POD5 file corresponding to bam file.",
+        help="POD5 (file or directory) matched to bam file.",
     )
     subparser.add_argument(
         "simplex_bam",
@@ -1721,9 +1721,10 @@ def register_plot_ref_region(parser):
         nargs=2,
         metavar=("POD5", "BAM"),
         action="append",
-        help="""POD5 signal path and BAM file path. BAM file must be mapped,
-        sorted and indexed and contain move table and MD tags. Multiple
-        samples can be supplied and will be plotted in different colors""",
+        help="""POD5 and BAM paths. POD5 may be a file or directory. BAM file
+        must be mapped, sorted and indexed and contain move table and MD tags.
+        Multiple samples can be supplied and will be plotted in different
+        colors""",
     )
     in_grp.add_argument(
         "--ref-regions",
@@ -1814,7 +1815,7 @@ def run_plot_ref_region(args):
         log.init_logger(args.log_filename)
     pod5_paths, bc_paths = zip(*args.pod5_and_bam)
     bam_fhs = [pysam.AlignmentFile(bc_path) for bc_path in bc_paths]
-    pod5_fhs = [pod5.Reader(pod5_path) for pod5_path in pod5_paths]
+    pod5_fhs = [pod5.DatasetReader(pod5_path) for pod5_path in pod5_paths]
     sig_map_refiner = refine_signal_map.SigMapRefiner(
         kmer_model_filename=args.refine_kmer_level_table,
         do_rough_rescale=args.refine_rough_rescale,

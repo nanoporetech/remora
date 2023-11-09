@@ -140,8 +140,8 @@ def extract_chunk_dataset(
     skip_shuffle=False,
 ):
     bam_idx = ReadIndexedBam(bam_path, skip_non_primary)
-    with pod5.Reader(Path(pod5_path)) as pod5_fh:
-        read_ids, num_reads = get_read_ids(bam_idx, pod5_fh, num_reads)
+    with pod5.DatasetReader(Path(pod5_path)) as pod5_dr:
+        read_ids, num_reads = get_read_ids(bam_idx, pod5_dr, num_reads)
     if num_reads == 0:
         return
 

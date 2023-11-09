@@ -173,16 +173,16 @@ def softmax_axis1(x):
         return (e_x.T / e_x.sum(axis=1)).T
 
 
-def get_read_ids(bam_idx, pod5_fh, num_reads):
+def get_read_ids(bam_idx, pod5_dr, num_reads):
     """Get overlapping read ids from bam index and pod5 file
 
     Args:
         bam_idx (ReadIndexedBam): Read indexed BAM
-        pod5_fh (pod5.Reader): POD5 file handle
+        pod5_dr (pod5.DatasetReader): POD5 Dataset Reader
         num_reads (int): Maximum number of reads, or None for no max
     """
     LOGGER.info("Extracting read IDs from POD5")
-    pod5_read_ids = set(pod5_fh.read_ids)
+    pod5_read_ids = set(pod5_dr.read_ids)
     num_pod5_reads = len(pod5_read_ids)
     # pod5 will raise when it cannot find a "selected" read id, so we make
     # sure they're all present before starting
