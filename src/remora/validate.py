@@ -101,20 +101,24 @@ def add_unmodeled_labels(output, unmodeled_labels):
 
 def process_mods_probs(probs, labels, allow_unbalanced, pct_filt, name):
     if not allow_unbalanced:
-        nlabs = labels.max() + 1
+        nlabs = max(labels.max() + 1, probs.shape[1])
         # split probs
-        label_probs = [probs[labels == mod_idx] for mod_idx in range(nlabs)]
-        lab_sizes = [lp.shape[0] for lp in label_probs]
+        labels_probs = [probs[labels == mod_idx] for mod_idx in range(nlabs)]
+        lab_sizes = [lp.shape[0] for lp in labels_probs]
         if len(lab_sizes) == 1:
             raise RemoraError(
                 "Cannot balance dataset with 1 label. "
                 "Consider running with `--allow-unbalanced`"
             )
         LOGGER.debug(f"Balancing labels. Starting from: {lab_sizes}")
-        min_size = min(lab_sizes)
-        probs = np.empty((min_size * nlabs, nlabs), dtype=probs.dtype)
-        labels = np.empty((min_size * nlabs), dtype=labels.dtype)
-        for lab_idx, label_probs in enumerate(label_probs):
+        min_size = min([s for s in lab_sizes if s > 0])
+        num_avail_labs = sum(s > 0 for s in lab_sizes)
+        probs = np.empty((min_size * num_avail_labs, nlabs), dtype=probs.dtype)
+        labels = np.empty((min_size * num_avail_labs), dtype=labels.dtype)
+        for lab_idx, label_probs in enumerate(labels_probs):
+            # skip labels not included in ground truth
+            if label_probs.shape[0] == 0:
+                continue
             if label_probs.shape[0] > min_size:
                 np.random.shuffle(label_probs)
             probs[lab_idx * min_size : (lab_idx + 1) * min_size] = label_probs[
@@ -320,6 +324,7 @@ def parse_mod_read(
     # TODO handle duplex mods on opposite strand
     q_mod_probs = defaultdict(dict)
     for (_, mod_strand, mod_name), mod_values in read.modified_bases.items():
+        mod_name = str(mod_name)
         if (
             (mod_strand == 0 and read.is_reverse)
             or (mod_strand == 1 and not read.is_reverse)
@@ -413,6 +418,7 @@ def check_mod_strand(read, bam_path, alphabet, do_warn_mod, do_warn_strand):
 
     valid_mods = False
     for _, mod_strand, mod_name in read.modified_bases.keys():
+        mod_name = str(mod_name)
         if (mod_strand == 0 and read.is_reverse) or (
             mod_strand == 1 and not read.is_reverse
         ):

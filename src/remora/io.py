@@ -133,7 +133,7 @@ def parse_mods_bed(bed_path):
         for line in regs_fh:
             fields = line.split()
             ctg, st, en, mod = fields[:4]
-            all_mods.update(mod)
+            all_mods.add(mod)
             if len(fields) < 6 or fields[5] not in "+-":
                 for strand in "+-":
                     for pos in range(int(st), int(en)):
