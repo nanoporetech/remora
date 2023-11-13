@@ -1485,12 +1485,40 @@ def register_validate_from_modbams(parser):
         "--log-filename",
         help="Log filename. (default: Don't output log file)",
     )
+    subparser.add_argument(
+        "--explicit-mod-tag-used",
+        action="store_true",
+        help="""Specify that the user has checked that the modified base tag
+        (MM) uses the explicit (`?`) specifier. With the implicit (`.`) tag
+        type  pysam will return invalid modified base probabilities and result
+        may be invalid..""",
+    )
 
     subparser.set_defaults(func=run_validate_modbams)
 
 
 def run_validate_modbams(args):
     from remora.validate import validate_modbams
+
+    if args.explicit_mod_tag_used:
+        LOGGER.warning(
+            """
+            If implict modified tag types are included (from all-context
+            modified base models) results from this command will be inavlid.
+            Please see pysam issue here:
+            https://github.com/pysam-developers/pysam/issues/1123"""
+        )
+    else:
+        LOGGER.error(
+            """
+            If implict modified tag types are included (from all-context
+            modified base models) results from this command will be inavlid.
+            Please see pysam issue here:
+            https://github.com/pysam-developers/pysam/issues/1123
+            To force the usage of this command please specify the
+            --explicit-mod-tag-used argument"""
+        )
+        sys.exit(1)
 
     if args.log_filename is not None:
         log.init_logger(args.log_filename)
@@ -1803,9 +1831,9 @@ def register_plot_ref_region(parser):
 
 
 def run_plot_ref_region(args):
-    import pod5
     import pysam
     import plotnine as p9
+    from pod5 import DatasetReader
 
     from remora import log, io, refine_signal_map
 
@@ -1815,7 +1843,7 @@ def run_plot_ref_region(args):
         log.init_logger(args.log_filename)
     pod5_paths, bc_paths = zip(*args.pod5_and_bam)
     bam_fhs = [pysam.AlignmentFile(bc_path) for bc_path in bc_paths]
-    pod5_fhs = [pod5.DatasetReader(pod5_path) for pod5_path in pod5_paths]
+    pod5_fhs = [DatasetReader(pod5_path) for pod5_path in pod5_paths]
     sig_map_refiner = refine_signal_map.SigMapRefiner(
         kmer_model_filename=args.refine_kmer_level_table,
         do_rough_rescale=args.refine_rough_rescale,

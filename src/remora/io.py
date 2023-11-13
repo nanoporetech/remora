@@ -9,12 +9,12 @@ from collections import defaultdict
 from itertools import chain, product
 from functools import cached_property
 
-import pod5
 import pysam
 import numpy as np
 import polars as pl
 import plotnine as p9
 from tqdm import tqdm
+from pod5 import DatasetReader
 from pysam import AlignedSegment
 
 from remora.metrics import METRIC_FUNCS
@@ -178,20 +178,21 @@ class ReadIndexedBam:
     get_first_alignment) will open the pysam file handle and leave it open.
     This allows easier use with multiprocessing using standard operations.
 
+    For BAM files with split reads, the parent read is indexed. This allows
+    access after extracting signal from a POD5 file.
+
     Args:
         bam_path (str): Path to BAM file
         skip_non_primary (bool): Should non-primary alignmets be skipped
         req_tags (set): Skip reads without required tags
         read_id_converter (Callable[[str], str]): Function to convert read ids
-            (e.g. for concatenated duplex read ids)
-        read_ids_subset (set): Read IDs to include
+            (e.g. for concatenated duplex read ids).
     """
 
     bam_path: str
     skip_non_primary: bool = True
     req_tags: set = None
     read_id_converter: Callable = None
-    read_ids_subset: set = None
 
     @property
     def reference_filename(self):
@@ -248,10 +249,11 @@ class ReadIndexedBam:
         pbar = tqdm(
             smoothing=0,
             unit=" Reads",
-            desc="Indexing BAM by read id",
+            desc="Indexing BAM by parent read id",
             disable=os.environ.get("LOG_SAFE", False),
         )
         self.num_records = 0
+        self.num_non_primary = 0
         # iterating over file handle gives incorrect pointers
         while True:
             read_ptr = self.bam_fh.tell()
@@ -260,26 +262,22 @@ class ReadIndexedBam:
             except StopIteration:
                 break
             pbar.update()
-            index_read_id = (
-                read.query_name
-                if self.read_id_converter is None
-                else self.read_id_converter(read.query_name)
-            )
-            if (
-                self.read_ids_subset is not None
-                and index_read_id not in self.read_ids_subset
-            ):
-                continue
+            # try to extract parent ID for split reads
+            try:
+                index_read_id = read.get_tag("pi")
+            except KeyError:
+                index_read_id = read.query_name
+            if self.read_id_converter is not None:
+                index_read_id = self.read_id_converter(index_read_id)
             if self.req_tags is not None:
                 tags = set(tg[0] for tg in read.tags)
                 missing_tags = self.req_tags.difference(tags)
                 if len(missing_tags) > 0:
                     LOGGER.debug(f"{index_read_id} missing tags {missing_tags}")
                     continue
-            if self.skip_non_primary and (
-                not read_is_primary(read) or index_read_id in self._bam_idx
-            ):
-                LOGGER.debug(f"{index_read_id} not primary")
+            if self.skip_non_primary and not read_is_primary(read):
+                LOGGER.debug(f"{read.query_name} not primary")
+                self.num_non_primary += 1
                 continue
             self.num_records += 1
             self._bam_idx[index_read_id].append(read_ptr)
@@ -313,18 +311,6 @@ class ReadIndexedBam:
                     "Could not extract BAM read. Ensure BAM file object was "
                     "closed before spawning process."
                 )
-            index_read_id = (
-                bam_read.query_name
-                if self.read_id_converter is None
-                else self.read_id_converter(bam_read.query_name)
-            )
-            if index_read_id != read_id:
-                LOGGER.debug(
-                    f"Read ID {read_id} does not match extracted BAM record "
-                    f"{index_read_id} at {read_ptr}. ReadIndexedBam may "
-                    "be corrupted."
-                )
-                raise RemoraError("Read ID does not match BAM record")
             yield bam_read
 
     def get_first_alignment(self, read_id):
@@ -353,6 +339,38 @@ class ReadIndexedBam:
         if self._iter is None:
             self._iter = iter(self.bam_fh)
         return next(self._iter)
+
+
+def get_read_ids(bam_idx, pod5_dr, num_reads, return_num_bam_reads=False):
+    """Get overlapping read ids from bam index and pod5 file
+
+    Args:
+        bam_idx (ReadIndexedBam): Read indexed BAM
+        pod5_dr (pod5.DatasetReader): POD5 Dataset Reader
+        num_reads (int): Maximum number of reads, or None for no max
+        return_num_child_reads (bool): Return the number of bam records (child
+            reads and multiple mappings) with a parent read ID. When set to
+            False the number of parent read IDs is returned.
+    """
+    LOGGER.info("Extracting read IDs from POD5")
+    pod5_read_ids = set(pod5_dr.read_ids)
+    both_read_ids = list(pod5_read_ids.intersection(bam_idx.read_ids))
+    num_both_read_ids = sum(
+        len(bam_idx._bam_idx[parent_read_id])
+        for parent_read_id in both_read_ids
+    )
+    LOGGER.info(
+        f"Found {bam_idx.num_records:,} valid BAM records. Found signal "
+        f"in POD5 for {num_both_read_ids / bam_idx.num_records:.2%} of BAM "
+        "records."
+    )
+    if not return_num_bam_reads:
+        num_both_read_ids = len(both_read_ids)
+    if num_reads is None:
+        num_reads = num_both_read_ids
+    else:
+        num_reads = min(num_reads, num_both_read_ids)
+    return both_read_ids, num_reads
 
 
 def parse_move_tag(
@@ -396,7 +414,7 @@ def iter_pod5_reads(pod5_path, num_reads=None, read_ids=None):
         Requested pod5.ReadRecord objects
     """
     LOGGER.debug(f"Reading from POD5 at {pod5_path}")
-    with pod5.DatasetReader(Path(pod5_path)) as pod5_dr:
+    with DatasetReader(Path(pod5_path)) as pod5_dr:
         for read_num, read in enumerate(
             pod5_dr.reads(selection=read_ids, preload=["samples"])
         ):
@@ -458,14 +476,15 @@ def extract_alignments(read_err, bam_idx, rev_sig=False):
     try:
         for bam_read in bam_idx.get_alignments(io_read.read_id):
             align_read = io_read.copy()
-            align_read.add_alignment(bam_read, reverse_signal=rev_sig)
-            read_alignments.append(tuple((align_read, None)))
-    except KeyError:
-        LOGGER.debug(f"{io_read.read_id} Read id not found in BAM file")
-        return [tuple((None, "Read id not found in BAM file"))]
+            try:
+                align_read.add_alignment(bam_read, reverse_signal=rev_sig)
+                read_alignments.append((align_read, None))
+            except RemoraError as e:
+                LOGGER.debug(f"{io_read.read_id} Extract alignment error: {e}")
+                read_alignments.append((align_read, str(e)))
     except RemoraError as e:
         LOGGER.debug(f"{io_read.read_id} Extract alignment error: {e}")
-        return [tuple((None, str(e)))]
+        return [(io_read, str(e))]
     return read_alignments
 
 
@@ -907,7 +926,7 @@ def get_region_kmers(
 
 def prep_region_kmers(*args, **kwargs):
     args = list(args)
-    args[0] = pod5.DatasetReader(args[0])
+    args[0] = DatasetReader(args[0])
     return tuple(args), kwargs
 
 
@@ -1640,6 +1659,53 @@ def plot_metric_at_ref_region(
 
 @dataclass
 class Read:
+    """Input/Output Read
+
+    Object to hold information related to signal, basecalls and mapping of a
+    nanopore read.
+
+    Args:
+        read_id (str): Read identifier. Note that for split reads this should
+            be the parent ID (original POD5 ID). See child_read_id for the
+            read ID listed in the BAM file.
+        dacs (np.ndarray): Data ACquisition signal values. As read from the
+            pod5_read.signal attribute. Note for "reverse signal" reads (mostly
+            RNA) signal should be in the 5' to 3' orientation (opposite of
+            original sequencing 3' to 5' direction)
+        seq (str): Basecalled sequence
+        stride (int): Basecalling model stride. Move table (mv_table) entries
+            occur at regular stride intervals through the signal.
+        num_trimmed (int): Number of signal points trimmed from the start of
+            the read. For split reads this is applied after split slicing.
+        mv_table (np.array): Move table. `1` entries indicate base output
+            position. See Dorado documentation/SAM.md.
+        query_to_signal (np.ndarray): Array with length one longer than
+            basecalled sequence (`len(io_read.seq) + 1`) where entries
+            represent assigned position in io_read.dacs. This attribute is
+            updated when io_read.set_refine_signal_mapping is called.
+        shift_dacs_to_pa (float): Shift parameter to convert from DACs to
+            picoampere scaling. See io.Read.pa_signal for implementation.
+        scale_dacs_to_pa (float): Scale parameter to convert from DACs to
+            picoampere scaling. See io.Read.pa_signal for implementation.
+        shift_pa_to_norm (float): Shift parameter to convert from picoampere to
+            norm scaling. Extracted from BAM record tags.
+        scale_pa_to_norm (float): Scale parameter to convert from picoampere to
+            norm scaling. Extracted from BAM record tags.
+        shift_dacs_to_norm (float): Shift parameter to convert from DACs to
+            norm scaling. See io.Read.norm_signal for implementation.
+        scale_dacs_to_norm (float): Scale parameter to convert from DACs to
+            norm scaling. See io.Read.norm_signal for implementation.
+        ref_seq (str): Reference sequence for mapping.
+        ref_reg (RefRegion): Reference mapping region coordinates.
+        cigar (list): pysam.AlignedSegment.cigartuples
+        ref_to_signal (np.ndarray): Array with length one longer than
+            reference sequence (`len(io_read.ref_seq) + 1`) where entries
+            represent assigned position in io_read.dacs. This attribute is
+            updated when io_read.set_refine_signal_mapping(ref_mapping=True)
+            is called.
+        full_align (dict): Dictionary representation of BAM record.
+    """
+
     read_id: str
     dacs: np.ndarray = None
     seq: str = None
@@ -1657,7 +1723,8 @@ class Read:
     ref_reg: RefRegion = None
     cigar: list = None
     ref_to_signal: np.ndarray = None
-    full_align: str = None
+    full_align: dict = None
+    _child_read_id: str = None
     _sig_len: int = None
 
     @property
@@ -1708,6 +1775,32 @@ class Read:
                 return None
             return len(self.ref_seq)
         return self.ref_to_signal.size - 1
+
+    @property
+    def child_read_id(self):
+        if self._child_read_id is None:
+            return self.read_id
+        return self._child_read_id
+
+    def prune(self, drop_mod_tags=True, drop_move_tag=True):
+        """Drop larger memory arrays: dacs, mv_table, *_to_signal"""
+        drop_tags = set()
+        if drop_mod_tags:
+            drop_tags.update(("MM", "ML"))
+        if drop_move_tag:
+            drop_tags.add("mv")
+        if len(drop_tags) > 0:
+            # drop tags from input reads
+            self.full_align["tags"] = [
+                tag for tag in self.full_align["tags"] if tag not in drop_tags
+            ]
+        # access sig len to save the value
+        self.sig_len
+        self.dacs = None
+        self.mv_table = None
+        self.query_to_signal = None
+        self.ref_to_signal = None
+        return self
 
     def with_duplex_alignment(self, duplex_read_alignment, duplex_orientation):
         """Return copy with alignment to duplex sequence
@@ -1763,6 +1856,8 @@ class Read:
         Args:
             alignment_record (pysam.AlignedSegment)
             parse_ref_align (bool): Should reference alignment be parsed
+            reverse_signal (bool): Does this read derive from 3' to 5' signal
+                (RNA reads)
         """
         if (
             alignment_record.reference_name is None
@@ -1775,12 +1870,33 @@ class Read:
 
         tags = dict(alignment_record.tags)
         try:
-            self.num_trimmed = tags["ts"]
+            parent_read_id = tags.get("pi", None)
+            if parent_read_id is None:
+                self.num_trimmed = tags["ts"]
+                if alignment_record.query_name != self.read_id:
+                    raise RemoraError("Read IDs mismatch")
+            else:
+                if parent_read_id != self.read_id:
+                    raise RemoraError("Split read IDs mismatch")
+                self._child_read_id = alignment_record.query_name
+                try:
+                    self.num_trimmed = tags["ts"] + tags["sp"]
+                    self._sig_len = tags["ns"] - tags["ts"]
+                except KeyError:
+                    LOGGER.debug(
+                        f"{self.child_read_id} Split read, missing sp tag."
+                    )
+                    raise RemoraError("Split read missing sp tag")
             if self.num_trimmed > 0:
                 if reverse_signal:
                     self.dacs = self.dacs[: -self.num_trimmed]
                 else:
                     self.dacs = self.dacs[self.num_trimmed :]
+            if self._sig_len is not None:
+                if reverse_signal:
+                    self.dacs = self.dacs[-self._sig_len :]
+                else:
+                    self.dacs = self.dacs[: self._sig_len]
         except KeyError:
             self.num_trimmed = 0
 
@@ -1792,7 +1908,7 @@ class Read:
                 reverse_signal=reverse_signal,
             )
         except KeyError:
-            LOGGER.debug(f"Move table not found for {self.read_id}")
+            LOGGER.debug(f"Move table not found for {self.child_read_id}")
             self.query_to_signal = self.mv_table = self.stride = None
 
         try:
@@ -1842,8 +1958,9 @@ class Read:
             # +1 because knots include the end position of the last base
             if self.ref_to_signal.size != len(self.ref_seq) + 1:
                 LOGGER.debug(
-                    f"{self.read_id} discordant ref seq lengths: move+cigar:"
-                    f"{self.ref_to_signal.size} ref_seq:{len(self.ref_seq)}"
+                    f"{self.child_read_id} discordant ref seq lengths: "
+                    f"move+cigar:{self.ref_to_signal.size} "
+                    f"ref_seq:{len(self.ref_seq)}"
                 )
                 raise RemoraError("Discordant ref seq lengths")
             self.ref_reg.end = self.ref_reg.start + self.ref_to_signal.size - 1
@@ -1887,7 +2004,7 @@ class Read:
                 )
                 if self.ref_to_signal.size != len(self.ref_seq) + 1:
                     LOGGER.debug(
-                        f"{self.read_id} discordant ref seq lengths: "
+                        f"{self.child_read_id} discordant ref seq lengths: "
                         f"move+cigar:{self.ref_to_signal.size - 1} "
                         f"ref_seq:{len(self.ref_seq)}"
                     )
@@ -2277,7 +2394,7 @@ class DuplexPairsBuilder:
         """
         self.simplex_index = simplex_index
         self.pod5_path = pod5_path
-        self.reader = pod5.DatasetReader(Path(pod5_path))
+        self.reader = DatasetReader(Path(pod5_path))
 
     def make_read_pair(self, read_id_pair):
         """Make read pair
