@@ -454,6 +454,9 @@ def fw_base_pred_model_dir(
             str(out_dir),
             "--model",
             str(fw_model_path),
+            "--chunk-context",
+            "50",
+            "50",
             *train_cli_args,
         ],
     )
@@ -479,6 +482,9 @@ def fw_mod_model_dir(fw_model_path, tmpdir_factory, chunks, train_cli_args):
             str(out_dir),
             "--model",
             str(fw_model_path),
+            "--chunk-context",
+            "50",
+            "50",
             *train_cli_args,
         ],
     )
@@ -506,6 +512,9 @@ def fw_mod_chebi_model_dir(
             str(out_dir),
             "--model",
             str(fw_model_path),
+            "--chunk-context",
+            "50",
+            "50",
             *train_cli_args,
         ],
     )

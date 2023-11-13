@@ -124,6 +124,18 @@ Chunk raw data are loaded from each core dataset at specified proportions to con
 In a break from Remora <3.0, datasets allow "infinite iteration", where each core dataset is drawn from indefinitely and independently to supply training chunks.
 For validation from a fixed set of chunks, finite iteration is also supported.
 
+To generate a dataset config from the datasets created above one can use the following command.
+
+.. code-block:: bash
+
+  remora \
+    dataset make_config \
+    train_dataset.jsn \
+    can_chunks \
+    mod_chunks \
+    --dataset-weights 1 1 \
+    --log-filename train_dataset.log
+
 Model Training
 --------------
 
@@ -137,16 +149,17 @@ For example a model can be trained with the following command.
     train_dataset.jsn \
     --model remora/models/ConvLSTM_w_ref.py \
     --device 0 \
+    --chunk-context 50 50 \
     --output-path train_results
 
 This command will produce a "best" model in torchscript format for use in Bonito, ``remora infer``, or ``remora validate`` commands.
-Models can be exported for use in Dorado with the ``remora model export`` command.
+Models can be exported for use in Dorado with the ``remora model export train_results/model_best.pt`` command.
 
 Model Inference
 ---------------
 
-For testing purposes inference within Remora is provided.
-Note that for large scale using the exported Dorado model during basecalling is recommended.
+For testing purposes, inference within Remora is provided.
+For large scale using the exported Dorado model during basecalling is recommended.
 
 .. code-block:: bash
 
@@ -156,6 +169,7 @@ Note that for large scale using the exported Dorado model during basecalling is 
     can_mappings.bam \
     --model train_results/model_best.pt \
     --out-file can_infer.bam \
+    --log-filename can_infer.log \
     --device 0
   remora \
     infer from_pod5_and_bam \
@@ -163,11 +177,16 @@ Note that for large scale using the exported Dorado model during basecalling is 
     mod_mappings.bam \
     --model train_results/model_best.pt \
     --out-file mod_infer.bam \
+    --log-filename mod_infer.log \
     --device 0
 
 Finally, Remora provides tools to validate these results.
 Ground truth `BED files <http://useast.ensembl.org/info/website/upload/bed.html>`_ reference positions where each read should be called as the modified or canonical base listed in the BED name field.
 Note in the test files where the control file has a ``C`` in the name field, while the modified BED file has ``m`` (single letter code for 5mC) in the name field.
+
+WARNING: There is a bug in pysam which causes all-context (e.g. ``--motif C 0``) modified model calls to produce invalid results with this command.
+This issue is reported `here <https://github.com/pysam-developers/pysam/issues/1123>`_.
+We are investigating solutions to bypass this issue including dropping this command.
 
 .. code-block:: bash
 
@@ -175,7 +194,7 @@ Note in the test files where the control file has a ``C`` in the name field, whi
     validate from_modbams \
     --bam-and-bed can_infer.bam can_ground_truth.bed \
     --bam-and-bed mod_infer.bam mod_ground_truth.bed \
-    --full-output-filename validation_results.txt
+    --explicit-mod-tag-used
 
 Pre-trained Models
 ------------------
@@ -219,23 +238,7 @@ Note that only a single POD5 file per sample is allowed as input and that the BA
    :width: 600
    :alt: Plot reference region image (reverse strand)
 
-The Remora API has a simple interface to access and manipulate a nanopore read including signal, basecalls, reference mapping and links between each of these.
-The ``remora.io.Read`` object is the core object for joining these data types.
-The ``remora.io.Read.from_pod5_and_alignment`` class method is the simplest interface to initialize the object.
-This method takes ``pod5.Read`` and ``pysam.AlignedSegment`` objects as input.
-Remora also provides a method to generate an in-memory index of a BAM file (``remora.io.ReadIndexedBam``) for random access by read ID.
-
-Note that the input BAM file should contain ``mv`` (move table) and ``MD`` tags in order to access signal and reference information respectively.
-See the see "Data Preparation" section above for details.
-
-The ``notebooks/read_plotting.ipynb`` notebook included with this repository exemplifies some of the functionality provided via the ``io.Read`` object.
-
-A ``remora.data_chunks.RemoraRead`` object can extracted from an ``io.Read`` object with the ``into_remora_read`` method.
-The ``RemoraRead`` object is more specialized to contain just the information needed to create chunks for input into Remora modified base models.
-The ``RemoraRead`` object can be generated from either basecalled sequence or reference sequence via the ``use_reference_anchor``.
-The ``remora.inference.call_read_mods`` function runs a Remora model on a ``RemoraRead`` returning the probabilities for each modeled base and positions of those bases.
-
-The ``remora.io.Read`` API also enables access to per-read, per-site raw signal metrics for more advanced statistical analysis.
+The Remora API to access, manipulate and visualize nanopore reads including signal, basecalls, and reference mapping is described in more detail in the ``notebooks`` section of this repository.
 
 Terms and Licence
 -----------------

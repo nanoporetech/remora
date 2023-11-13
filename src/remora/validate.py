@@ -111,20 +111,20 @@ def process_mods_probs(probs, labels, allow_unbalanced, pct_filt, name):
                 "Consider running with `--allow-unbalanced`"
             )
         LOGGER.debug(f"Balancing labels. Starting from: {lab_sizes}")
+        # get min label with any examples
         min_size = min([s for s in lab_sizes if s > 0])
-        num_avail_labs = sum(s > 0 for s in lab_sizes)
-        probs = np.empty((min_size * num_avail_labs, nlabs), dtype=probs.dtype)
-        labels = np.empty((min_size * num_avail_labs), dtype=labels.dtype)
+        bal_probs = []
+        bal_labels = []
         for lab_idx, label_probs in enumerate(labels_probs):
             # skip labels not included in ground truth
             if label_probs.shape[0] == 0:
                 continue
             if label_probs.shape[0] > min_size:
                 np.random.shuffle(label_probs)
-            probs[lab_idx * min_size : (lab_idx + 1) * min_size] = label_probs[
-                :min_size
-            ]
-            labels[lab_idx * min_size : (lab_idx + 1) * min_size] = lab_idx
+            bal_probs.append(label_probs[:min_size])
+            bal_labels.append(np.full(min_size, lab_idx, dtype=labels.dtype))
+        probs = np.concatenate(bal_probs)
+        labels = np.concatenate(bal_labels)
 
     (
         acc,

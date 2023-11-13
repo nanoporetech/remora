@@ -7,15 +7,16 @@ from itertools import chain
 from threading import Thread
 from collections import defaultdict
 
-import pod5
 import pysam
 import numpy as np
 from tqdm import tqdm
+from pod5 import DatasetReader
 
 from remora import constants, log, RemoraError
 from remora.data_chunks import CoreRemoraDataset, DatasetMetadata
 from remora.io import (
     ReadIndexedBam,
+    get_read_ids,
     iter_signal,
     extract_alignments,
     DuplexRead,
@@ -30,7 +31,6 @@ from remora.util import (
     NamedMPQueue,
     format_mm_ml_tags,
     softmax_axis1,
-    get_read_ids,
     Motif,
     revcomp,
     human_format,
@@ -71,19 +71,24 @@ def prepare_reads(read_errs, model_metadata, ref_anchored):
         "extra_arrays": {"read_focus_bases": ("int64", "")},
     }
     for io_read, err in read_errs:
-        if io_read is None:
-            out_read_errs.append((None, None, err))
+        if err is not None:
+            io_read.prune(drop_move_tag=False)
+            out_read_errs.append((io_read, None, err))
             continue
         try:
             remora_read = io_read.into_remora_read(ref_anchored)
         except RemoraError as e:
-            LOGGER.debug(f"{io_read.read_id} Remora read prep error: {e}")
-            out_read_errs.append((None, None, f"Remora read prep error: {e}"))
+            io_read.prune(drop_move_tag=False)
+            LOGGER.debug(f"{io_read.child_read_id} Read prep error: {e}")
+            out_read_errs.append((io_read, None, f"Read prep error: {e}"))
             continue
         except Exception as e:
-            LOGGER.debug(f"{io_read.read_id} Unexpected error: {e}")
-            out_read_errs.append((None, None, f"Unexpected error: {e}"))
+            io_read.prune(drop_move_tag=False)
+            LOGGER.debug(f"{io_read.child_read_id} Unexpected error: {e}")
+            out_read_errs.append((io_read, None, f"Unexpected error: {e}"))
             continue
+        # after creating remora read strip IO read of large arrays
+        io_read.prune(drop_move_tag=False)
         remora_read.set_motif_focus_bases(motifs)
         remora_read.refine_signal_mapping(model_metadata["sig_map_refiner"])
         chunks = list(
@@ -95,16 +100,9 @@ def prepare_reads(read_errs, model_metadata, ref_anchored):
             )
         )
         if len(chunks) == 0:
-            LOGGER.debug(f"{io_read.read_id} No mod calls")
-            out_read_errs.append((None, None, "No mod calls"))
+            LOGGER.debug(f"{io_read.child_read_id} No mod calls")
+            out_read_errs.append((io_read, None, "No mod calls"))
             continue
-        # clear larger memory arrays (for quicker queue transfer)
-        # access sig len to save the value
-        io_read.sig_len
-        io_read.dacs = None
-        io_read.mv_table = None
-        io_read.query_to_signal = None
-        io_read.ref_to_signal = None
         # prepare in memory dataset to perform chunk extraction
         num_chunks = len(chunks)
         md_kwargs["allocate_size"] = num_chunks
@@ -139,9 +137,7 @@ def prep_nn_input(read_errs):
     # TODO for basecall-anchored calls only call on first read and apply to
     # other mappings
     if len(read_errs) == 0:
-        return [
-            (None, None, "No valid mappings"),
-        ]
+        return [(None, None, "No valid mappings")]
     read_nn_inputs = []
     for io_read, read_dataset, err in read_errs:
         if err is not None:
@@ -178,14 +174,14 @@ def batch_reads(prepped_nn_inputs, batches_q, batch_size, model_metadata):
     for read_nn_inputs in prepped_nn_inputs:
         for io_read, r_chunks, err in read_nn_inputs:
             if err is not None:
-                b_reads.append([None, None, None, err])
+                b_reads.append([io_read, None, None, err])
                 continue
             num_chunks = r_chunks["read_focus_bases"].size
             # fill out and yield full batches
             rb_consumed = 0
             # while this read extends through a whole batch continue to
             # supply batches from this read
-            while b_pos + num_chunks - rb_consumed > batch_size:
+            while b_pos + num_chunks - rb_consumed >= batch_size:
                 rb_en = rb_consumed + batch_size - b_pos
                 b_sigs[b_pos:] = r_chunks["signal"][rb_consumed:rb_en]
                 b_enc_kmers[b_pos:] = r_chunks["enc_kmers"][rb_consumed:rb_en]
@@ -284,9 +280,8 @@ def unbatch_reads(curr_read, b_nn_out, b_read_pos, b_reads):
                 comp_reads.append(curr_read)
             comp_reads.append((io_read, None, None, err))
             curr_read = None
-            continue
         # end of read from previous batch
-        if b_st is None:
+        elif b_st is None:
             if curr_read is None:
                 LOGGER.debug("Unbatching encountered None read")
                 raise RemoraError("Unbatching encountered None read")
@@ -304,10 +299,15 @@ def unbatch_reads(curr_read, b_nn_out, b_read_pos, b_reads):
                 np.concatenate([r_read_pos, b_read_pos[:b_en]]),
                 None,
             )
-            continue
-        if curr_read is not None:
-            comp_reads.append(curr_read)
-        curr_read = (io_read, b_nn_out[b_st:b_en], b_read_pos[b_st:b_en], None)
+        else:
+            if curr_read is not None:
+                comp_reads.append(curr_read)
+            curr_read = (
+                io_read,
+                b_nn_out[b_st:b_en],
+                b_read_pos[b_st:b_en],
+                None,
+            )
     return comp_reads, curr_read
 
 
@@ -339,7 +339,7 @@ if _PROF_UNBATCH_FN:
 def post_process_reads(read_mapping, model_metadata, ref_anchored):
     io_read, nn_out, r_poss, err = read_mapping
     if err is not None:
-        return None, err
+        return io_read, err
     r_probs = softmax_axis1(nn_out)[:, 1:].astype(np.float64)
     seq = io_read.ref_seq if ref_anchored else io_read.seq
     mod_tags = mods_tags_to_str(
@@ -351,11 +351,6 @@ def post_process_reads(read_mapping, model_metadata, ref_anchored):
             can_base=model_metadata["can_base"],
         )
     )
-    io_read.full_align["tags"] = [
-        tag
-        for tag in io_read.full_align["tags"]
-        if not (tag.startswith("MM") or tag.startswith("ML"))
-    ]
     io_read.full_align["tags"].extend(mod_tags)
     if ref_anchored:
         io_read.full_align["cigar"] = f"{len(io_read.ref_seq)}M"
@@ -385,7 +380,7 @@ def infer_from_pod5_and_bam(
     ref_anchored=False,
 ):
     bam_idx = ReadIndexedBam(in_bam_path, skip_non_primary, req_tags={"mv"})
-    with pod5.DatasetReader(Path(pod5_path)) as pod5_dr:
+    with DatasetReader(Path(pod5_path)) as pod5_dr:
         read_ids, num_reads = get_read_ids(bam_idx, pod5_dr, num_reads)
 
     signals = BackgroundIter(
@@ -483,6 +478,8 @@ def infer_from_pod5_and_bam(
         final_reads.out_q,
     ]
     errs = defaultdict(int)
+    if bam_idx.num_non_primary > 0:
+        errs["Non-primary alignment skipped"] = bam_idx.num_non_primary
     pysam_save = pysam.set_verbosity(0)
     sig_called = 0
     in_bam = out_bam = pbar = prev_rid = None
@@ -504,9 +501,10 @@ def infer_from_pod5_and_bam(
                     [f"{q.name}: {q.qsize()}/{q.maxsize}" for q in all_qs]
                 )
             )
-            if err is not None:
+            if io_read is None:
+                # should not reach this block
                 errs[err] += 1
-                prev_rid = None
+                LOGGER.DEBUG("None io_read encountered")
                 pbar.update()
                 continue
             if prev_rid != io_read.read_id:
@@ -514,6 +512,8 @@ def infer_from_pod5_and_bam(
             sig_called += io_read.sig_len
             sps, mag = human_format(sig_called / pbar.format_dict["elapsed"])
             pbar.set_postfix_str(f"{sps:>5.1f} {mag}samps/s", refresh=False)
+            if err is not None:
+                errs[err] += 1
             out_bam.write(
                 pysam.AlignedSegment.from_dict(
                     io_read.full_align, out_bam.header

@@ -7,8 +7,13 @@ import numpy as np
 from tqdm import tqdm
 
 from remora import log, RemoraError
-from remora.util import MultitaskMap, BackgroundIter, get_read_ids
-from remora.io import ReadIndexedBam, iter_signal, extract_alignments
+from remora.util import MultitaskMap, BackgroundIter
+from remora.io import (
+    ReadIndexedBam,
+    get_read_ids,
+    iter_signal,
+    extract_alignments,
+)
 from remora.data_chunks import (
     DatasetMetadata,
     RemoraRead,
@@ -39,12 +44,12 @@ def extract_chunks(
 ):
     read_chunks = []
     for read_idx, (io_read, err) in enumerate(read_errs):
-        if io_read is None:
-            read_chunks.append(tuple((io_read, err)))
+        if err is not None:
+            read_chunks.append((None, err))
             continue
         if io_read.ref_seq is None:
             read_chunks.append(
-                tuple((None, "No reference sequence (missing MD tag)"))
+                ((None, "No reference sequence (missing MD tag)"))
             )
             continue
         if basecall_anchor:
@@ -76,13 +81,13 @@ def extract_chunks(
                 labels=np.full(len(io_read.ref_seq), int_label, dtype=int),
                 read_id=io_read.read_id,
             )
-            if focus_ref_pos is not None:
+            if focus_ref_pos is None:
+                remora_read.set_motif_focus_bases(motifs)
+            else:
                 # todo(arand) make a test that exercises this code path
                 remora_read.focus_bases = io_read.get_filtered_focus_positions(
                     focus_ref_pos
                 )
-            else:
-                remora_read.set_motif_focus_bases(motifs)
 
         remora_read.refine_signal_mapping(sig_map_refiner)
         remora_read.downsample_focus_bases(max_chunks_per_read)
@@ -105,7 +110,7 @@ def extract_chunks(
             f"extracted {len(read_align_chunks)} chunks from {io_read.read_id} "
             f"alignment {read_idx}"
         )
-        read_chunks.append(tuple((read_align_chunks, None)))
+        read_chunks.append((read_align_chunks, None))
 
     return read_chunks
 
@@ -141,7 +146,9 @@ def extract_chunk_dataset(
 ):
     bam_idx = ReadIndexedBam(bam_path, skip_non_primary)
     with pod5.DatasetReader(Path(pod5_path)) as pod5_dr:
-        read_ids, num_reads = get_read_ids(bam_idx, pod5_dr, num_reads)
+        read_ids, num_reads = get_read_ids(
+            bam_idx, pod5_dr, num_reads, return_num_bam_reads=True
+        )
     if num_reads == 0:
         return
 
@@ -221,7 +228,7 @@ def extract_chunk_dataset(
     errs = defaultdict(int)
     for read_chunks in tqdm(
         chunks,
-        total=num_reads,
+        total=len(read_ids),
         smoothing=0,
         unit=" Reads",
         desc="Extracting chunks",

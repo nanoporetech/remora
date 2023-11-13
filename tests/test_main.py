@@ -152,6 +152,9 @@ def test_train(model_path, tmpdir_factory, chunks, train_cli_args):
             str(out_dir),
             "--model",
             model_path,
+            "--chunk-context",
+            "50",
+            "50",
             *train_cli_args,
         ],
     )
@@ -174,6 +177,9 @@ def test_chebi_train(model_path, tmpdir_factory, chebi_chunks, train_cli_args):
             str(out_dir),
             "--model",
             model_path,
+            "--chunk-context",
+            "50",
+            "50",
             *train_cli_args,
         ],
     )
@@ -230,6 +236,9 @@ def test_train_dynamic_kmer_context(
             "--kmer-context-bases",
             "2",
             "3",
+            "--chunk-context",
+            "50",
+            "50",
             *train_cli_args,
         ],
     )
@@ -460,6 +469,9 @@ def test_mod_validate_from_modbams(
             full_file,
             "--log-filename",
             log_file,
+            "--explicit-mod-tag-used",
+            "--extra-bases",
+            "h",
         ],
     )
 
