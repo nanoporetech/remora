@@ -302,10 +302,10 @@ class ReadIndexedBam:
             self.bam_fh.seek(read_ptr)
             try:
                 bam_read = next(self.bam_fh)
-            except OSError:
+            except OSError as e:
                 LOGGER.debug(
                     f"Could not extract {read_id} from {self.bam_path} "
-                    f"at {read_ptr}"
+                    f"at {read_ptr}\nFULL_ERROR: {e}"
                 )
                 raise RemoraError(
                     "Could not extract BAM read. Ensure BAM file object was "
@@ -1900,11 +1900,14 @@ class Read:
         except KeyError:
             self.num_trimmed = 0
 
+        self.seq = alignment_record.query_sequence
+        if alignment_record.is_reverse:
+            self.seq = util.revcomp(self.seq)
         try:
             self.query_to_signal, self.mv_table, self.stride = parse_move_tag(
                 tags["mv"],
                 sig_len=self.dacs.size,
-                seq_len=len(alignment_record.query_sequence),
+                seq_len=len(self.seq),
                 reverse_signal=reverse_signal,
             )
         except KeyError:
@@ -1922,9 +1925,6 @@ class Read:
         ) - self.shift_dacs_to_pa
         self.scale_dacs_to_norm = self.scale_pa_to_norm / self.scale_dacs_to_pa
 
-        self.seq = alignment_record.query_sequence
-        if alignment_record.is_reverse:
-            self.seq = util.revcomp(self.seq)
         if not parse_ref_align or alignment_record.is_unmapped:
             return
 
