@@ -171,6 +171,15 @@ def get_bam_filename(bam_fh):
         return util.to_str(bam_fh.filename)
 
 
+def get_parent_id(bam_read):
+    try:
+        # if pi tag is present this is a child read
+        return bam_read.get_tag("pi")
+    except KeyError:
+        # else this is the parent read so return query_name
+        return bam_read.query_name
+
+
 @dataclass
 class ReadIndexedBam:
     """Index bam file by read id. Note that the BAM file handle is closed after
@@ -262,11 +271,7 @@ class ReadIndexedBam:
             except StopIteration:
                 break
             pbar.update()
-            # try to extract parent ID for split reads
-            try:
-                index_read_id = read.get_tag("pi")
-            except KeyError:
-                index_read_id = read.query_name
+            index_read_id = get_parent_id(read)
             if self.read_id_converter is not None:
                 index_read_id = self.read_id_converter(index_read_id)
             if self.req_tags is not None:
@@ -743,13 +748,13 @@ def get_pod5_reads(pod5_dr, read_ids):
 
 def get_io_reads(bam_reads, pod5_dr, reverse_signal=False, missing_ok=False):
     pod5_reads = get_pod5_reads(
-        pod5_dr, [bam_read.query_name for bam_read in bam_reads]
+        pod5_dr, list(set(get_parent_id(bam_read) for bam_read in bam_reads))
     )
     io_reads = []
     for bam_read in bam_reads:
         try:
             io_read = Read.from_pod5_and_alignment(
-                pod5_read_record=pod5_reads[bam_read.query_name],
+                pod5_read_record=pod5_reads[get_parent_id(bam_read)],
                 alignment_record=bam_read,
                 reverse_signal=reverse_signal,
             )
