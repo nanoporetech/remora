@@ -118,7 +118,7 @@ cdef inline float score(float s, float l):
 cdef void banded_traceback(
     int[::1] path,
     const int[:, ::1] seq_band,
-    const int[::1] base_offsets,
+    const unsigned int[::1] base_offsets,
     const int[::1] traceback,
 ):
     """Perform traceback to determine path from a forward pass.
@@ -323,7 +323,7 @@ cdef void banded_forward_dp(
     const float[::1] signal,
     const float[::1] levels,
     const int[:, ::1] seq_band,
-    const int[::1] base_offsets,
+    const unsigned int[::1] base_offsets,
     const float[::1] short_dwell_penalty,
     core_method,
 ):
@@ -358,8 +358,9 @@ cdef void banded_forward_dp(
         )
 
     cdef int sig_pos
-    cdef int prev_bw, prev_offset, prev_band_st
-    cdef int curr_bw, curr_offset, curr_band_st, curr_band_en
+    cdef int prev_bw, prev_band_st
+    cdef int curr_bw, curr_band_st, curr_band_en
+    cdef unsigned int prev_offset, curr_offset
 
     # compute first base forward scores
     curr_bw = seq_band[1, 0]
@@ -436,10 +437,16 @@ def seq_banded_dp(
                of each level within the signal array.
     """
     # Prepare for banded forwards pass followed by traceback
-    base_offsets = np.empty(seq_band.shape[1] + 1, dtype=np.int32)
+    base_offsets_raw = np.cumsum(np.diff(seq_band, axis=0)[0])
+    band_len = base_offsets_raw[base_offsets_raw.shape[0] - 1]
+    if band_len > np.iinfo(np.uint32).max:
+        raise RemoraError(
+            "Dynamic programming search space too large. Read likely "
+            "contains large deletions."
+        )
+    base_offsets = np.empty(seq_band.shape[1] + 1, dtype=np.uint32)
     base_offsets[0] = 0
-    base_offsets[1:] = np.cumsum(np.diff(seq_band, axis=0)[0])
-    band_len = base_offsets[base_offsets.shape[0] - 1]
+    base_offsets[1:] = base_offsets_raw
 
     # all_scores array holds current score at every sequence by signal position
     # within the band
@@ -473,10 +480,16 @@ def forward_dp(
     const float[::1] short_dwell_penalty,
     core_method=REFINE_ALGO_VIT_NAME,
 ):
-    base_offsets = np.empty(seq_band.shape[1] + 1, dtype=np.int32)
+    base_offsets_raw = np.cumsum(np.diff(seq_band, axis=0)[0])
+    band_len = base_offsets_raw[base_offsets_raw.shape[0] - 1]
+    if band_len > np.iinfo(np.uint32).max:
+        raise RemoraError(
+            "Dynamic programming search space too large. Read likely "
+            "contains large deletions."
+        )
+    base_offsets = np.empty(seq_band.shape[1] + 1, dtype=np.uint32)
     base_offsets[0] = 0
-    base_offsets[1:] = np.cumsum(np.diff(seq_band, axis=0)[0])
-    band_len = base_offsets[base_offsets.shape[0] - 1]
+    base_offsets[1:] = base_offsets_raw
     all_scores = np.empty(band_len, dtype=np.float32)
     traceback = np.empty(band_len, dtype=np.int32)
     banded_forward_dp(
