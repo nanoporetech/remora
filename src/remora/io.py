@@ -774,6 +774,7 @@ def get_reads_reference_regions(
     skip_sig_map_refine=False,
     max_reads=50,
     reverse_signal=False,
+    missing_ok=False,
 ):
     all_bam_reads = []
     samples_read_ref_regs = []
@@ -784,7 +785,9 @@ def get_reads_reference_regions(
         if max_reads is not None and len(sample_bam_reads) > max_reads:
             sample_bam_reads = random.sample(sample_bam_reads, max_reads)
         all_bam_reads.append(sample_bam_reads)
-        io_reads = get_io_reads(sample_bam_reads, pod5_dr, reverse_signal)
+        io_reads = get_io_reads(
+            sample_bam_reads, pod5_dr, reverse_signal, missing_ok=missing_ok
+        )
         if sig_map_refiner is not None and not skip_sig_map_refine:
             for io_read in io_reads:
                 io_read.set_refine_signal_mapping(
@@ -805,9 +808,12 @@ def get_ref_reg_sample_metrics(
     skip_sig_map_refine=False,
     reverse_signal=False,
     ref_orient=True,
+    missing_ok=False,
     **kwargs,
 ):
-    io_reads = get_io_reads(bam_reads, pod5_dr, reverse_signal)
+    io_reads = get_io_reads(
+        bam_reads, pod5_dr, reverse_signal, missing_ok=missing_ok
+    )
     if sig_map_refiner is not None and not skip_sig_map_refine:
         for io_read in io_reads:
             io_read.set_refine_signal_mapping(sig_map_refiner, ref_mapping=True)
@@ -842,6 +848,7 @@ def get_ref_reg_samples_metrics(
     max_reads=None,
     reverse_signal=False,
     metric="dwell_trimmean",
+    missing_ok=False,
     **kwargs,
 ):
     all_bam_reads = []
