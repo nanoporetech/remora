@@ -1064,6 +1064,7 @@ def plot_on_signal_coords(
             ),
             data=base_coords,
             alpha=0.1,
+            show_legend=False,
         )
         + p9.geom_text(
             p9.aes(x="base_st", label="base", color="base", y=sig_min),
@@ -1072,9 +1073,10 @@ def plot_on_signal_coords(
             ha="left",
             size=8,
             angle=180 if rev_strand else 0,
+            show_legend=False,
         )
-        + p9.scale_fill_manual(BASE_COLORS, guide=False)
-        + p9.scale_color_manual(BASE_COLORS, guide=False)
+        + p9.scale_fill_manual(BASE_COLORS)
+        + p9.scale_color_manual(BASE_COLORS)
         + p9.geom_line(p9.aes(x=xlab, y="Signal"), size=sig_lw, data=sig_df)
         + p9.labels.ylab("Normalized Signal")
         + p9.labels.xlab(xlab)
@@ -1183,6 +1185,7 @@ def plot_on_base_coords(
             ),
             data=base_coords,
             alpha=0.1,
+            show_legend=False,
         )
         + p9.geom_text(
             p9.aes(x="base_st", label="base", color="base", y=sig_min),
@@ -1191,9 +1194,10 @@ def plot_on_base_coords(
             ha="left",
             size=8,
             angle=180 if rev_strand else 0,
+            show_legend=False,
         )
-        + p9.scale_fill_manual(BASE_COLORS, guide=False)
-        + p9.scale_color_manual(BASE_COLORS, guide=False)
+        + p9.scale_fill_manual(BASE_COLORS)
+        + p9.scale_color_manual(BASE_COLORS)
         + p9.geom_line(p9.aes(x=xlab, y="Signal"), size=sig_lw, data=sig_df)
         + p9.labels.ylab("Normalized Signal")
         + p9.labels.xlab(xlab)
@@ -1303,12 +1307,7 @@ def plot_align(
             ),
             data=ref_coords,
             alpha=0.3,
-        )
-        + p9.geom_text(
-            p9.aes(x="sig_st", label="base", color="base", y=sig_max),
-            data=ref_coords,
-            va="top",
-            ha="left",
+            show_legend=False,
         )
         + p9.geom_rect(
             p9.aes(
@@ -1320,15 +1319,24 @@ def plot_align(
             ),
             data=bc_coords,
             alpha=0.3,
+            show_legend=False,
+        )
+        + p9.geom_text(
+            p9.aes(x="sig_st", label="base", color="base", y=sig_max),
+            data=ref_coords,
+            va="top",
+            ha="left",
+            show_legend=False,
         )
         + p9.geom_text(
             p9.aes(x="sig_st", label="base", color="base", y=sig_min),
             data=bc_coords,
             va="bottom",
             ha="left",
+            show_legend=False,
         )
-        + p9.scale_fill_manual(BASE_COLORS, guide=False)
-        + p9.scale_color_manual(BASE_COLORS, guide=False)
+        + p9.scale_fill_manual(BASE_COLORS)
+        + p9.scale_color_manual(BASE_COLORS)
         + p9.geom_text(
             p9.aes(
                 y=[sig_min, sig_max],
