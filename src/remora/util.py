@@ -47,7 +47,7 @@ SEQ_TO_INT_ARR[0] = 0
 SEQ_TO_INT_ARR[2] = 1
 SEQ_TO_INT_ARR[6] = 2
 SEQ_TO_INT_ARR[19] = 3
-COMP_BASES = dict(zip(map(ord, "ACGT"), map(ord, "TGCA")))
+COMP_BASES = dict(zip(map(ord, "ACGTBVDHKMRY"), map(ord, "TGCAVBHDMKYR")))
 NP_COMP_BASES = np.array([3, 2, 1, 0], dtype=np.uintp)
 U_TO_T_BASES = {ord("U"): ord("T")}
 T_TO_U_BASES = {ord("T"): ord("U")}
@@ -92,18 +92,30 @@ def parse_device(device):
 
 
 def comp(seq):
+    """Convert seq to its complement sequence.
+    Handles IUPAC ambiguous bases.
+    """
     return seq.translate(COMP_BASES)
 
 
 def revcomp(seq):
+    """Convert seq to its complement sequence and reverse the sequence.
+    Handles IUPAC ambiguous bases.
+    """
     return seq.upper().translate(COMP_BASES)[::-1]
 
 
 def comp_np(np_seq):
+    """Convert numpy seq to its complement sequence.
+    Does NOT handles IUPAC ambiguous bases.
+    """
     return NP_COMP_BASES[np_seq]
 
 
 def revcomp_np(np_seq):
+    """Convert numpy seq to its complement sequence and reverse the sequence.
+    Does NOT handles IUPAC ambiguous bases.
+    """
     return NP_COMP_BASES[np_seq][::-1]
 
 
