@@ -756,30 +756,52 @@ def register_model_train(parser):
     )
     train_grp.add_argument(
         "--optimizer",
-        default=constants.OPTIMIZERS[0],
-        choices=constants.OPTIMIZERS,
-        help="Optimizer setting.",
+        default=constants.DEFAULT_OPTIMIZER,
+        help="Optimizer. Select from torch.optim",
     )
     train_grp.add_argument(
-        "--scheduler",
-        default=None,
-        help="Scheduler setting.",
+        "--optimizer-kwargs",
+        nargs=3,
+        action="append",
+        default=constants.DEFAULT_OPT_VALUES,
+        metavar=("NAME", "VALUE", "TYPE"),
+        help="Arguments to torch optimizer. TYPE should be str, int or float",
     )
     train_grp.add_argument(
         "--lr",
         default=constants.DEFAULT_LR,
         type=float,
-        help="Learning rate setting.",
+        help="Learning rate",
     )
     train_grp.add_argument(
-        "--weight-decay",
-        default=constants.DEFAULT_WEIGHT_DECAY,
-        type=float,
-        help="Weight decay setting.",
+        "--lr-scheduler",
+        default=constants.DEFAULT_SCHEDULER,
+        help="""Torch learning rate scheduler. Select from
+        torch.optim.lr_scheduler""",
+    )
+    train_grp.add_argument(
+        "--lr-scheduler-kwargs",
+        nargs=3,
+        action="append",
+        default=constants.DEFAULT_SCH_VALUES,
+        metavar=("NAME", "VALUE", "TYPE"),
+        help="Arguments to torch scheduler. TYPE should be str, int or float",
+    )
+    train_grp.add_argument(
+        "--lr-cool-down-epochs",
+        type=int,
+        default=constants.DEFAULT_SCH_COOL_DOWN_EPOCHS,
+        help="Number of cool down epochs at the end of training",
+    )
+    train_grp.add_argument(
+        "--lr-cool-down-learning-rate",
+        type=int,
+        default=constants.DEFAULT_SCH_COOL_DOWN_LR,
+        help="Cool down learning rate at the end of training",
     )
     train_grp.add_argument(
         "--early-stopping",
-        default=10,
+        default=constants.DEFAULT_EARLY_STOPPING,
         type=int,
         help="""Stops training after a number of epochs without improvement.
         If set to 0 no stopping is done.""",
@@ -788,12 +810,6 @@ def register_model_train(parser):
         "--seed",
         type=int,
         help="Seed value.",
-    )
-    train_grp.add_argument(
-        "--lr-sched-kwargs",
-        nargs=3,
-        action="append",
-        metavar=("NAME", "VALUE", "TYPE"),
     )
     train_grp.add_argument(
         "--high-conf-incorrect-thr-frac",
@@ -837,6 +853,7 @@ def register_model_train(parser):
 
 
 def run_model_train(args):
+    from remora.model_util import TrainOpts
     from remora.train_model import train_model
     from remora.util import parse_device, prepare_out_dir
 
@@ -854,6 +871,17 @@ def run_model_train(args):
                 train_model_wrapper(*args)
             prof.export_chrome_trace(PROF_TRAIN_FN)
 
+    train_opts = TrainOpts(
+        epochs=args.epochs,
+        early_stopping=args.early_stopping,
+        optimizer_str=args.optimizer,
+        opt_kwargs=args.optimizer_kwargs,
+        learning_rate=args.lr,
+        lr_scheduler_str=args.lr_scheduler,
+        lr_scheduler_kwargs=args.lr_scheduler_kwargs,
+        lr_cool_down_epochs=args.lr_cool_down_epochs,
+        lr_cool_down_lr=args.lr_cool_down_learning_rate,
+    )
     train_model(
         args.seed,
         parse_device(args.device),
@@ -864,19 +892,13 @@ def run_model_train(args):
         args.batch_size,
         args.model,
         args.size,
-        args.optimizer,
-        args.lr,
-        args.scheduler,
-        args.weight_decay,
-        args.epochs,
+        train_opts,
         args.chunks_per_epoch,
         args.num_test_chunks,
         args.save_freq,
-        args.early_stopping,
         args.filter_fraction,
         args.ext_val,
         args.ext_val_names,
-        args.lr_sched_kwargs,
         args.high_conf_incorrect_thr_frac,
         args.finetune_path,
         args.freeze_num_layers,

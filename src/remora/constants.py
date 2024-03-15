@@ -8,19 +8,27 @@ DEFAULT_CHUNK_CONTEXT = (200, 200)
 DEFAULT_MIN_SAMPLES_PER_BASE = 5
 DEFAULT_KMER_CONTEXT_BASES = (4, 4)
 DEFAULT_KMER_LEN = sum(DEFAULT_KMER_CONTEXT_BASES) + 1
-DEFAULT_EPOCHS = 100
-DEFAULT_WEIGHT_DECAY = 1e-4
 DEFAULT_FILT_FRAC = 0.1
-DEFAULT_LR = 0.001
 
-DEFAULT_SCHEDULER = "StepLR"
-DEFAULT_SCH_VALUES = {"step_size": 10, "gamma": 0.6}
+# train args
+DEFAULT_EPOCHS = 100
+DEFAULT_EARLY_STOPPING = 10
+
 TYPE_CONVERTERS = {"str": str, "int": int, "float": float}
 
-SGD_OPT = "sgd"
-ADAM_OPT = "adam"
-ADAMW_OPT = "adamw"
-OPTIMIZERS = (ADAMW_OPT, SGD_OPT, ADAM_OPT)
+# optimizer
+DEFAULT_OPTIMIZER = "AdamW"
+DEFAULT_OPT_VALUES = (("weight_decay", 1e-4, "float"),)
+
+# learning rate scheduler
+DEFAULT_LR = 0.001
+DEFAULT_SCHEDULER = "CosineAnnealingLR"
+DEFAULT_SCH_VALUES = (
+    ("T_max", DEFAULT_EPOCHS, "int"),
+    ("eta_min", 1e-6, "float"),
+)
+DEFAULT_SCH_COOL_DOWN_EPOCHS = 5
+DEFAULT_SCH_COOL_DOWN_LR = 1e-7
 
 FINAL_MODEL_FILENAME = "model_final.checkpoint"
 FINAL_TORCHSCRIPT_MODEL_FILENAME = "model_final.pt"

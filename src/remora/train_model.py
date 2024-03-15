@@ -25,41 +25,6 @@ BREACH_THRESHOLD = 0.8
 REGRESSION_THRESHOLD = 0.7
 
 
-def load_optimizer(optimizer, model, lr, weight_decay, momentum=0.9):
-    if optimizer == constants.SGD_OPT:
-        return torch.optim.SGD(
-            model.parameters(),
-            lr=lr,
-            weight_decay=weight_decay,
-            momentum=momentum,
-            nesterov=True,
-        )
-    elif optimizer == constants.ADAM_OPT:
-        return torch.optim.Adam(
-            model.parameters(),
-            lr=lr,
-            weight_decay=weight_decay,
-        )
-    elif optimizer == constants.ADAMW_OPT:
-        return torch.optim.AdamW(
-            model.parameters(),
-            lr=lr,
-            weight_decay=weight_decay,
-        )
-    raise RemoraError(f"Invalid optimizer specified ({optimizer})")
-
-
-def select_scheduler(scheduler, opt, lr_sched_kwargs):
-    lr_sched_dict = {}
-    if lr_sched_kwargs is None and scheduler is None:
-        scheduler = constants.DEFAULT_SCHEDULER
-        lr_sched_dict = constants.DEFAULT_SCH_VALUES
-    else:
-        for lr_key, lr_val, lr_type in lr_sched_kwargs:
-            lr_sched_dict[lr_key] = constants.TYPE_CONVERTERS[lr_type](lr_val)
-    return getattr(torch.optim.lr_scheduler, scheduler)(opt, **lr_sched_dict)
-
-
 def save_model(
     model,
     ckpt_save_data,
@@ -100,19 +65,13 @@ def train_model(
     batch_size,
     model_path,
     size,
-    optimizer,
-    lr,
-    scheduler_name,
-    weight_decay,
-    epochs,
+    train_opts,
     chunks_per_epoch,
     num_test_chunks,
     save_freq,
-    early_stopping,
     filt_frac,
     ext_val,
     ext_val_names,
-    lr_sched_kwargs,
     high_conf_incorrect_thr_frac,
     finetune_path,
     freeze_num_layers,
@@ -249,9 +208,9 @@ def train_model(
     criterion = torch.nn.CrossEntropyLoss()
     model = model.to(device)
     criterion = criterion.to(device)
-    opt = load_optimizer(optimizer, model, lr, weight_decay)
-
-    scheduler = select_scheduler(scheduler_name, opt, lr_sched_kwargs)
+    LOGGER.info(f"Training optimizer and scheduler settings: {train_opts}")
+    opt = train_opts.load_optimizer(model)
+    scheduler = train_opts.load_scheduler(opt)
 
     LOGGER.debug("Splitting dataset")
     trn_ds, val_ds = dataset.train_test_split(
@@ -317,7 +276,7 @@ def train_model(
 
     LOGGER.info("Start training")
     ebar = tqdm(
-        total=epochs,
+        total=train_opts.epochs,
         smoothing=0,
         desc="Epochs",
         dynamic_ncols=True,
@@ -366,7 +325,7 @@ def train_model(
     best_val_acc = 0
     early_stop_epochs = 0
     breached = False
-    for epoch in range(epochs):
+    for epoch in range(train_opts.epochs):
         model.train()
         pbar.n = 0
         pbar.refresh()
@@ -512,14 +471,20 @@ def train_model(
             loss_train=f"{trn_metrics.loss:.6f}",
         )
         ebar.update()
-        if early_stopping and early_stop_epochs >= early_stopping:
+        if (
+            train_opts.early_stopping
+            and early_stop_epochs >= train_opts.early_stopping
+        ):
             break
     ebar.close()
     pbar.close()
-    if early_stopping and early_stop_epochs >= early_stopping:
+    if (
+        train_opts.early_stopping
+        and early_stop_epochs >= train_opts.early_stopping
+    ):
         LOGGER.info(
-            f"No validation accuracy improvement after {early_stopping} "
-            "epochs. Training stopped early."
+            "No validation accuracy improvement after "
+            f"{train_opts.early_stopping} epochs. Training stopped early."
         )
     LOGGER.info("Saving final model checkpoint")
     save_model(

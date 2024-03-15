@@ -4,6 +4,7 @@ import toml
 import datetime
 import importlib
 from os.path import isfile
+from dataclasses import dataclass
 
 import torch
 import numpy as np
@@ -23,6 +24,88 @@ except ImportError:
     from importlib_resources import files as importlib_resources_files
 
 LOGGER = log.get_logger()
+
+
+####################
+# Training Options #
+####################
+
+
+class CustomPlusCoolDownScheduler:
+    def __init__(
+        self,
+        opt,
+        initial_lr,
+        lr_scheduler_str,
+        lr_scheduler_kwargs,
+        epochs,
+        cool_down_epochs,
+        cool_down_lr,
+    ):
+        self.last_epoch = -1
+        self.opt = opt
+        self.initial_lr = initial_lr
+        self.num_epochs = epochs
+        self.num_cool_down_epochs = cool_down_epochs
+        self.cool_down_lr = cool_down_lr
+        self.total_epochs = epochs + cool_down_epochs
+        self.custom_scheduler = getattr(
+            torch.optim.lr_scheduler, lr_scheduler_str
+        )(
+            self.opt,
+            **dict(
+                (lr_key, constants.TYPE_CONVERTERS[lr_type](lr_val))
+                for lr_key, lr_val, lr_type in lr_scheduler_kwargs
+            ),
+        )
+
+    def get_last_lr(self):
+        if self.last_epoch < self.num_epochs - 1:
+            return self.custom_scheduler.get_last_lr()
+        else:
+            return [self.cool_down_lr for _ in self.opt.param_groups]
+
+    def step(self):
+        self.last_epoch += 1
+        if self.last_epoch < self.num_epochs - 1:
+            return self.custom_scheduler.step()
+        else:
+            for pg in self.opt.param_groups:
+                pg["lr"] = self.cool_down_lr
+
+
+@dataclass
+class TrainOpts:
+    epochs: int = constants.DEFAULT_EPOCHS
+    early_stopping: int = constants.DEFAULT_EARLY_STOPPING
+    optimizer_str: str = constants.DEFAULT_OPTIMIZER
+    opt_kwargs: list = constants.DEFAULT_OPT_VALUES
+    learning_rate: float = constants.DEFAULT_LR
+    lr_scheduler_str: str = constants.DEFAULT_SCHEDULER
+    lr_scheduler_kwargs: list = constants.DEFAULT_SCH_VALUES
+    lr_cool_down_epochs: int = constants.DEFAULT_SCH_COOL_DOWN_EPOCHS
+    lr_cool_down_lr: float = constants.DEFAULT_SCH_COOL_DOWN_LR
+
+    def load_optimizer(self, model):
+        return getattr(torch.optim, self.optimizer_str)(
+            model.parameters(),
+            **dict(
+                (opt_key, constants.TYPE_CONVERTERS[opt_type](opt_val))
+                for opt_key, opt_val, opt_type in self.opt_kwargs
+            ),
+        )
+
+    def load_scheduler(self, opt):
+        return CustomPlusCoolDownScheduler(
+            opt,
+            self.learning_rate,
+            self.lr_scheduler_str,
+            self.lr_scheduler_kwargs,
+            epochs=self.epochs,
+            cool_down_epochs=self.lr_cool_down_epochs,
+            cool_down_lr=self.lr_cool_down_lr,
+        )
+
 
 #############
 # Exporting #
