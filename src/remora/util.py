@@ -490,7 +490,7 @@ def format_mm_ml_tags(seq, poss, probs, mod_bases, can_base, strand: str = "+"):
             this should be the reverse complement sequence.
         poss (list): positions relative to seq
         probs (np.array): probabilities for modified bases
-        mod_bases (str): modified base single letter codes
+        mod_bases (list): modified base single letter codes
         can_base (str): canonical base
         strand (bool): should be '+' for SEQ-oriented strand and '-' if
             complement strand

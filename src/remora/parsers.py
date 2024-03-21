@@ -1119,10 +1119,17 @@ def register_infer_from_pod5_and_bam(parser):
         help="Log filename. Default: Don't output log file.",
     )
 
-    mdl_grp = subparser.add_argument_group("Model Arguments")
+    mdl_grp = subparser.add_argument_group(
+        "Model Arguments",
+        """Specify model. --model can be specified multiple times, but only
+        one model can be specified per canonical base. Additional arguments
+        will select a default model given sufficient specificty (pore and
+        modified base).""",
+    )
     mdl_grp.add_argument(
         "--model",
-        help="Path to a pretrained model in torchscript format.",
+        action="append",
+        help="Path(s) to a pretrained model in torchscript format.",
     )
     mdl_grp.add_argument(
         "--pore",
@@ -1265,7 +1272,8 @@ def register_infer_duplex_from_pod5_and_bam(parser):
     mdl_grp = subparser.add_argument_group("Model Arguments")
     mdl_grp.add_argument(
         "--model",
-        help="Path to a pretrained model in torchscript format.",
+        action="append",
+        help="Path(s) to a pretrained model in torchscript format.",
     )
     mdl_grp.add_argument(
         "--pore",
@@ -1332,23 +1340,44 @@ def register_infer_duplex_from_pod5_and_bam(parser):
     subparser.set_defaults(func=run_infer_from_pod5_and_bam_duplex)
 
 
-def _unpack_model_kw_args(args) -> dict:
+def _unpack_models_kw_args(args) -> dict:
     from remora.util import parse_device
 
-    if args.model and not os.path.exists(args.model):
-        raise ValueError(f"didn't find model file at {args.model}")
+    device = parse_device(args.device)
+    if args.model is None:
+        return [
+            {
+                "pore": args.pore,
+                "basecall_model_type": args.basecall_model_type,
+                "basecall_model_version": args.basecall_model_version,
+                "modified_bases": args.modified_bases,
+                "remora_model_type": args.remora_model_type,
+                "remora_model_version": args.remora_model_version,
+                "device": device,
+            },
+        ]
+    if any(not os.path.exists(mdl_path) for mdl_path in args.model):
+        invalid_paths = [
+            mdl_path for mdl_path in args.model if not os.path.exists(mdl_path)
+        ]
+        raise ValueError(f"Model path(s) do not exist {invalid_paths}")
+    return [
+        {
+            "model_filename": mdl_path,
+            "device": device,
+        }
+        for mdl_path in args.model
+    ]
 
-    model_kwargs = {
-        "model_filename": args.model,
-        "pore": args.pore,
-        "basecall_model_type": args.basecall_model_type,
-        "basecall_model_version": args.basecall_model_version,
-        "modified_bases": args.modified_bases,
-        "remora_model_type": args.remora_model_type,
-        "remora_model_version": args.remora_model_version,
-        "device": parse_device(args.device),
-    }
-    return model_kwargs
+
+def check_models(models):
+    if any(
+        mdl[1]["reverse_signal"] != models[0][1]["reverse_signal"]
+        for mdl in models[1:]
+    ):
+        raise RemoraError("All models must be the same signal direction")
+    if len(models) != len(set(metadata["can_base"] for _, metadata in models)):
+        raise RemoraError("Only one model per canonical base allowed.")
 
 
 def run_infer_from_pod5_and_bam(args):
@@ -1360,16 +1389,17 @@ def run_infer_from_pod5_and_bam(args):
     if args.log_filename is not None:
         log.init_logger(args.log_filename)
     # test that model can be loaded in parent process
-    model_kwargs = _unpack_model_kw_args(args)
-    model, model_metadata = load_model(
-        **model_kwargs, quiet=False, eval_only=True
-    )
+    models_kwargs = _unpack_models_kw_args(args)
+    models = [
+        load_model(**model_kwargs, quiet=False, eval_only=True)
+        for model_kwargs in models_kwargs
+    ]
+    check_models(models)
     torch.set_grad_enabled(False)
     infer_from_pod5_and_bam(
         pod5_path=args.pod5,
         in_bam_path=args.in_bam,
-        model=model,
-        model_metadata=model_metadata,
+        models=models,
         out_bam_path=args.out_bam,
         num_reads=args.num_reads,
         queue_max=args.queue_max,
@@ -1391,10 +1421,18 @@ def run_infer_from_pod5_and_bam_duplex(args):
 
     if args.log_filename is not None:
         log.init_logger(args.log_filename)
-    model_kwargs = _unpack_model_kw_args(args)
-    model, model_metadata = load_model(
-        **model_kwargs, quiet=False, eval_only=True
-    )
+    models_kwargs = _unpack_models_kw_args(args)
+    models = [
+        load_model(**model_kwargs, quiet=False, eval_only=True)
+        for model_kwargs in models_kwargs
+    ]
+    if len(models) > 1:
+        raise NotImplementedError(
+            "Duplex infer does not currently implement running of "
+            "multiple models"
+        )
+    # check_models(models)
+    model, model_metadata = models[0]
     torch.set_grad_enabled(False)
 
     if not os.path.exists(args.pod5):

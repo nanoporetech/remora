@@ -1,4 +1,5 @@
 import os
+import array
 import torch
 from copy import copy
 import array as pyarray
@@ -49,27 +50,33 @@ _PROF_MAIN_FN = os.getenv("REMORA_INFER_MAIN_PROFILE_FILE")
 ################
 
 
-def mods_tags_to_str(mods_tags):
+def mods_tags_to_str(mm_tags, ml_arr):
     # TODO these operations are often quite slow
     return [
-        f"MM:Z:{mods_tags[0]}",
-        f"ML:B:C,{','.join(map(str, mods_tags[1]))}",
+        f"MM:Z:{''.join(mm_tags)}",
+        f"ML:B:C,{','.join(map(str, ml_arr))}",
     ]
 
 
-def prepare_reads(read_errs, model_metadata, ref_anchored):
+def prepare_reads(read_errs, models_metadata, ref_anchored):
     out_read_errs = []
-    motif_seqs, motif_offsets = zip(*model_metadata["motifs"])
-    motifs = [Motif(*mot) for mot in model_metadata["motifs"]]
-    md_kwargs = {
-        "mod_bases": model_metadata["mod_bases"],
-        "mod_long_names": model_metadata["mod_long_names"],
-        "motif_sequences": motif_seqs,
-        "motif_offsets": motif_offsets,
-        "chunk_context": model_metadata["chunk_context"],
-        "kmer_context_bases": model_metadata["kmer_context_bases"],
-        "extra_arrays": {"read_focus_bases": ("int64", "")},
-    }
+
+    models_kwargs = []
+    motifs = {}
+    for md in models_metadata:
+        motif_seqs, motif_offsets = zip(*md["motifs"])
+        motifs[md["can_base"]] = [Motif(*mot) for mot in md["motifs"]]
+        models_kwargs.append(
+            {
+                "mod_bases": md["mod_bases"],
+                "mod_long_names": md["mod_long_names"],
+                "motif_sequences": motif_seqs,
+                "motif_offsets": motif_offsets,
+                "chunk_context": md["chunk_context"],
+                "kmer_context_bases": md["kmer_context_bases"],
+                "extra_arrays": {"read_focus_bases": ("int64", "")},
+            }
+        )
     for io_read, err in read_errs:
         if err is not None:
             io_read.prune(drop_move_tag=False)
@@ -89,35 +96,43 @@ def prepare_reads(read_errs, model_metadata, ref_anchored):
             continue
         # after creating remora read strip IO read of large arrays
         io_read.prune(drop_move_tag=False)
-        remora_read.set_motif_focus_bases(motifs)
-        remora_read.refine_signal_mapping(model_metadata["sig_map_refiner"])
-        chunks = list(
-            remora_read.iter_chunks(
-                model_metadata["chunk_context"],
-                model_metadata["kmer_context_bases"],
-                model_metadata["base_start_justify"],
-                model_metadata["offset"],
+        datasets = {}
+        for md, md_kwargs in zip(models_metadata, models_kwargs):
+            mdl_remora_read = remora_read.copy()
+            mdl_remora_read.set_motif_focus_bases(motifs[md["can_base"]])
+            mdl_remora_read.refine_signal_mapping(md["sig_map_refiner"])
+            chunks = list(
+                mdl_remora_read.iter_chunks(
+                    md["chunk_context"],
+                    md["kmer_context_bases"],
+                    md["base_start_justify"],
+                    md["offset"],
+                )
             )
-        )
-        if len(chunks) == 0:
-            LOGGER.debug(f"{io_read.child_read_id} No mod calls")
-            out_read_errs.append((io_read, None, "No mod calls"))
-            continue
-        # prepare in memory dataset to perform chunk extraction
-        num_chunks = len(chunks)
-        md_kwargs["allocate_size"] = num_chunks
-        md_kwargs["max_seq_len"] = max(c.seq_len for c in chunks)
-        # open in-memory dataset
-        dataset = CoreRemoraDataset(
-            mode="w",
-            metadata=DatasetMetadata(**md_kwargs),
-            batch_size=num_chunks,
-            super_batch_size=num_chunks,
-            infinite_iter=False,
-        )
-        for chunk in chunks:
-            dataset.write_chunk(chunk)
-        out_read_errs.append((io_read, dataset, None))
+            if len(chunks) == 0:
+                LOGGER.debug(
+                    f"{io_read.child_read_id} No {md['can_base']} mod calls"
+                )
+                out_read_errs.append(
+                    (io_read, None, f"No {md['can_base']} mod calls")
+                )
+                continue
+            # prepare in memory dataset to perform chunk extraction
+            num_chunks = len(chunks)
+            md_kwargs["allocate_size"] = num_chunks
+            md_kwargs["max_seq_len"] = max(c.seq_len for c in chunks)
+            # open in-memory dataset
+            dataset = CoreRemoraDataset(
+                mode="w",
+                metadata=DatasetMetadata(**md_kwargs),
+                batch_size=num_chunks,
+                super_batch_size=num_chunks,
+                infinite_iter=False,
+            )
+            for chunk in chunks:
+                dataset.write_chunk(chunk)
+            datasets[md["can_base"]] = dataset
+        out_read_errs.append((io_read, datasets, None))
     return out_read_errs
 
 
@@ -139,81 +154,110 @@ def prep_nn_input(read_errs):
     if len(read_errs) == 0:
         return [(None, None, "No valid mappings")]
     read_nn_inputs = []
-    for io_read, read_dataset, err in read_errs:
+    for io_read, read_datasets, err in read_errs:
         if err is not None:
             read_nn_inputs.append((io_read, None, err))
             continue
-        r_chunks = next(iter(read_dataset))
-        del r_chunks["labels"]
-        read_nn_inputs.append((io_read, r_chunks, None))
+        bases_chunks = {}
+        for can_base, ds in read_datasets.items():
+            base_chunks = next(iter(ds))
+            del base_chunks["labels"]
+            bases_chunks[can_base] = base_chunks
+        read_nn_inputs.append((io_read, bases_chunks, None))
     return read_nn_inputs
 
 
-def batch_reads(prepped_nn_inputs, batches_q, batch_size, model_metadata):
-    def new_arrays():
+def batch_reads(prepped_nn_inputs, batches_q, batch_size, models_metadata):
+    md_dict = dict((md["can_base"], md) for md in models_metadata)
+    can_bases = list(md_dict)
+
+    def new_arrays(can_base):
         return (
             np.empty(
-                (batch_size, 1, model_metadata["chunk_len"]),
+                (batch_size, 1, md_dict[can_base]["chunk_len"]),
                 dtype=np.float32,
             ),
             np.empty(
                 (
                     batch_size,
-                    model_metadata["kmer_len"] * 4,
-                    model_metadata["chunk_len"],
+                    md_dict[can_base]["kmer_len"] * 4,
+                    md_dict[can_base]["chunk_len"],
                 ),
                 dtype=np.float32,
             ),
             np.empty(batch_size, dtype=int),
         )
 
-    b_sigs, b_enc_kmers, b_read_pos = new_arrays()
+    arrs = dict((cb, new_arrays(cb)) for cb in can_bases)
     # position within current batch
-    b_pos = 0
-    b_reads = []
+    b_poss = dict((cb, 0) for cb in can_bases)
+    b_readss = dict((cb, []) for cb in can_bases)
     for read_nn_inputs in prepped_nn_inputs:
-        for io_read, r_chunks, err in read_nn_inputs:
+        for io_read, bases_chunks, err in read_nn_inputs:
             if err is not None:
-                b_reads.append([io_read, None, None, err])
+                for can_base in can_bases:
+                    b_readss[can_bases].append([io_read, None, None, err])
                 continue
-            num_chunks = r_chunks["read_focus_bases"].size
-            # fill out and yield full batches
-            rb_consumed = 0
-            # while this read extends through a whole batch continue to
-            # supply batches from this read
-            while b_pos + num_chunks - rb_consumed >= batch_size:
-                rb_en = rb_consumed + batch_size - b_pos
-                b_sigs[b_pos:] = r_chunks["signal"][rb_consumed:rb_en]
-                b_enc_kmers[b_pos:] = r_chunks["enc_kmers"][rb_consumed:rb_en]
-                b_read_pos[b_pos:] = r_chunks["read_focus_bases"][
-                    rb_consumed:rb_en
+            for can_base, r_chunks in bases_chunks.items():
+                num_chunks = r_chunks["read_focus_bases"].size
+                # fill out and yield full batches
+                rb_consumed = 0
+                # while this read extends through a whole batch continue to
+                # supply batches from this read
+                while b_poss[can_base] + num_chunks - rb_consumed >= batch_size:
+                    rb_en = rb_consumed + batch_size - b_poss[can_base]
+                    arrs[can_base][0][b_poss[can_base] :] = r_chunks["signal"][
+                        rb_consumed:rb_en
+                    ]
+                    arrs[can_base][1][b_poss[can_base] :] = r_chunks[
+                        "enc_kmers"
+                    ][rb_consumed:rb_en]
+                    arrs[can_base][2][b_poss[can_base] :] = r_chunks[
+                        "read_focus_bases"
+                    ][rb_consumed:rb_en]
+                    # batch start is None once the first batch is complete
+                    # from this read
+                    b_st = b_poss[can_base] if rb_consumed == 0 else None
+                    b_readss[can_base].append([io_read, b_st, None, None])
+                    _put_item(
+                        (can_base, *arrs[can_base], b_readss[can_base]),
+                        batches_q,
+                    )
+                    rb_consumed += batch_size - b_poss[can_base]
+                    # new batch
+                    arrs[can_base] = new_arrays(can_base)
+                    b_poss[can_base] = 0
+                    b_readss[can_base] = []
+                # add rest of read to unfinished batch
+                b_en = b_poss[can_base] + num_chunks - rb_consumed
+                arrs[can_base][0][b_poss[can_base] : b_en] = r_chunks["signal"][
+                    rb_consumed:
                 ]
-                # batch start is None once the first batch is complete
-                # from this read
-                b_st = b_pos if rb_consumed == 0 else None
-                b_reads.append([io_read, b_st, None, None])
-                _put_item((b_sigs, b_enc_kmers, b_read_pos, b_reads), batches_q)
-                rb_consumed += batch_size - b_pos
-                # new batch
-                b_sigs, b_enc_kmers, b_read_pos = new_arrays()
-                b_pos = 0
-                b_reads = []
-            # add rest of read to unfinished batch
-            b_en = b_pos + num_chunks - rb_consumed
-            b_sigs[b_pos:b_en] = r_chunks["signal"][rb_consumed:]
-            b_enc_kmers[b_pos:b_en] = r_chunks["enc_kmers"][rb_consumed:]
-            b_read_pos[b_pos:b_en] = r_chunks["read_focus_bases"][rb_consumed:]
-            # if read continues from last batch set start to None
-            b_st = b_pos if rb_consumed == 0 else None
-            b_reads.append([io_read, b_st, b_en, None])
-            # set current batch position for next read
-            b_pos = b_en
-    if b_pos > 0:
-        # send last batch
-        _put_item(
-            (b_sigs[:b_pos], b_enc_kmers[:b_pos], b_read_pos[:b_pos], b_reads),
-            batches_q,
-        )
+                arrs[can_base][1][b_poss[can_base] : b_en] = r_chunks[
+                    "enc_kmers"
+                ][rb_consumed:]
+                arrs[can_base][2][b_poss[can_base] : b_en] = r_chunks[
+                    "read_focus_bases"
+                ][rb_consumed:]
+                # if read continues from last batch set start to None
+                b_st = b_poss[can_base] if rb_consumed == 0 else None
+                b_readss[can_base].append([io_read, b_st, b_en, None])
+                # set current batch position for next read
+                b_poss[can_base] = b_en
+    for can_base in can_bases:
+        if b_poss[can_base] > 0:
+            b_sigs, b_enc_kmers, b_read_pos = arrs[can_base]
+            # send last batch
+            _put_item(
+                (
+                    can_base,
+                    b_sigs[: b_poss[can_base]],
+                    b_enc_kmers[: b_poss[can_base]],
+                    b_read_pos[: b_poss[can_base]],
+                    b_readss[can_base],
+                ),
+                batches_q,
+            )
     _put_item(StopIteration, batches_q)
 
 
@@ -230,33 +274,44 @@ if _PROF_BATCH_FN:
 
 
 def run_model_batched(
-    batches_q, called_batches_q, model, model_metadata, batch_size
+    batches_q, called_batches_q, models, models_metadata, batch_size
 ):
-    device = next(model.parameters()).device
-    pin_memory = device.type == "cuda"
-    t_b_sigs = torch.empty(
-        (batch_size, 1, model_metadata["chunk_len"]),
-        dtype=torch.float32,
-        pin_memory=pin_memory,
-    )
-    t_b_enc_kmers = torch.empty(
-        (
-            batch_size,
-            model_metadata["kmer_len"] * 4,
-            model_metadata["chunk_len"],
-        ),
-        dtype=torch.float32,
-        pin_memory=pin_memory,
-    )
-    for b_sigs, b_enc_kmers, b_read_pos, b_reads in _queue_iter(batches_q):
+    md_dict = dict((md["can_base"], md) for md in models_metadata)
+    can_bases = list(md_dict)
+    devices = dict()
+    sig_arrs = dict()
+    enc_kmer_arrs = dict()
+    for can_base in can_bases:
+        devices[can_base] = next(models[can_base].parameters()).device
+        pin_memory = devices[can_base].type == "cuda"
+        sig_arrs[can_base] = torch.empty(
+            (batch_size, 1, md_dict[can_base]["chunk_len"]),
+            dtype=torch.float32,
+            pin_memory=pin_memory,
+        )
+        enc_kmer_arrs[can_base] = torch.empty(
+            (
+                batch_size,
+                md_dict[can_base]["kmer_len"] * 4,
+                md_dict[can_base]["chunk_len"],
+            ),
+            dtype=torch.float32,
+            pin_memory=pin_memory,
+        )
+    for can_base, b_sigs, b_enc_kmers, b_read_pos, b_reads in _queue_iter(
+        batches_q
+    ):
         if b_read_pos.size == batch_size:
-            t_b_sigs[:] = torch.from_numpy(b_sigs)
-            t_b_enc_kmers[:] = torch.from_numpy(b_enc_kmers)
+            sig_arrs[can_base][:] = torch.from_numpy(b_sigs)
+            enc_kmer_arrs[can_base][:] = torch.from_numpy(b_enc_kmers)
         else:
-            t_b_sigs = torch.from_numpy(b_sigs)
-            t_b_enc_kmers = torch.from_numpy(b_enc_kmers)
-        nn_out = model(t_b_sigs.to(device), t_b_enc_kmers.to(device))
-        _put_item((nn_out, b_read_pos, b_reads), called_batches_q)
+            sig_arrs[can_base] = torch.from_numpy(b_sigs)
+            enc_kmer_arrs[can_base] = torch.from_numpy(b_enc_kmers)
+        nn_out = models[can_base](
+            sig_arrs[can_base].to(devices[can_base]),
+            enc_kmer_arrs[can_base].to(devices[can_base]),
+        )
+        _put_item((can_base, nn_out, b_read_pos, b_reads), called_batches_q)
     _put_item(StopIteration, called_batches_q)
 
 
@@ -311,16 +366,50 @@ def unbatch_reads(curr_read, b_nn_out, b_read_pos, b_reads):
     return comp_reads, curr_read
 
 
-def unbatch(called_batches_q, called_reads_q):
-    curr_read = None
-    for nn_out, b_read_pos, b_reads in _queue_iter(called_batches_q):
-        comp_reads, curr_read = unbatch_reads(
-            curr_read, nn_out.cpu().numpy(), b_read_pos, b_reads
+def unbatch(called_batches_q, called_reads_q, models_metadata):
+    def get_return_read(reads):
+        mod_calls = []
+        r_errs = set()
+        for can_base, (io_read, nn_out, r_pos, err) in reads:
+            r_errs.add(err)
+            if err is None:
+                mod_calls.append((can_base, nn_out, r_pos))
+        if any(err is None for err in r_errs):
+            r_err = None
+        else:
+            r_err = ",".join(sorted(r_errs))
+        return io_read, mod_calls, r_err
+
+    can_bases = [md["can_base"] for md in models_metadata]
+    num_can_bases = len(can_bases)
+    curr_reads = dict((can_base, None) for can_base in can_bases)
+    comp_reads = defaultdict(list)
+    for can_base, nn_out, b_read_pos, b_reads in _queue_iter(called_batches_q):
+        cb_comp_reads, cb_curr_read = unbatch_reads(
+            curr_reads[can_base], nn_out.cpu().numpy(), b_read_pos, b_reads
         )
-        for read in comp_reads:
-            _put_item(read, called_reads_q)
-    if curr_read is not None:
-        _put_item(curr_read, called_reads_q)
+        curr_reads[can_base] = cb_curr_read
+        for comp_read in cb_comp_reads:
+            comp_reads[comp_read[0].read_id].append((can_base, comp_read))
+
+        # add reads which have completed through all canonical base model
+        full_comp_read_ids = [
+            rid
+            for rid, r_comp_reads in comp_reads.items()
+            if len(r_comp_reads) == num_can_bases
+        ]
+        for rid in full_comp_read_ids:
+            _put_item(
+                get_return_read(comp_reads[rid]),
+                called_reads_q,
+            )
+            # delete read from completed reads dict
+            del comp_reads[rid]
+    if curr_reads[can_bases[0]] is not None:
+        _put_item(
+            get_return_read([(cb, curr_reads[cb]) for cb in can_bases]),
+            called_reads_q,
+        )
     _put_item(StopIteration, called_reads_q)
 
 
@@ -336,22 +425,28 @@ if _PROF_UNBATCH_FN:
         return retval
 
 
-def post_process_reads(read_mapping, model_metadata, ref_anchored):
-    io_read, nn_out, r_poss, err = read_mapping
+def post_process_reads(read_mapping, models_metadata, ref_anchored):
+    io_read, mod_calls, err = read_mapping
     if err is not None:
         return io_read, err
-    r_probs = softmax_axis1(nn_out)[:, 1:].astype(np.float64)
-    seq = io_read.ref_seq if ref_anchored else io_read.seq
-    mod_tags = mods_tags_to_str(
-        format_mm_ml_tags(
+
+    md_dict = dict((md["can_base"], md) for md in models_metadata)
+    mm_tags = []
+    ml_arr = array.array("B")
+    for can_base, nn_out, r_poss in mod_calls:
+        r_probs = softmax_axis1(nn_out)[:, 1:].astype(np.float64)
+        seq = io_read.ref_seq if ref_anchored else io_read.seq
+        cb_mm, cb_ml = format_mm_ml_tags(
             seq=seq,
             poss=r_poss,
             probs=r_probs,
-            mod_bases=model_metadata["mod_bases"],
-            can_base=model_metadata["can_base"],
+            mod_bases=md_dict[can_base]["mod_bases"],
+            can_base=can_base,
         )
-    )
-    io_read.full_align["tags"].extend(mod_tags)
+        mm_tags.append(cb_mm)
+        ml_arr.extend(cb_ml)
+
+    io_read.full_align["tags"].extend(mods_tags_to_str(mm_tags, ml_arr))
     if ref_anchored:
         io_read.full_align["cigar"] = f"{len(io_read.ref_seq)}M"
         io_read.full_align["seq"] = (
@@ -366,8 +461,7 @@ def post_process_reads(read_mapping, model_metadata, ref_anchored):
 def infer_from_pod5_and_bam(
     pod5_path,
     in_bam_path,
-    model,
-    model_metadata,
+    models,
     out_bam_path,
     num_reads=None,
     queue_max=1_000,
@@ -382,6 +476,9 @@ def infer_from_pod5_and_bam(
     bam_idx = ReadIndexedBam(in_bam_path, skip_non_primary, req_tags={"mv"})
     with DatasetReader(Path(pod5_path)) as pod5_dr:
         read_ids, num_reads = get_read_ids(bam_idx, pod5_dr, num_reads)
+    models_metadata = list(zip(*models))[1]
+    models = dict((md["can_base"], mdl) for mdl, md in models)
+    reverse_signal = models_metadata[0]["reverse_signal"]
 
     signals = BackgroundIter(
         iter_signal,
@@ -389,7 +486,7 @@ def infer_from_pod5_and_bam(
         kwargs={
             "num_reads": num_reads,
             "read_ids": read_ids,
-            "rev_sig": model_metadata["reverse_signal"],
+            "rev_sig": reverse_signal,
         },
         name="ExtractSignal",
         use_process=True,
@@ -399,7 +496,7 @@ def infer_from_pod5_and_bam(
         extract_alignments,
         signals,
         num_workers=num_extract_alignment_workers,
-        args=(bam_idx, model_metadata["reverse_signal"]),
+        args=(bam_idx, reverse_signal),
         name="AddAlignments",
         use_process=True,
         use_mp_queue=True,
@@ -409,7 +506,7 @@ def infer_from_pod5_and_bam(
         prepare_reads,
         reads,
         num_workers=num_prep_read_workers,
-        args=(model_metadata, ref_anchored),
+        args=(models_metadata, ref_anchored),
         name="PrepReadData",
         use_process=True,
         use_mp_queue=True,
@@ -431,7 +528,7 @@ def infer_from_pod5_and_bam(
             _queue_iter(prepped_nn_input.out_q, num_prep_nn_input_workers),
             batches_q,
             batch_size,
-            model_metadata,
+            models_metadata,
         ),
         name="batch_reads",
         daemon=True,
@@ -440,7 +537,7 @@ def infer_from_pod5_and_bam(
     called_batches_q = NamedQueue(maxsize=4, name="CalledBatches")
     call_batches_t = Thread(
         target=run_model_batched,
-        args=(batches_q, called_batches_q, model, model_metadata, batch_size),
+        args=(batches_q, called_batches_q, models, models_metadata, batch_size),
         name="call_batches",
         daemon=True,
     )
@@ -451,6 +548,7 @@ def infer_from_pod5_and_bam(
         args=(
             called_batches_q,
             called_reads_q,
+            models_metadata,
         ),
         name="unbatch",
         daemon=True,
@@ -460,7 +558,7 @@ def infer_from_pod5_and_bam(
         post_process_reads,
         _queue_iter(called_reads_q),
         num_workers=num_post_process_workers,
-        args=(model_metadata, ref_anchored),
+        args=(models_metadata, ref_anchored),
         name="PostProcess",
         use_process=False,
         use_mp_queue=False,
