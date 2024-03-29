@@ -1,5 +1,6 @@
 import os
 import re
+import toml
 import array
 import queue
 import platform
@@ -534,6 +535,29 @@ def format_mm_ml_tags(seq, poss, probs, mod_bases, can_base, strand: str = "+"):
         ml_tag.extend(scaled_probs.astype(np.uint8))
 
     return mm_tag, ml_tag
+
+
+def parse_picoamps(bc_model, sig_map_refiner):
+    if bc_model is None:
+        return
+    if sig_map_refiner.do_rough_rescale or sig_map_refiner.scale_iters > -1:
+        raise RemoraError(
+            "Cannot specify signal scaling/mapping refinement and "
+            "picoamp scaling options."
+        )
+    bc_cfg = Path(bc_model) / "config.toml"
+    if not bc_cfg.exists():
+        raise RemoraError(f"Basecalling model config does not exist: {bc_cfg}")
+    cfg = toml.load(bc_cfg)
+    try:
+        std_cfg = cfg["standardisation"]
+        do_std = std_cfg["standardise"]
+        pa_scaling = (std_cfg["mean"], std_cfg["stdev"])
+    except KeyError:
+        raise RemoraError("Basecalling model is not picoamp scaling model")
+    if do_std != 1:
+        raise RemoraError("Basecalling model is not picoamp scaling model")
+    return pa_scaling
 
 
 def profile(prof_path):

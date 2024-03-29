@@ -202,6 +202,8 @@ class ReadIndexedBam:
     skip_non_primary: bool = True
     req_tags: set = None
     read_id_converter: Callable = None
+    parent_read_id_subset: set = None
+    child_read_id_subset: set = None
 
     @property
     def reference_filename(self):
@@ -262,7 +264,7 @@ class ReadIndexedBam:
             disable=os.environ.get("LOG_SAFE", False),
         )
         self.num_records = 0
-        self.num_non_primary = 0
+        self.skip_reasons = defaultdict(int)
         # iterating over file handle gives incorrect pointers
         while True:
             read_ptr = self.bam_fh.tell()
@@ -271,18 +273,29 @@ class ReadIndexedBam:
             except StopIteration:
                 break
             pbar.update()
+            if (
+                self.child_read_id_subset is not None
+                and read.query_name not in self.child_read_id_subset
+            ):
+                self.skip_reasons["Child read ID filtered"] += 1
+                continue
             index_read_id = get_parent_id(read)
+            if (
+                self.parent_read_id_subset is not None
+                and index_read_id not in self.parent_read_id_subset
+            ):
+                self.skip_reasons["Parent read ID filtered"] += 1
+                continue
             if self.read_id_converter is not None:
                 index_read_id = self.read_id_converter(index_read_id)
             if self.req_tags is not None:
                 tags = set(tg[0] for tg in read.tags)
                 missing_tags = self.req_tags.difference(tags)
                 if len(missing_tags) > 0:
-                    LOGGER.debug(f"{index_read_id} missing tags {missing_tags}")
+                    self.skip_reasons["Missing BAM tags"] += 1
                     continue
             if self.skip_non_primary and not read_is_primary(read):
-                LOGGER.debug(f"{read.query_name} not primary")
-                self.num_non_primary += 1
+                self.skip_reasons["Non-primary alignment"] += 1
                 continue
             self.num_records += 1
             self._bam_idx[index_read_id].append(read_ptr)
@@ -388,16 +401,8 @@ def parse_move_tag(
     if reverse_signal:
         query_to_signal = sig_len - query_to_signal[::-1]
     if check and seq_len is not None and query_to_signal.size - 1 != seq_len:
-        LOGGER.debug(
-            f"Move table (num moves: {query_to_signal.size - 1}) discordant "
-            f"with basecalls (seq len: {seq_len})"
-        )
         raise RemoraError("Move table discordant with basecalls")
     if check and mv_table.size != sig_len // stride:
-        LOGGER.debug(
-            f"Move table (len: {mv_table.size}) discordant with "
-            f"signal (sig len // stride: {sig_len // stride})"
-        )
         raise RemoraError("Move table discordant with signal")
     return query_to_signal, mv_table, stride
 
@@ -433,7 +438,9 @@ def iter_pod5_reads(pod5_path, num_reads=None, read_ids=None):
     LOGGER.debug("Completed pod5 signal worker")
 
 
-def iter_signal(pod5_path, num_reads=None, read_ids=None, rev_sig=False):
+def iter_signal(
+    pod5_path, num_reads=None, read_ids=None, rev_sig=False, pa_scaling=None
+):
     """Iterate io Read objects loaded from Pod5
 
     Args:
@@ -441,12 +448,17 @@ def iter_signal(pod5_path, num_reads=None, read_ids=None, rev_sig=False):
         num_reads (int): Maximum number of reads to iterate
         read_ids (iterable): Read IDs to extract
         rev_sig (bool): Should signal be reversed on reading
+        pa_scaling (tuple): picoamp to zero-centered picoamp shift and scale
 
     Yields:
         2-tuple:
             1. remora.io.Read object
             2. Error text or None if no errors
     """
+    pa_kwargs = {}
+    if pa_scaling is not None:
+        pa_kwargs["shift_pa_to_zc_pa"] = pa_scaling[0]
+        pa_kwargs["scale_pa_to_zc_pa"] = pa_scaling[1]
     for pod5_read in iter_pod5_reads(
         pod5_path=pod5_path, num_reads=num_reads, read_ids=read_ids
     ):
@@ -456,6 +468,7 @@ def iter_signal(pod5_path, num_reads=None, read_ids=None, rev_sig=False):
             dacs=dacs,
             shift_dacs_to_pa=pod5_read.calibration.offset,
             scale_dacs_to_pa=pod5_read.calibration.scale,
+            **pa_kwargs,
         )
         yield read, None
     LOGGER.debug("Completed signal worker")
@@ -473,7 +486,7 @@ if _SIG_PROF_FN:
         return retval
 
 
-def extract_alignments(read_err, bam_idx, rev_sig=False):
+def extract_alignments(read_err, bam_idx, rev_sig=False, pa_scaling=None):
     io_read, err = read_err
     if io_read is None:
         return [read_err]
@@ -482,7 +495,9 @@ def extract_alignments(read_err, bam_idx, rev_sig=False):
         for bam_read in bam_idx.get_alignments(io_read.read_id):
             align_read = io_read.copy()
             try:
-                align_read.add_alignment(bam_read, reverse_signal=rev_sig)
+                align_read.add_alignment(
+                    bam_read, reverse_signal=rev_sig, pa_scaling=pa_scaling
+                )
                 read_alignments.append((align_read, None))
             except RemoraError as e:
                 LOGGER.debug(f"{io_read.read_id} Extract alignment error: {e}")
@@ -707,35 +722,46 @@ def get_ref_seq_and_levels_from_reads(
             will return sequence and levels in 5' to 3' read direction on the
             reverse strand.
     """
-    # extract read oriented context seq
-    context_int_seq = get_ref_int_seq_from_reads(
-        ref_reg.adjust(
-            -sig_map_refiner.bases_before,
-            sig_map_refiner.bases_after,
+    if sig_map_refiner is None:
+        levels = None
+        context_int_seq = get_ref_int_seq_from_reads(
+            ref_reg,
+            bam_reads,
             ref_orient=False,
-        ),
-        bam_reads,
-        ref_orient=False,
-    )
-    # levels are read oriented
-    levels = sig_map_refiner.extract_levels(context_int_seq)
-    # convert sequence positions not in reads to nan and seq to N
-    levels[np.equal(context_int_seq, -2)] = np.NAN
-    context_int_seq[np.equal(context_int_seq, -2)] = -1
-    seq = util.int_to_seq(context_int_seq)
-    # trim seq and levels
-    seq = seq[
-        sig_map_refiner.bases_before : sig_map_refiner.bases_before
-        + ref_reg.len
-    ]
-    levels = levels[
-        sig_map_refiner.bases_before : sig_map_refiner.bases_before
-        + ref_reg.len
-    ]
+        )
+        context_int_seq[np.equal(context_int_seq, -2)] = -1
+        seq = util.int_to_seq(context_int_seq)
+    else:
+        # extract read oriented context seq
+        context_int_seq = get_ref_int_seq_from_reads(
+            ref_reg.adjust(
+                -sig_map_refiner.bases_before,
+                sig_map_refiner.bases_after,
+                ref_orient=False,
+            ),
+            bam_reads,
+            ref_orient=False,
+        )
+        # levels are read oriented
+        levels = sig_map_refiner.extract_levels(context_int_seq)
+        # convert sequence positions not in reads to nan and seq to N
+        levels[np.equal(context_int_seq, -2)] = np.NAN
+        context_int_seq[np.equal(context_int_seq, -2)] = -1
+        seq = util.int_to_seq(context_int_seq)
+        # trim seq and levels
+        seq = seq[
+            sig_map_refiner.bases_before : sig_map_refiner.bases_before
+            + ref_reg.len
+        ]
+        levels = levels[
+            sig_map_refiner.bases_before : sig_map_refiner.bases_before
+            + ref_reg.len
+        ]
 
     if ref_reg.strand == "-" and ref_orient:
         seq = seq[::-1]
-        levels = levels[::-1]
+        if levels is not None:
+            levels = levels[::-1]
     return seq, levels
 
 
@@ -746,7 +772,9 @@ def get_pod5_reads(pod5_dr, read_ids):
     )
 
 
-def get_io_reads(bam_reads, pod5_dr, reverse_signal=False, missing_ok=False):
+def get_io_reads(
+    bam_reads, pod5_dr, reverse_signal=False, missing_ok=False, pa_scaling=None
+):
     pod5_reads = get_pod5_reads(
         pod5_dr, list(set(get_parent_id(bam_read) for bam_read in bam_reads))
     )
@@ -757,6 +785,7 @@ def get_io_reads(bam_reads, pod5_dr, reverse_signal=False, missing_ok=False):
                 pod5_read_record=pod5_reads[get_parent_id(bam_read)],
                 alignment_record=bam_read,
                 reverse_signal=reverse_signal,
+                pa_scaling=pa_scaling,
             )
         except Exception:
             if missing_ok:
@@ -775,6 +804,8 @@ def get_reads_reference_regions(
     max_reads=50,
     reverse_signal=False,
     missing_ok=False,
+    pa_scaling=None,
+    signal_type="norm",
 ):
     all_bam_reads = []
     samples_read_ref_regs = []
@@ -786,7 +817,11 @@ def get_reads_reference_regions(
             sample_bam_reads = random.sample(sample_bam_reads, max_reads)
         all_bam_reads.append(sample_bam_reads)
         io_reads = get_io_reads(
-            sample_bam_reads, pod5_dr, reverse_signal, missing_ok=missing_ok
+            sample_bam_reads,
+            pod5_dr,
+            reverse_signal,
+            missing_ok=missing_ok,
+            pa_scaling=pa_scaling,
         )
         if sig_map_refiner is not None and not skip_sig_map_refine:
             for io_read in io_reads:
@@ -794,7 +829,10 @@ def get_reads_reference_regions(
                     sig_map_refiner, ref_mapping=True
                 )
         samples_read_ref_regs.append(
-            [io_read.extract_ref_reg(ref_reg) for io_read in io_reads]
+            [
+                io_read.extract_ref_reg(ref_reg, signal_type=signal_type)
+                for io_read in io_reads
+            ]
         )
     return samples_read_ref_regs, all_bam_reads
 
@@ -809,16 +847,24 @@ def get_ref_reg_sample_metrics(
     reverse_signal=False,
     ref_orient=True,
     missing_ok=False,
+    pa_scaling=None,
+    signal_type="norm",
     **kwargs,
 ):
     io_reads = get_io_reads(
-        bam_reads, pod5_dr, reverse_signal, missing_ok=missing_ok
+        bam_reads,
+        pod5_dr,
+        reverse_signal,
+        missing_ok=missing_ok,
+        pa_scaling=pa_scaling,
     )
     if sig_map_refiner is not None and not skip_sig_map_refine:
         for io_read in io_reads:
             io_read.set_refine_signal_mapping(sig_map_refiner, ref_mapping=True)
     sample_metrics = [
-        io_read.compute_per_base_metric(metric, region=ref_reg, **kwargs)
+        io_read.compute_per_base_metric(
+            metric, region=ref_reg, signal_type=signal_type, **kwargs
+        )
         for io_read in io_reads
     ]
     if len(sample_metrics) <= 0:
@@ -1015,6 +1061,7 @@ def plot_on_signal_coords(
     rev_strand=False,
     t_as_u=False,
     xlab="Signal Position",
+    ylab="Normalized Signal",
     base_dividers=False,
     sig_pctl_range=METRIC_PCTL_RANGE,
 ):
@@ -1085,8 +1132,8 @@ def plot_on_signal_coords(
         + p9.scale_fill_manual(BASE_COLORS)
         + p9.scale_color_manual(BASE_COLORS)
         + p9.geom_line(p9.aes(x=xlab, y="Signal"), size=sig_lw, data=sig_df)
-        + p9.labels.ylab("Normalized Signal")
         + p9.labels.xlab(xlab)
+        + p9.labels.ylab(ylab)
         + p9.coords.coord_cartesian(ylim=ylim)
         + p9.theme(
             panel_grid_major_x=p9.element_blank(),
@@ -1133,6 +1180,7 @@ def plot_on_base_coords(
     rev_strand=False,
     t_as_u=False,
     xlab="Base Position",
+    ylab="Normalized Signal",
     base_dividers=False,
     sig_pctl_range=METRIC_PCTL_RANGE,
 ):
@@ -1150,6 +1198,7 @@ def plot_on_base_coords(
         rev_strand (bool): Plot bases upside down
         t_as_u (bool): Plot T bases as U (RNA)
         xlab (str): X-axis Label
+        ylab (str): Y-axis Label
         base_dividers (bool): Add vertical lines separating bases
 
     Returns:
@@ -1206,8 +1255,8 @@ def plot_on_base_coords(
         + p9.scale_fill_manual(BASE_COLORS)
         + p9.scale_color_manual(BASE_COLORS)
         + p9.geom_line(p9.aes(x=xlab, y="Signal"), size=sig_lw, data=sig_df)
-        + p9.labels.ylab("Normalized Signal")
         + p9.labels.xlab(xlab)
+        + p9.labels.ylab(ylab)
         + p9.coords.coord_cartesian(ylim=ylim)
         + p9.theme(
             panel_grid_major_x=p9.element_blank(),
@@ -1249,7 +1298,9 @@ def plot_align(
     sig_mp=0,
     t_as_u=False,
     xlab="Signal Position",
+    ylab="Normalized Signal",
     sig_pctl_range=METRIC_PCTL_RANGE,
+    signal_type="norm",
 ):
     """Plot a single read in signal space with basecalls and reference
     alignment bases annotated.
@@ -1261,6 +1312,8 @@ def plot_align(
         sig_mp (int): Signal midpoint (default 0)
         t_as_u (bool): Plot T bases as U (RNA)
         xlab (str): X-axis label
+        ylab (str): Y-axis label
+        signal_type (str): One of "norm" (default), "pa", "zc_pa", "dac"
 
     Returns:
         plotnine plot object. Use print(return_value) to display plot in in
@@ -1295,7 +1348,7 @@ def plot_align(
         orient="col",
     )
 
-    sig = io_read.norm_signal[sig_st:sig_en]
+    sig = io_read.get_sig_type(signal_type)[sig_st:sig_en]
     sig_min, sig_max = np.percentile(sig, sig_pctl_range)
     sig_diff = sig_max - sig_min
     ylim = (sig_min - sig_diff * 0.02, sig_max + sig_diff * 0.03)
@@ -1355,8 +1408,8 @@ def plot_align(
         )
         + p9.geom_hline(yintercept=sig_mp, linetype="dashed", alpha=0.2)
         + p9.geom_line(p9.aes(x=np.arange(sig_st, sig_en), y=sig))
-        + p9.labels.ylab("Normalized Signal")
         + p9.labels.xlab(xlab)
+        + p9.labels.ylab(ylab)
         + p9.coords.coord_cartesian(ylim=ylim)
         + p9.theme(
             panel_grid_major_x=p9.element_blank(),
@@ -1378,6 +1431,8 @@ def plot_ref_region_reads(
     highlight_ranges=None,
     t_as_u=False,
     sig_pctl_range=METRIC_PCTL_RANGE,
+    xlab="Reference Position",
+    ylab="Normalized Signal",
 ):
     """Plot read signals over reference region
 
@@ -1415,15 +1470,16 @@ def plot_ref_region_reads(
         sig_min, sig_max = np.percentile(sig_df["Signal"], sig_pctl_range)
         sig_diff = sig_max - sig_min
         ylim = (sig_min - sig_diff * 0.01, sig_max + sig_diff * 0.01)
-    level_df = pl.DataFrame(
-        [
-            np.arange(ref_reg.start, ref_reg.end),
-            np.arange(ref_reg.start + 1, ref_reg.end + 1),
-            levels,
-        ],
-        schema=["base_st", "base_en", "level"],
-        orient="col",
-    )
+    if levels is not None:
+        level_df = pl.DataFrame(
+            [
+                np.arange(ref_reg.start, ref_reg.end),
+                np.arange(ref_reg.start + 1, ref_reg.end + 1),
+                levels,
+            ],
+            schema=["base_st", "base_en", "level"],
+            orient="col",
+        )
     if t_as_u:
         seq = util.t_to_u(seq)
     base_coords = pl.DataFrame(
@@ -1487,22 +1543,24 @@ def plot_ref_region_reads(
             size=sig_lw,
             data=sig_df,
         )
-        + p9.geom_segment(
+        + p9.ylim(*ylim)
+        + p9.xlim(ref_reg.start, ref_reg.end)
+        + p9.labels.xlab(xlab)
+        + p9.labels.ylab(ylab)
+        + p9.theme(
+            panel_grid_major_x=p9.element_blank(),
+            panel_grid_minor_x=p9.element_blank(),
+        )
+    )
+    if levels is not None:
+        p = p + p9.geom_segment(
             p9.aes(x="base_st", xend="base_en", y="level", yend="level"),
             color="orange",
             alpha=0.5,
             size=levels_lw,
             data=level_df,
         )
-        + p9.ylim(*ylim)
-        + p9.xlim(ref_reg.start, ref_reg.end)
-        + p9.labels.ylab("Normalized Signal")
-        + p9.labels.xlab("Reference Position")
-        + p9.theme(
-            panel_grid_major_x=p9.element_blank(),
-            panel_grid_minor_x=p9.element_blank(),
-        )
-    )
+
     if sample_colors is not None:
         p = p + p9.scale_color_manual(sample_colors, limits=sample_names)
     return p
@@ -1515,6 +1573,8 @@ def plot_signal_at_ref_region(
     skip_sig_map_refine=False,
     max_reads=50,
     reverse_signal=False,
+    pa_scaling=None,
+    signal_type="norm",
     **kwargs,
 ):
     """Plot signal from reads at a reference region.
@@ -1540,6 +1600,8 @@ def plot_signal_at_ref_region(
         skip_sig_map_refine=skip_sig_map_refine,
         max_reads=max_reads,
         reverse_signal=reverse_signal,
+        pa_scaling=pa_scaling,
+        signal_type=signal_type,
     )
     seq, levels = get_ref_seq_and_levels_from_reads(
         ref_reg, chain(*reg_bam_reads), sig_map_refiner
@@ -1562,6 +1624,7 @@ def plot_ref_region_metrics(
     geom=p9.geom_boxplot,
     geom_kwargs=None,
     metric_pctl_range=METRIC_PCTL_RANGE,
+    xlab="Reference Position",
 ):
     ref_pos = list(range(ref_reg.start, ref_reg.end))
     metric_names = list(samples_metrics[0].keys())
@@ -1614,7 +1677,7 @@ def plot_ref_region_metrics(
             )
             + p9.ylim(*ylim)
             + p9.labels.ylab(metric)
-            + p9.labels.xlab("Reference Position")
+            + p9.labels.xlab(xlab)
         )
         if sample_colors is not None:
             plots[-1] = plots[-1] + p9.scale_fill_manual(
@@ -1679,10 +1742,11 @@ def plot_metric_at_ref_region(
 
 @dataclass
 class Read:
-    """Input/Output Read
+    """Input/Output Read. Contains signal, basecalls, mapping between the two,
+    various signal scaling parameters, and reference alignment.
 
-    Object to hold information related to signal, basecalls and mapping of a
-    nanopore read.
+    All scaling parameters use the following forumla:
+        output = (input - shift) / sca;e
 
     Args:
         read_id (str): Read identifier. Note that for split reads this should
@@ -1695,8 +1759,6 @@ class Read:
         seq (str): Basecalled sequence
         stride (int): Basecalling model stride. Move table (mv_table) entries
             occur at regular stride intervals through the signal.
-        num_trimmed (int): Number of signal points trimmed from the start of
-            the read. For split reads this is applied after split slicing.
         mv_table (np.array): Move table. `1` entries indicate base output
             position. See Dorado documentation/SAM.md.
         query_to_signal (np.ndarray): Array with length one longer than
@@ -1704,17 +1766,23 @@ class Read:
             represent assigned position in io_read.dacs. This attribute is
             updated when io_read.set_refine_signal_mapping is called.
         shift_dacs_to_pa (float): Shift parameter to convert from DACs to
-            picoampere scaling. See io.Read.pa_signal for implementation.
+            picoamp scaling. See io.Read.pa_signal for implementation.
         scale_dacs_to_pa (float): Scale parameter to convert from DACs to
-            picoampere scaling. See io.Read.pa_signal for implementation.
-        shift_pa_to_norm (float): Shift parameter to convert from picoampere to
+            picoamp scaling. See io.Read.pa_signal for implementation.
+        shift_pa_to_norm (float): Shift parameter to convert from picoamp to
             norm scaling. Extracted from BAM record tags.
-        scale_pa_to_norm (float): Scale parameter to convert from picoampere to
+        scale_pa_to_norm (float): Scale parameter to convert from picoamp to
             norm scaling. Extracted from BAM record tags.
         shift_dacs_to_norm (float): Shift parameter to convert from DACs to
             norm scaling. See io.Read.norm_signal for implementation.
         scale_dacs_to_norm (float): Scale parameter to convert from DACs to
             norm scaling. See io.Read.norm_signal for implementation.
+        shift_pa_to_zc_pa (float): Shift parameter to convert from picoamp to
+            zero-centered picoamp scaling. Extracted from picoamp scaling
+            Dorado basecalling model
+        scale_pa_to_zc_pa (float): Scale parameter to convert from picoamp to
+            zero-centered picoamp scaling. Extracted from picoamp scaling
+            Dorado basecalling model
         ref_seq (str): Reference sequence for mapping.
         ref_reg (RefRegion): Reference mapping region coordinates.
         cigar (list): pysam.AlignedSegment.cigartuples
@@ -1730,7 +1798,6 @@ class Read:
     dacs: np.ndarray = None
     seq: str = None
     stride: int = None
-    num_trimmed: int = None
     mv_table: np.array = None
     query_to_signal: np.ndarray = None
     shift_dacs_to_pa: float = None
@@ -1739,6 +1806,8 @@ class Read:
     scale_pa_to_norm: float = None
     shift_dacs_to_norm: float = None
     scale_dacs_to_norm: float = None
+    shift_pa_to_zc_pa: float = None
+    scale_pa_to_zc_pa: float = None
     ref_seq: str = None
     ref_reg: RefRegion = None
     cigar: list = None
@@ -1749,13 +1818,22 @@ class Read:
 
     @property
     def pa_signal(self):
-        """Picoampere convereted signal. Shift and scale values are determined
+        """Picoamp convereted signal. Shift and scale values are determined
         from the instrument. These values are generally not recommended for any
         type of analysis.
         """
         if self.scale_dacs_to_pa is None or self.shift_dacs_to_pa is None:
             raise RemoraError("pA scaling factors not set")
-        return self.scale_dacs_to_pa * (self.dacs + self.shift_dacs_to_pa)
+        return (self.dacs - self.shift_dacs_to_pa) / self.scale_dacs_to_pa
+
+    @property
+    def zero_centered_pa_signal(self):
+        """Zero-centered picoamp convereted signal. Shift and scale values
+        are determined from the instrument plus the basecalling model. These
+        values are linked to a basecalling model and should only be used with
+        these models.
+        """
+        return (self.dacs - self.shift_dacs_to_zc_pa) / self.scale_dacs_to_zc_pa
 
     @property
     def norm_signal(self):
@@ -1801,6 +1879,26 @@ class Read:
         if self._child_read_id is None:
             return self.read_id
         return self._child_read_id
+
+    @property
+    def shift_dacs_to_zc_pa(self):
+        """Shift factor from DAC signal values to zero-centered picoamp"""
+        if (
+            self.shift_dacs_to_pa is None
+            or self.scale_dacs_to_pa is None
+            or self.shift_pa_to_zc_pa is None
+        ):
+            raise RemoraError("Zero-centered pA scaling factors not set")
+        return self.shift_dacs_to_pa + (
+            self.scale_dacs_to_pa * self.shift_pa_to_zc_pa
+        )
+
+    @property
+    def scale_dacs_to_zc_pa(self):
+        """Scale factor from DAC signal values to zero-centered picoamp"""
+        if self.scale_dacs_to_pa is None or self.scale_pa_to_zc_pa is None:
+            raise RemoraError("Zero-centered pA scaling factors not set")
+        return self.scale_dacs_to_pa * self.scale_pa_to_zc_pa
 
     def prune(self, drop_mod_tags=True, drop_move_tag=True):
         """Drop larger memory arrays: dacs, mv_table, *_to_signal"""
@@ -1869,7 +1967,11 @@ class Read:
         return read, simplex_duplex_mapping.duplex_offset
 
     def add_alignment(
-        self, alignment_record, parse_ref_align=True, reverse_signal=False
+        self,
+        alignment_record,
+        parse_ref_align=True,
+        reverse_signal=False,
+        pa_scaling=None,
     ):
         """Add alignment to read object
 
@@ -1878,7 +1980,11 @@ class Read:
             parse_ref_align (bool): Should reference alignment be parsed
             reverse_signal (bool): Does this read derive from 3' to 5' signal
                 (RNA reads)
+            pa_scaling (tuple): picoamp to zero-centered picoamp shift and scale
         """
+        if pa_scaling is not None:
+            self.shift_pa_to_zc_pa = pa_scaling[0]
+            self.scale_pa_to_zc_pa = pa_scaling[1]
         if (
             alignment_record.reference_name is None
             and alignment_record.is_reverse
@@ -1889,36 +1995,25 @@ class Read:
         self.full_align = alignment_record.to_dict()
 
         tags = dict(alignment_record.tags)
-        try:
-            parent_read_id = tags.get("pi", None)
-            if parent_read_id is None:
-                self.num_trimmed = tags["ts"]
-                if alignment_record.query_name != self.read_id:
-                    raise RemoraError("Read IDs mismatch")
-            else:
-                if parent_read_id != self.read_id:
-                    raise RemoraError("Split read IDs mismatch")
-                self._child_read_id = alignment_record.query_name
-                try:
-                    self.num_trimmed = tags["ts"] + tags["sp"]
-                    self._sig_len = tags["ns"] - tags["ts"]
-                except KeyError:
-                    LOGGER.debug(
-                        f"{self.child_read_id} Split read, missing sp tag."
-                    )
-                    raise RemoraError("Split read missing sp tag")
-            if self.num_trimmed > 0:
-                if reverse_signal:
-                    self.dacs = self.dacs[: -self.num_trimmed]
-                else:
-                    self.dacs = self.dacs[self.num_trimmed :]
-            if self._sig_len is not None:
-                if reverse_signal:
-                    self.dacs = self.dacs[-self._sig_len :]
-                else:
-                    self.dacs = self.dacs[: self._sig_len]
-        except KeyError:
-            self.num_trimmed = 0
+        if reverse_signal:
+            self.dacs = self.dacs[::-1]
+        # trim for split read sp tag
+        self.dacs = self.dacs[tags.get("sp", 0) :]
+        # trim for start and end read trimming
+        self.dacs = self.dacs[
+            tags.get("ts", 0) : tags.get("ns", self.dacs.size)
+        ]
+        if reverse_signal:
+            self.dacs = self.dacs[::-1]
+
+        parent_read_id = tags.get("pi", None)
+        if parent_read_id is None:
+            if alignment_record.query_name != self.read_id:
+                raise RemoraError("Read IDs mismatch")
+        else:
+            if parent_read_id != self.read_id:
+                raise RemoraError("Split read IDs mismatch")
+            self._child_read_id = alignment_record.query_name
 
         self.seq = alignment_record.query_sequence
         if alignment_record.is_reverse:
@@ -1926,7 +2021,7 @@ class Read:
         try:
             self.query_to_signal, self.mv_table, self.stride = parse_move_tag(
                 tags["mv"],
-                sig_len=self.dacs.size,
+                sig_len=self.sig_len,
                 seq_len=len(self.seq),
                 reverse_signal=reverse_signal,
             )
@@ -1940,10 +2035,10 @@ class Read:
         except KeyError:
             self.compute_pa_to_norm_scaling()
 
-        self.shift_dacs_to_norm = (
-            self.shift_pa_to_norm / self.scale_dacs_to_pa
-        ) - self.shift_dacs_to_pa
-        self.scale_dacs_to_norm = self.scale_pa_to_norm / self.scale_dacs_to_pa
+        self.shift_dacs_to_norm = self.shift_dacs_to_pa + (
+            self.scale_dacs_to_pa * self.shift_pa_to_norm
+        )
+        self.scale_dacs_to_norm = self.scale_dacs_to_pa * self.scale_pa_to_norm
 
         if not parse_ref_align or alignment_record.is_unmapped:
             return
@@ -1987,24 +2082,39 @@ class Read:
 
     @classmethod
     def from_pod5_and_alignment(
-        cls, pod5_read_record, alignment_record, reverse_signal=False
+        cls,
+        pod5_read_record,
+        alignment_record,
+        reverse_signal=False,
+        pa_scaling=None,
     ):
         """Initialize read from pod5 and pysam records
 
         Args:
             pod5_read_record (pod5.ReadRecord)
             alignment_record (pysam.AlignedSegment)
+            reverse_signal (bool): Is this 3' to 5' signal
+            pa_scaling (tuple): picoamp to zero-centered picoamp shift and scale
         """
         dacs = pod5_read_record.signal
         if reverse_signal:
             dacs = dacs[::-1]
+        # calibration offset and scale apply normalization as:
+        #     y=(x+a)/b
+        # while io.Read stores shfit and scale as:
+        #     y=c*(x-d)
+        # In other words, as shift=mean and scale=std. dev.
         read = Read(
             read_id=str(pod5_read_record.read_id),
             dacs=dacs,
-            shift_dacs_to_pa=pod5_read_record.calibration.offset,
-            scale_dacs_to_pa=pod5_read_record.calibration.scale,
+            shift_dacs_to_pa=-pod5_read_record.calibration.offset,
+            scale_dacs_to_pa=1 / pod5_read_record.calibration.scale,
         )
-        read.add_alignment(alignment_record, reverse_signal=reverse_signal)
+        read.add_alignment(
+            alignment_record,
+            reverse_signal=reverse_signal,
+            pa_scaling=pa_scaling,
+        )
         return read
 
     def into_remora_read(self, use_reference_anchor):
@@ -2043,13 +2153,22 @@ class Read:
             ]
             shift_seq_to_sig = self.query_to_signal - self.query_to_signal[0]
             seq = self.seq
+        if self.shift_pa_to_zc_pa is None or self.scale_pa_to_zc_pa is None:
+            scale_kwargs = {
+                "shift": self.shift_dacs_to_norm,
+                "scale": self.scale_dacs_to_norm,
+            }
+        else:
+            scale_kwargs = {
+                "shift": self.shift_dacs_to_zc_pa,
+                "scale": self.scale_dacs_to_zc_pa,
+            }
         remora_read = data_chunks.RemoraRead(
             dacs=trim_dacs,
-            shift=self.shift_dacs_to_norm,
-            scale=self.scale_dacs_to_norm,
             seq_to_sig_map=shift_seq_to_sig,
             str_seq=seq,
             read_id=self.read_id,
+            **scale_kwargs,
         )
         remora_read.check()
         return remora_read
@@ -2086,9 +2205,9 @@ class Read:
         self.shift_dacs_to_norm = remora_read.shift
         self.scale_dacs_to_norm = remora_read.scale
         self.shift_pa_to_norm = (
-            self.shift_dacs_to_norm + self.shift_dacs_to_pa
-        ) * self.scale_dacs_to_pa
-        self.scale_pa_to_norm = self.scale_dacs_to_norm * self.scale_dacs_to_pa
+            self.shift_dacs_to_norm - self.shift_dacs_to_pa
+        ) / self.scale_dacs_to_pa
+        self.scale_pa_to_norm = self.scale_dacs_to_norm / self.scale_dacs_to_pa
 
     def get_filtered_focus_positions(self, select_focus_positions):
         """
@@ -2169,12 +2288,31 @@ class Read:
     def copy(self):
         return deepcopy(self)
 
-    def extract_basecall_region(self, start_base=None, end_base=None):
+    def get_sig_type(self, signal_type):
+        """Get type of signal specified
+
+        Args:
+            signal_type (str): One of "norm" (default), "pa", "zc_pa", "dac"
+        """
+        if signal_type == "norm":
+            return self.norm_signal
+        elif signal_type == "pa":
+            return self.pa_signal
+        elif signal_type == "zc_pa":
+            return self.zero_centered_pa_signal
+        elif signal_type == "dac":
+            return self.dacs
+        raise RemoraError(f"Invalid signal_type: {signal_type}")
+
+    def extract_basecall_region(
+        self, start_base=None, end_base=None, signal_type="norm"
+    ):
         """Extract region of read from basecall coordinates.
 
         Args:
             start_base (int): Start coordinate for region
             end_base (int): End coordinate for region
+            signal_type (str): One of "norm" (default), "pa", "zc_pa", "dac"
 
         Returns:
             ReadBasecallRegion object
@@ -2184,7 +2322,9 @@ class Read:
         start_base = start_base or 0
         end_base = end_base or self.seq_len
         reg_seq_to_sig = self.query_to_signal[start_base : end_base + 1].copy()
-        reg_sig = self.norm_signal[reg_seq_to_sig[0] : reg_seq_to_sig[-1]]
+        reg_sig = self.get_sig_type(signal_type)[
+            reg_seq_to_sig[0] : reg_seq_to_sig[-1]
+        ]
         sig_start = reg_seq_to_sig[0]
         reg_seq_to_sig -= sig_start
         return ReadBasecallRegion(
@@ -2196,11 +2336,12 @@ class Read:
             sig_start=sig_start,
         )
 
-    def extract_ref_reg(self, ref_reg):
+    def extract_ref_reg(self, ref_reg, signal_type="norm"):
         """Extract region of read from reference coordinates.
 
         Args:
             ref_reg (RefRegion): Reference region
+            signal_type (str): One of "norm" (default), "pa", "zc_pa", "dac"
 
         Returns:
             ReadRefReg object
@@ -2221,7 +2362,9 @@ class Read:
         reg_seq_to_sig = self.ref_to_signal[
             reg_st_within_read : reg_en_within_read + 1
         ].copy()
-        reg_sig = self.norm_signal[reg_seq_to_sig[0] : reg_seq_to_sig[-1]]
+        reg_sig = self.get_sig_type(signal_type)[
+            reg_seq_to_sig[0] : reg_seq_to_sig[-1]
+        ]
         reg_seq = self.ref_seq[reg_st_within_read:reg_en_within_read]
         sig_start = reg_seq_to_sig[0]
         reg_seq_to_sig -= sig_start
@@ -2267,8 +2410,7 @@ class Read:
             region (RefRegion): Reference region from which to extract metrics
                 of bases. If ref_anchored is False, start and end coordinates
                 are in basecall sequence coordinates.
-            signal_type (str): Type of signal. Should be one of: norm, pa, and
-                dac
+            signal_type (str): One of "norm" (default), "pa", "zc_pa", and "dac"
             **kwargs: Extra args to pass through to metric computations
 
         Returns:
@@ -2321,15 +2463,7 @@ class Read:
                 # TODO deal with partially overlapping region
                 st_buf = en_buf = 0
                 seq_to_sig = self.query_to_signal[region.start : region.end]
-        if signal_type == "norm":
-            sig = self.norm_signal
-        elif signal_type == "pa":
-            sig = self.pa_signal
-        elif signal_type == "dac":
-            sig = self.dacs
-        else:
-            raise RemoraError("signal_type must be norm, pa or dac")
-
+        sig = self.get_sig_type(signal_type)
         metrics_vals = metric_func(sig, seq_to_sig, **kwargs)
         if max(st_buf, en_buf) > 0:
             tmp_metrics_vals = {}
