@@ -25,6 +25,107 @@ BREACH_THRESHOLD = 0.8
 REGRESSION_THRESHOLD = 0.7
 
 
+def med_mad(
+    data, factor=constants.PA_TO_NORM_SCALING_FACTOR, axis=None, keepdims=False
+):
+    """Compute the Median Absolute Deviation, i.e., the median
+    of the absolute deviations from the median, and the median
+
+    Args:
+        data (:class:`ndarray`): Data from which to determine med/mad
+        factor (float): Factor to scale MAD by. Default (None) is to be
+            consistent with the standard deviation of a normal distribution
+            (i.e. mad( N(0,sigma^2) ) = sigma).
+        axis (int): For multidimensional arrays, which axis to calculate over
+        keepdims (bool): If True, axis is kept as dimension of length 1
+
+    :returns: a tuple containing the median and MAD of the data
+    """
+    dmed = np.median(data, axis=axis, keepdims=True)
+    dmad = factor * np.median(abs(data - dmed), axis=axis, keepdims=True)
+    if axis is None:
+        dmed = dmed.flatten()[0]
+        dmad = dmad.flatten()[0]
+    elif not keepdims:
+        dmed = dmed.squeeze(axis)
+        dmad = dmad.squeeze(axis)
+    return dmed, dmad
+
+
+class RollingMAD:
+    """Calculate rolling meadian absolute deviation cap over a specified
+    window for a vector of values
+
+    For example compute gradient maxima by:
+
+        parameters = [p for p in network.parameters() if p.requires_grad]
+        rolling_mads = RollingMAD(len(parameters))
+        grad_maxs = [
+            float(torch.max(torch.abs(layer_params.grad.detach())))
+            for layer_params in parameters]
+        grad_max_threshs = rolling_mads.update(grad_maxs)
+    """
+
+    def __init__(self, nparams, n_mads=0, window=1000, default_to=None):
+        """Set up rolling MAD calculator.
+
+        Args:
+            nparams : Number of parameter arrays to track independently
+            n_mads : Number of MADs above the median to return
+            window : calculation is done over the last <window> data points
+            default_to : Return this value before window values have been added
+        """
+        self.n_mads = n_mads
+        self.default_to = default_to
+        self._window_data = np.empty((nparams, window), dtype="f4")
+        self._curr_iter = 0
+
+    @property
+    def nparams(self):
+        return self._window_data.shape[0]
+
+    @property
+    def window(self):
+        return self._window_data.shape[1]
+
+    def update(self, vals):
+        """Update with time series values and return MAD thresholds.
+
+        Returns:
+            List of `median + (nmods * mad)` of the current window of data.
+                Before window number of values have been added via update the
+                `default_to` value is returned.
+        """
+        assert len(vals) == self.nparams, (
+            f"Number of values ({len(vals)}) provided does not match number of "
+            f"parameters ({self.nparams})."
+        )
+
+        self._window_data[:, self._curr_iter % self.window] = vals
+        self._curr_iter += 1
+        if self._curr_iter < self.window:
+            return self.default_to
+
+        med, mad = med_mad(self._window_data, axis=1)
+        return med + (mad * self.n_mads)
+
+
+def apply_clipping(model, grad_max_threshs):
+    parameters = [p for p in model.parameters() if p.requires_grad]
+    grad_maxs = [
+        float(torch.max(torch.abs(param_group.grad.detach())))
+        for param_group in parameters
+    ]
+    if grad_max_threshs is not None:
+        for grp_gm, grp_gmt, grp_params in zip(
+            grad_maxs, grad_max_threshs, parameters
+        ):
+            if grp_gm > grp_gmt:
+                # clip norm by value
+                grp_params.grad.data.clamp_(min=-grp_gmt, max=grp_gmt)
+    return grad_maxs
+
+
 def save_model(
     model,
     ckpt_save_data,
@@ -78,6 +179,7 @@ def train_model(
     super_batch_size,
     super_batch_sample_frac,
     read_batches_from_disk,
+    gradient_clip_num_mads,
 ):
     seed = (
         np.random.randint(0, np.iinfo(np.uint32).max, dtype=np.uint32)
@@ -134,6 +236,25 @@ def train_model(
     }
     model = model_util._load_python_model(copy_model_path, **model_params)
     LOGGER.info(f"Model structure:\n{model}")
+
+    grad_max_threshs = None
+    # TODO add to batch log
+    # grad_max_thresh_str = "NaN"
+    if gradient_clip_num_mads is None:
+        LOGGER.debug("No gradient clipping")
+        rolling_mads = None
+    else:
+        nparams = len([p for p in model.parameters() if p.requires_grad])
+        if nparams == 0:
+            rolling_mads = None
+            LOGGER.warning("No gradient clipping due to missing parameters")
+        else:
+            rolling_mads = RollingMAD(nparams, gradient_clip_num_mads)
+            LOGGER.info(
+                "Gradients will be clipped (by value) at "
+                f"{rolling_mads.n_mads:3.2f} MADs above the median of the "
+                f"last {rolling_mads.window} gradient maximums."
+            )
 
     if finetune_path is not None:
         ckpt, model = model_util.continue_from_checkpoint(
@@ -320,6 +441,7 @@ def train_model(
         "kmer_context_bases": dataset.metadata.kmer_context_bases,
         "base_start_justify": dataset.metadata.base_start_justify,
         "offset": dataset.metadata.offset,
+        "pa_scaling": dataset.metadata.pa_scaling,
         **dataset.metadata.sig_map_refiner.asdict(),
     }
     best_val_acc = 0
@@ -357,7 +479,11 @@ def train_model(
 
             opt.zero_grad()
             loss.backward()
+            grad_maxs = apply_clipping(model, grad_max_threshs)
             opt.step()
+            if rolling_mads is not None:
+                grad_max_threshs = rolling_mads.update(grad_maxs)
+
             batch_fp.write(
                 f"{(epoch * batches_per_epoch) + epoch_i}\t"
                 f"{loss.detach().cpu():.6f}"

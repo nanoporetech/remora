@@ -266,7 +266,6 @@ class RemoraRead:
 
     def refine_signal_mapping(self, sig_map_refiner, check_read=False):
         if not sig_map_refiner.is_loaded:
-            LOGGER.debug("no signal map refiner loaded skipping..")
             return
         if sig_map_refiner.do_rough_rescale:
             prev_shift, prev_scale = self.shift, self.scale
@@ -282,7 +281,6 @@ class RemoraRead:
             self._base_levels = None
         if sig_map_refiner.scale_iters >= 0:
             prev_shift, prev_scale = self.shift, self.scale
-            prev_seq_to_sig_map = self.seq_to_sig_map.copy()
             try:
                 (
                     self.seq_to_sig_map,
@@ -302,12 +300,9 @@ class RemoraRead:
             self._dwells = None
             self._sig_cumsum = None
             self._base_levels = None
-            LOGGER.debug(f"refine_mapping_shift: {prev_shift} {self.shift}")
-            LOGGER.debug(f"refine_mapping_scale: {prev_scale} {self.scale}")
-            sig_map_diffs = self.seq_to_sig_map - prev_seq_to_sig_map
             LOGGER.debug(
-                f"refine_mapping_median_adjust: {np.median(sig_map_diffs)} "
-                f"{self.read_id}"
+                f"Refine mapping ::: shift: {prev_shift} -> {self.shift} "
+                f"scale: {prev_scale} -> {self.scale}"
             )
         if check_read:
             self.check()
@@ -674,7 +669,9 @@ class DatasetMetadata:
         kmer_context_bases (tuple): 2-tuple containing the bases to include in
             the encoded k-mer presented as input.
         reverse_signal (bool): Is nanopore signal 3' to 5' orientation?
-            Primarily for directRNA
+            Primarily for direct RNA
+        pa_scaling (tuple): Zero-centered picoamp scaling factors. These should
+            be extracted from a Dorado (v4.3+) basecalling model.
         sig_map_refiner (remora.refine_signal_map.SigMapRefiner): Signal
             mapping refiner
     """
@@ -701,7 +698,8 @@ class DatasetMetadata:
     offset: int = 0
     kmer_context_bases: tuple = constants.DEFAULT_KMER_CONTEXT_BASES
     reverse_signal: bool = False
-    # signal refinement
+    # signal scaling/refinement
+    pa_scaling: tuple = None
     sig_map_refiner: SigMapRefiner = None
     rough_rescale_method: str = constants.DEFAULT_ROUGH_RESCALE_METHOD
 
@@ -1451,7 +1449,11 @@ class CoreRemoraDataset:
                     shuf_indices[b_st:b_en]
                 ]
                 array.flush()
-                LOGGER.debug(f"{b_idx + 1}/{len(b_ranges)} batches complete")
+                if b_idx % 10 == 9:
+                    # update every 10 batches
+                    LOGGER.debug(
+                        f"{b_idx + 1}/{len(b_ranges)} batches complete"
+                    )
                 if show_prog:
                     b_pb.update()
             if show_prog:
@@ -1833,6 +1835,7 @@ class RemoraDataset(IterableDataset):
             f"           reverse_signal : {self.metadata.reverse_signal}\n"
             f" chunk_extract_base_start : {self.metadata.base_start_justify}\n"
             f"     chunk_extract_offset : {self.metadata.offset}\n"
+            f"               pa_scaling : {self.metadata.pa_scaling}\n"
             f"          sig_map_refiner : {self.metadata.sig_map_refiner}\n"
         )
 
@@ -1871,6 +1874,7 @@ class RemoraDataset(IterableDataset):
                 "base_start_justify",
                 "offset",
                 "reverse_signal",
+                "pa_scaling",
                 "sig_map_refiner",
             ):
                 if getattr(ds.metadata, attr_name) != getattr(
@@ -1985,6 +1989,7 @@ class RemoraDataset(IterableDataset):
             "modified_base_labels",
             "offset",
             "reverse_signal",
+            "pa_scaling",
             "sig_map_refiner",
         ):
             if getattr(self.metadata, md_key) != getattr(

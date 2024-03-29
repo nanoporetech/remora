@@ -169,6 +169,13 @@ def register_dataset_prepare(parser):
         RNA""",
     )
     data_grp.add_argument(
+        "--picoamp-scaling-basecall-model",
+        help="""Provide the path to the Dorado basecalling model directory
+        which will be linke with this modified base model. Produce dataset wtih
+        picoampere scaled signal. Note that this is incompatible with any
+        signal mapping refine arguments""",
+    )
+    data_grp.add_argument(
         "--save-every",
         default=100_000,
         type=int,
@@ -272,9 +279,9 @@ def register_dataset_prepare(parser):
 
 def run_dataset_prepare(args):
     from remora.io import parse_bed
-    from remora.util import Motif, prepare_out_dir
     from remora.refine_signal_map import SigMapRefiner
     from remora.prepare_train_data import extract_chunk_dataset
+    from remora.util import Motif, prepare_out_dir, parse_picoamps
 
     prepare_out_dir(args.output_path, args.overwrite)
     if args.mod_base is None and not args.mod_base_control:
@@ -298,7 +305,10 @@ def run_dataset_prepare(args):
         rough_rescale_method=args.rough_rescale_method,
     )
     if not sig_map_refiner.is_valid:
-        raise RemoraError("Invalid signal mappnig refiner settings.")
+        raise RemoraError("Invalid signal mapping refiner settings.")
+    pa_scaling = parse_picoamps(
+        args.picoamp_scaling_basecall_model, sig_map_refiner
+    )
     extract_chunk_dataset(
         bam_path=args.bam,
         pod5_path=args.pod5,
@@ -310,6 +320,7 @@ def run_dataset_prepare(args):
         chunk_context=args.chunk_context,
         min_samps_per_base=args.min_samples_per_base,
         max_chunks_per_read=args.max_chunks_per_read,
+        pa_scaling=pa_scaling,
         sig_map_refiner=sig_map_refiner,
         kmer_context_bases=args.kmer_context_bases,
         base_start_justify=args.base_start_justify,
@@ -500,9 +511,9 @@ def run_dataset_merge(args):
 def register_dataset_head(parser):
     subparser = parser.add_parser(
         "head",
-        description="""Create new dataset with a selection of the first reads
-        from another dataset.""",
-        help="Create new dataset from beginning of another",
+        description="""Create new core dataset with a selection of the first
+        reads from another core dataset.""",
+        help="Create new core dataset from beginning of another",
         formatter_class=SubcommandHelpFormatter,
     )
     subparser.add_argument(
@@ -642,6 +653,11 @@ def register_model(parser):
 
 
 def register_model_train(parser):
+    def none_or_float(x):
+        if x == "None":
+            return
+        return float(x)
+
     subparser = parser.add_parser(
         "train",
         description="Train Remora model",
@@ -821,6 +837,15 @@ def register_model_train(parser):
         predictions and second value sets the maximum fraction of chunks to
         filter per batch.""",
     )
+    train_grp.add_argument(
+        "--gradient-clip-num-mads",
+        default=0,
+        type=none_or_float,
+        help="""Clip gradients (by value) at num_MADs above the median of
+        the last 1000 parameter gradient maximums. Gradient threshold
+        values are computed for each parameter group independently. Use
+        "--gradient-clip-num-mads None" for no clipping.""",
+    )
 
     comp_grp = subparser.add_argument_group("Compute Arguments")
     comp_grp.add_argument(
@@ -905,6 +930,7 @@ def run_model_train(args):
         args.super_batch_size,
         args.super_batch_sample_fraction,
         args.read_batches_from_disk,
+        args.gradient_clip_num_mads,
     )
     LOGGER.info("Done")
 
@@ -1376,6 +1402,10 @@ def check_models(models):
         for mdl in models[1:]
     ):
         raise RemoraError("All models must be the same signal direction")
+    if any(
+        mdl[1]["pa_scaling"] != models[0][1]["pa_scaling"] for mdl in models[1:]
+    ):
+        raise RemoraError("All models must use the same signal normalization")
     if len(models) != len(set(metadata["can_base"] for _, metadata in models)):
         raise RemoraError("Only one model per canonical base allowed.")
 

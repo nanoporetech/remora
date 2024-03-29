@@ -479,6 +479,7 @@ def infer_from_pod5_and_bam(
     models_metadata = list(zip(*models))[1]
     models = dict((md["can_base"], mdl) for mdl, md in models)
     reverse_signal = models_metadata[0]["reverse_signal"]
+    pa_scaling = models_metadata[0]["pa_scaling"]
 
     signals = BackgroundIter(
         iter_signal,
@@ -487,6 +488,7 @@ def infer_from_pod5_and_bam(
             "num_reads": num_reads,
             "read_ids": read_ids,
             "rev_sig": reverse_signal,
+            "pa_scaling": pa_scaling,
         },
         name="ExtractSignal",
         use_process=True,
@@ -576,8 +578,8 @@ def infer_from_pod5_and_bam(
         final_reads.out_q,
     ]
     errs = defaultdict(int)
-    if bam_idx.num_non_primary > 0:
-        errs["Non-primary alignment skipped"] = bam_idx.num_non_primary
+    for err, cnt in bam_idx.skip_reasons.items():
+        errs[err] = cnt
     pysam_save = pysam.set_verbosity(0)
     sig_called = 0
     in_bam = out_bam = pbar = prev_rid = None

@@ -134,6 +134,7 @@ def export_model_torchscript(ckpt, model, save_filename):
         "refine_half_bandwidth",
         "base_start_justify",
         "offset",
+        "pa_scaling",
         "model_params",
     ):
         meta[ckpt_key] = ckpt[ckpt_key]
@@ -280,6 +281,7 @@ def export_model_dorado(ckpt, model, save_dir):
         "mod_bases",
         "offset",
         "reverse_signal",
+        "pa_scaling",
     ):
         modbases[ckpt_key] = ckpt[ckpt_key]
 
@@ -342,6 +344,12 @@ def add_derived_metadata(model_metadata):
             "reverse signal attribute not found in model. Assuming False"
         )
         model_metadata["reverse_signal"] = False
+    if "pa_scaling" not in model_metadata:
+        LOGGER.warning(
+            "Centered picoamp scaling attribute not found in model. "
+            "Assuming None"
+        )
+        model_metadata["pa_scaling"] = None
     if model_metadata["mod_bases"] == "None":
         model_metadata["mod_bases"] = None
         model_metadata["mod_long_names"] = None
@@ -510,6 +518,7 @@ def _extract_essential_metadata(model_metadata):
         "model_params",
         "num_motifs",
         "model_version",
+        "pa_scaling",
         "refine_kmer_center_idx",
         "refine_do_rough_rescale",
         "refine_scale_iters",
