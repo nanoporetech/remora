@@ -355,7 +355,7 @@ class RemoraRead:
                 seq_to_sig_offset = -sig_start
                 sig_start = 0
             if sig_end > self.sig.size:
-                fill_en = self.sig.size - sig_start
+                fill_en = self.sig.size - sig_start + seq_to_sig_offset
                 sig_end = self.sig.size
             chunk_sig[fill_st:fill_en] = self.sig[sig_start:sig_end]
 
