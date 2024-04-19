@@ -196,7 +196,7 @@ def batch_reads(prepped_nn_inputs, batches_q, batch_size, models_metadata):
         for io_read, bases_chunks, err in read_nn_inputs:
             if err is not None:
                 for can_base in can_bases:
-                    b_readss[can_bases].append([io_read, None, None, err])
+                    b_readss[can_base].append([io_read, None, None, err])
                 continue
             for can_base, r_chunks in bases_chunks.items():
                 num_chunks = r_chunks["read_focus_bases"].size
@@ -584,7 +584,7 @@ def infer_from_pod5_and_bam(
     sig_called = 0
     in_bam = out_bam = pbar = prev_rid = None
     try:
-        in_bam = pysam.AlignmentFile(in_bam_path, "rb")
+        in_bam = pysam.AlignmentFile(in_bam_path, "rb", check_sq=False)
         out_bam = pysam.AlignmentFile(out_bam_path, "wb", template=in_bam)
         pbar = tqdm(
             smoothing=0,

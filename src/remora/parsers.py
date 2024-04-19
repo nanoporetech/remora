@@ -438,6 +438,11 @@ def register_dataset_merge(parser):
         another config""",
     )
     subparser.add_argument(
+        "--max-size",
+        type=int,
+        help="""Maximum size of output dataset""",
+    )
+    subparser.add_argument(
         "--overwrite",
         action="store_true",
         help="Overwrite existing output directory if existing.",
@@ -450,6 +455,7 @@ def run_dataset_merge(args):
     from tqdm import tqdm
 
     from remora.data_chunks import (
+        compute_best_split,
         load_dataset,
         CoreRemoraDataset,
         RemoraDataset,
@@ -473,7 +479,12 @@ def run_dataset_merge(args):
     )
     LOGGER.info(f"Loaded dataset:\n{dataset.summary}")
     merged_metadata = dataset.metadata.copy()
-    merged_metadata.allocate_size = sum(ds.size for ds in dataset.datasets)
+    ds_out_sizes = np.array([ds.size for ds in dataset.datasets])
+    if args.max_size is not None and ds_out_sizes.sum() > args.max_size:
+        ds_out_sizes = compute_best_split(
+            args.max_size, ds_out_sizes / ds_out_sizes.sum()
+        )
+    merged_metadata.allocate_size = ds_out_sizes.sum()
     merged_metadata.max_seq_len = max(
         ds.metadata.max_seq_len for ds in dataset.datasets
     )
@@ -487,7 +498,18 @@ def run_dataset_merge(args):
     )
     merged_dataset.write_metadata()
     LOGGER.info("Copying datasets")
-    for ds in tqdm(dataset.datasets, smoothing=0, desc="Datasets"):
+    for ds, ds_out_size in tqdm(
+        zip(dataset.datasets, ds_out_sizes),
+        smoothing=0,
+        desc="Datasets",
+        total=ds_out_sizes.size,
+    ):
+        if ds.metadata.dataset_end != ds_out_size:
+            LOGGER.debug(
+                f"Reducing dataset size from {ds.metadata.dataset_end:,} to "
+                f"{ds_out_size:,}"
+            )
+            ds.metadata.dataset_end = ds_out_size
         chunks_per_sb, _ = ds.adjust_batch_params()
         total_sbs = ds.size // chunks_per_sb
         LOGGER.debug(f"Adding dataset from {ds.data_path}")
@@ -502,7 +524,9 @@ def run_dataset_merge(args):
             merged_dataset.write_batch(sb)
             merged_dataset.flush()
             merged_dataset.write_metadata()
-            LOGGER.debug(f"{sb_idx + 1}/{total_sbs} super batches complete")
+            if sb_idx % 10 == 9:
+                # update every 10 batches
+                LOGGER.debug(f"{sb_idx + 1}/{total_sbs} super batches complete")
     LOGGER.info("Shuffling dataset")
     merged_dataset.shuffle(show_prog=True)
     LOGGER.info(f"Saved core dataset:\n{merged_dataset.summary}")
