@@ -185,7 +185,7 @@ MODEL_DICT = {
         },
     },
     "rna004_130bps": {
-        "m6A": {
+        "m6a": {
             "DRACH": _rna004_m6A_drach_models,
         },
     },
