@@ -336,6 +336,7 @@ class RemoraRead:
         label=-1,
         read_focus_base=-1,
         check_chunk=False,
+        signal_padding=False,
     ):
         chunk_len = sum(chunk_context)
         sig_start = focus_sig_idx - chunk_context[0]
@@ -358,6 +359,13 @@ class RemoraRead:
                 fill_en = self.sig.size - sig_start + seq_to_sig_offset
                 sig_end = self.sig.size
             chunk_sig[fill_st:fill_en] = self.sig[sig_start:sig_end]
+            if signal_padding:
+                chunk_sig[:fill_st] = self.sig[
+                    sig_start + fill_st : sig_start : -1
+                ]
+                chunk_sig[fill_en:] = self.sig[
+                    sig_end : sig_end - chunk_sig.size + fill_en - 1 : -1
+                ]
 
         seq_start = (
             np.searchsorted(self.seq_to_sig_map, sig_start, side="right") - 1
