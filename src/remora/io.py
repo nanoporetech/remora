@@ -1424,6 +1424,7 @@ def plot_ref_region_reads(
     seq,
     levels,
     sig_lw=0.5,
+    sig_alpha=0.2,
     levels_lw=1,
     sample_names=None,
     sample_colors=None,
@@ -1514,7 +1515,9 @@ def plot_ref_region_reads(
                 data=highlight_df,
                 alpha=0.2,
             )
-            + p9.scale_fill_manual(dict((c, c) for _, _, c in highlight_ranges))
+            + p9.scale_fill_manual(
+                dict((c, c) for _, _, c in highlight_ranges), guide=False
+            )
         )
     p = (
         p
@@ -1539,7 +1542,7 @@ def plot_ref_region_reads(
             p9.aes(
                 x="Reference Position", y="Signal", color="Sample", group="Read"
             ),
-            alpha=0.2,
+            alpha=sig_alpha,
             size=sig_lw,
             data=sig_df,
         )
