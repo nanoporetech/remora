@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 from collections import defaultdict
 
@@ -146,6 +147,9 @@ def extract_chunk_dataset(
     skip_shuffle=False,
 ):
     bam_idx = ReadIndexedBam(bam_path, skip_non_primary)
+    if bam_idx.num_records == 0:
+        LOGGER.info("No records found in BAM file.")
+        sys.exit()
     with pod5.DatasetReader(Path(pod5_path)) as pod5_dr:
         read_ids, num_reads = get_read_ids(
             bam_idx, pod5_dr, num_reads, return_num_bam_reads=True

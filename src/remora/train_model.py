@@ -10,7 +10,12 @@ from tqdm import tqdm
 from thop import profile
 from torch.utils.data import DataLoader
 
-from remora.data_chunks import RemoraDataset, dataloader_worker_init
+from remora.data_chunks import (
+    RemoraDataset,
+    CoreRemoraDataset,
+    load_dataset,
+    dataloader_worker_init,
+)
 from remora import (
     constants,
     util,
@@ -201,9 +206,17 @@ def train_model(
         override_metadata["kmer_context_bases"] = kmer_context_bases
     if chunk_context is not None:
         override_metadata["chunk_context"] = chunk_context
-    dataset = RemoraDataset.from_config(
-        remora_dataset_path,
-        override_metadata=override_metadata,
+    paths, props, hashes = load_dataset(remora_dataset_path)
+    dataset = RemoraDataset(
+        [
+            CoreRemoraDataset(
+                path,
+                override_metadata=override_metadata,
+            )
+            for path in paths
+        ],
+        props,
+        hashes,
         batch_size=batch_size,
         super_batch_size=super_batch_size,
         super_batch_sample_frac=super_batch_sample_frac,
@@ -290,21 +303,27 @@ def train_model(
             )
 
     if ext_val is not None:
-        LOGGER.debug("Loading external test data")
+        LOGGER.info("Loading external validation data")
         if ext_val_names is None:
             ext_val_names = [f"e_val_{idx}" for idx in range(len(ext_val))]
         else:
             assert len(ext_val_names) == len(ext_val)
         ext_datasets = []
         for e_name, e_path in zip(ext_val_names, ext_val):
-            ext_val_ds = RemoraDataset.from_config(
-                e_path.strip(),
-                ds_kwargs={
-                    "infinite_iter": False,
-                    "do_check_super_batches": True,
-                },
+            paths, props, hashes = load_dataset(e_path.strip())
+            ext_val_ds = RemoraDataset(
+                [
+                    CoreRemoraDataset(
+                        path,
+                        override_metadata=override_metadata,
+                        infinite_iter=False,
+                        do_check_super_batches=True,
+                    )
+                    for path in paths
+                ],
+                props,
+                hashes,
                 batch_size=batch_size,
-                super_batch_size=super_batch_size,
             )
             ext_val_ds.update_metadata(dataset)
             if not read_batches_from_disk:
