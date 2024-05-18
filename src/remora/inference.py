@@ -1,4 +1,5 @@
 import os
+import sys
 import array
 import torch
 from copy import copy
@@ -474,6 +475,9 @@ def infer_from_pod5_and_bam(
     ref_anchored=False,
 ):
     bam_idx = ReadIndexedBam(in_bam_path, skip_non_primary, req_tags={"mv"})
+    if bam_idx.num_records == 0:
+        LOGGER.info("No records found in BAM file.")
+        sys.exit()
     with DatasetReader(Path(pod5_path)) as pod5_dr:
         read_ids, num_reads = get_read_ids(bam_idx, pod5_dr, num_reads)
     models_metadata = list(zip(*models))[1]
@@ -910,10 +914,16 @@ def infer_duplex(
         req_tags=set(),
         read_id_converter=lambda k: k.split(duplex_deliminator)[0],
     )
+    if duplex_bam_index.num_records == 0:
+        LOGGER.info("No records found in duplex BAM file.")
+        sys.exit()
     LOGGER.info("Indexing Simplex BAM")
     simplex_bam_index = ReadIndexedBam(
         simplex_bam_path, skip_non_primary=True, req_tags={"mv"}
     )
+    if simplex_bam_index.num_records == 0:
+        LOGGER.info("No records found in simplex BAM file.")
+        sys.exit()
     with open(pairs_path, "r") as fh:
         pairs = [tuple(line.split()) for line in fh]
     valid_pairs, num_valid_reads = check_simplex_alignments(
