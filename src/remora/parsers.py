@@ -671,6 +671,7 @@ def register_model(parser):
     subparser.set_defaults(func=lambda x: subparser.print_help())
     #  Register model sub commands
     register_model_train(ssubparser)
+    register_model_inspect(ssubparser)
     register_model_export(ssubparser)
     register_model_list_pretrained(ssubparser)
     register_model_download(ssubparser)
@@ -956,6 +957,77 @@ def run_model_train(args):
         args.read_batches_from_disk,
         args.gradient_clip_num_mads,
     )
+    LOGGER.info("Done")
+
+
+def register_model_inspect(parser):
+    subparser = parser.add_parser(
+        "inspect",
+        description="Inspect a Remora model",
+        help="Inspect a Remora model",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    subparser.add_argument(
+        "checkpoint_path",
+        help="Path to a pretrained model checkpoint.",
+    )
+    subparser.add_argument(
+        "--model-path",
+        help="Path to a model architecture. Default: Use path from checkpoint.",
+    )
+
+    subparser.set_defaults(func=run_model_inspect)
+
+
+def run_model_inspect(args):
+    from remora.model_util import (
+        continue_from_checkpoint,
+        load_torchscript_model,
+        repr_model_metadata,
+    )
+    from remora.refine_signal_map import SigMapRefiner
+
+    LOGGER.info("Loading model")
+    try:
+        model, model_metadata = load_torchscript_model(args.checkpoint_path)
+        LOGGER.info("Loaded a torchscript model")
+    except RuntimeError:
+        model_metadata, model = continue_from_checkpoint(
+            args.checkpoint_path, args.model_path
+        )
+        # TODO add function in model_util for this simmilar to
+        # add_derived_metadata for .pt models
+        if (
+            "refine_kmer_levels" in model_metadata
+            and model_metadata["refine_kmer_levels"] is not None
+        ):
+            # load sig_map_refiner
+            model_metadata["sig_map_refiner"] = SigMapRefiner(
+                _levels_array=model_metadata["refine_kmer_levels"],
+                center_idx=int(model_metadata["refine_kmer_center_idx"]),
+                do_rough_rescale=model_metadata["refine_do_rough_rescale"],
+                scale_iters=int(model_metadata["refine_scale_iters"]),
+                algo=model_metadata["refine_algo"],
+                half_bandwidth=int(model_metadata["refine_half_bandwidth"]),
+                sd_arr=model_metadata["refine_sd_arr"],
+            )
+        else:
+            # handle original models without sig_map_refiner
+            model_metadata["sig_map_refiner"] = SigMapRefiner()
+            model_metadata["base_start_justify"] = False
+            model_metadata["offset"] = 0
+        for md_name in [
+            md_name
+            for md_name in model_metadata.keys()
+            if md_name.startswith("refine_")
+        ]:
+            del model_metadata[md_name]
+        for md_name in ["state_dict", "opt"]:
+            del model_metadata[md_name]
+        LOGGER.info("Loaded model from checkpoint")
+
+    md_str = repr_model_metadata(model_metadata)
+    LOGGER.info(f"Loaded Remora model attrs\n{md_str}\n")
     LOGGER.info("Done")
 
 
