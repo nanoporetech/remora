@@ -1759,6 +1759,10 @@ def register_validate_from_modbams(parser):
 def run_validate_modbams(args):
     from remora.validate import validate_modbams
 
+    LOGGER.warning(
+        """This cmomand is deprecated and will be removed from a future version
+        of Remora. Please use the `modkit validate` command."""
+    )
     if args.explicit_mod_tag_used:
         LOGGER.warning(
             """

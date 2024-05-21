@@ -65,7 +65,7 @@ Data Preparation
 
 Remora data preparation begins from a POD5 file containing signal data and a BAM file containing basecalls from the POD5 file.
 Note that the BAM file must contain the move table (``--emit-moves`` in Dorado) and the MD tag (default in Dorado with mapping and ``--MD`` argument for minimap2).
-If using minimap2 for alignment use ``samtools fastq -T "*" [in.bam] | minimap2 -y -ax map-ont [ref.fa] - | samtools view -b -o [out.bam]`` in order to transfer the move table tags through the alignment step since minimap2 does not support SAM/BAM input.
+If using minimap2 for alignment use ``samtools fastq -T "*" [in.bam] | minimap2 -y -ax lr:hq [ref.fa] - | samtools view -b -o [out.bam]`` in order to transfer the move table tags through the alignment step since minimap2 does not support SAM/BAM input.
 
 The following example generates training data from canonical (PCR) and modified (M.SssI treatment) samples in the same fashion as the released 5mC CG-context models.
 Example reads can be found in the Remora repository (see ``test/data/`` directory).
@@ -111,8 +111,12 @@ This setting is useful for multiple flowcells of the same condition.
 The ``--dataset-weights`` argument produces a config which generates batches with a fixed proportion of chunks from each input dataset.
 This setting is useful when combining different data types, for example control and modified datasets.
 
-In addition, the ``remora dataset merge`` command is supplied to merge datasets, copying the data into a new core Remora dataset.
-This may increase efficiency of data access for datasets composed of many core datasets, but only supports the default behavior from the ``make_config`` command.
+The ``remora dataset merge`` command is supplied to merge datasets, copying the data into a new core Remora dataset.
+This may increase efficiency of data access for datasets composed of many core datasets, but only supports the default behavior from the ``make_config`` command (sampling over all chunks).
+
+The ``remora dataset copy`` command is provided in order to move datasets to a new location.
+This can be useful when handling config datasets composed of many core datasets.
+Copying a dataset is especially useful to achieve higher training speeds when core datasets are stored on a network file system (NFS).
 
 Composed dataset config files can also be specified manually.
 Config files are JSON format files containing a single list, where each element is a list of two items.
@@ -153,13 +157,13 @@ For example a model can be trained with the following command.
     --output-path train_results
 
 This command will produce a "best" model in torchscript format for use in Bonito, ``remora infer``, or ``remora validate`` commands.
-Models can be exported for use in Dorado with the ``remora model export train_results/model_best.pt`` command.
+Models can be exported for use in Dorado with the ``remora model export train_results/model_best.pt train_results_dorado_model`` command.
 
 Model Inference
 ---------------
 
 For testing purposes, inference within Remora is provided.
-For large scale using the exported Dorado model during basecalling is recommended.
+For standard model architectures and inference methods, using the exported Dorado model during basecalling is recommended.
 
 .. code-block:: bash
 
@@ -180,21 +184,23 @@ For large scale using the exported Dorado model during basecalling is recommende
     --log-filename mod_infer.log \
     --device 0
 
-Finally, Remora provides tools to validate these results.
-Ground truth `BED files <http://useast.ensembl.org/info/website/upload/bed.html>`_ reference positions where each read should be called as the modified or canonical base listed in the BED name field.
-Note in the test files where the control file has a ``C`` in the name field, while the modified BED file has ``m`` (single letter code for 5mC) in the name field.
+The ``remora validate from_modbams`` command is deprecated and will be removed in a future version of Remora.
+The ``modkit validate`` command is now recommended for this purpose.
 
-WARNING: There is a bug in pysam which causes all-context (e.g. ``--motif C 0``) modified model calls to produce invalid results with this command.
-This issue is reported `here <https://github.com/pysam-developers/pysam/issues/1123>`_.
-We are investigating solutions to bypass this issue including dropping this command.
+Reference-anchored Inference
+****************************
 
-.. code-block:: bash
+Reference-anchored inference allows users to make per-read per-site modified base calls against the reference sequence to which a read is mapped.
+This is in contrast to standard Remora model inference where calls are made against the basecalls.
+This mode can be useful to explore modified bases around which the canonical basecaller does not perform well.
+This inference mode is toggled by the ``--reference-anchored`` argument to the ``remora infer from_pod5_and_bam`` command.
 
-  remora \
-    validate from_modbams \
-    --bam-and-bed can_infer.bam can_ground_truth.bed \
-    --bam-and-bed mod_infer.bam mod_ground_truth.bed \
-    --explicit-mod-tag-used
+The output BAM file from this command will take each mapped read and replace the basecalls with the mapped reference bases.
+The move table will be transferred to the mapped reference bases and interpolated over mapping reference deletions in order to make enable extraction of Remora chunks for inference.
+
+Note that this means that the canonical basecalls will show 0 errors over the entire output BAM file.
+The intended purpose of this output is only to store the modified base status for each read at each applicable base.
+Any analysis of basecall metrics should not use the output of this command.
 
 Pre-trained Models
 ------------------
@@ -208,6 +214,8 @@ See Bonito documentation to apply Remora models.
 More advanced research models may be supplied via `Rerio <https://github.com/nanoporetech/rerio>`_.
 These files require download from Rerio and then the path to this download must be provided to Remora.
 Note that older ONNX format models require Remora version < 2.0.
+
+Downloaded or trained models can be inspected with the ``remora model inspect`` command to view the metadata attributes of the model.
 
 Python API and Raw Signal Analysis
 ----------------------------------
@@ -249,7 +257,7 @@ Support for this software will be minimal and is only provided directly by the d
 Much as we would like to rectify every issue, the developers may have limited resource for support of this software.
 Research releases may be unstable and subject to rapid change by Oxford Nanopore Technologies.
 
-© 2021-2023 Oxford Nanopore Technologies Ltd.
+© 2021-2024 Oxford Nanopore Technologies Ltd.
 Remora is distributed under the terms of the Oxford Nanopore Technologies' Public Licence.
 
 Research Release
