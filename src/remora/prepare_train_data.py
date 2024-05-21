@@ -203,6 +203,7 @@ def extract_chunk_dataset(
         },
         name="ExtractSignal",
         use_process=True,
+        q_maxsize=1000,
     )
     reads = MultitaskMap(
         extract_alignments,
@@ -211,6 +212,7 @@ def extract_chunk_dataset(
         args=(bam_idx, rev_sig),
         name="AddAlignments",
         use_process=True,
+        q_maxsize=1000,
     )
     chunks = MultitaskMap(
         extract_chunks,
@@ -230,6 +232,7 @@ def extract_chunk_dataset(
         ],
         name="ExtractChunks",
         use_process=True,
+        q_maxsize=1000,
     )
 
     errs = defaultdict(int)
