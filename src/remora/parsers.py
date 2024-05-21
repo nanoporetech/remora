@@ -58,6 +58,7 @@ def register_dataset(parser):
     register_dataset_make_config(ssubparser)
     register_dataset_merge(ssubparser)
     register_dataset_head(ssubparser)
+    register_dataset_copy(ssubparser)
 
 
 def register_dataset_prepare(parser):
@@ -334,6 +335,45 @@ def run_dataset_prepare(args):
         skip_shuffle=args.skip_shuffle,
     )
     LOGGER.info("Done")
+
+
+def register_dataset_inspect(parser):
+    subparser = parser.add_parser(
+        "inspect",
+        description="Inspect Remora dataset",
+        help="Inspect Remora dataset",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    subparser.add_argument(
+        "remora_dataset_path",
+        help="Remora training dataset",
+    )
+    subparser.add_argument(
+        "--out-path",
+        help="Path to save new config with hierarchical datasets expanded "
+        "and dataset hash values included.",
+    )
+    subparser.set_defaults(func=run_dataset_inspect)
+
+
+def run_dataset_inspect(args):
+    import json
+
+    from remora.data_chunks import (
+        load_dataset,
+        CoreRemoraDataset,
+        RemoraDataset,
+    )
+
+    paths, props, hashes = load_dataset(args.remora_dataset_path)
+    datasets = [
+        CoreRemoraDataset(path, do_check_super_batches=True) for path in paths
+    ]
+    dataset = RemoraDataset(datasets, props, hashes)
+    print(f"Dataset summary:\n{dataset.summary}")
+    if args.out_path is not None:
+        with open(args.out_path, "w") as fh:
+            json.dump(dataset.get_config(), fh)
 
 
 def register_dataset_make_config(parser):
@@ -615,43 +655,76 @@ def run_dataset_head(args):
     LOGGER.info(f"Saved core dataset:\n{head_dataset.summary}")
 
 
-def register_dataset_inspect(parser):
+def register_dataset_copy(parser):
     subparser = parser.add_parser(
-        "inspect",
-        description="Inspect Remora dataset",
-        help="Inspect Remora dataset",
+        "copy",
+        description="""Copy dataset to a new location. Useful for moving
+        multi-part datasets to faster disk access locations. New config will be
+        at [out_path]/dataset.cfg and core datasets will be sub-directories
+        [out_path]/dataset_001, [out_path]/dataset_002, etc.""",
+        help="Move dataset to new location",
         formatter_class=SubcommandHelpFormatter,
     )
     subparser.add_argument(
-        "remora_dataset_path",
-        help="Remora training dataset",
+        "in_path",
+        help="""Input core Remora dataset (config or core dataset).""",
     )
     subparser.add_argument(
-        "--out-path",
-        help="Path to save new config with hierarchical datasets expanded "
-        "and dataset hash values included.",
+        "out_path",
+        help="Path to save new datasets.",
     )
-    subparser.set_defaults(func=run_dataset_inspect)
+    subparser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing output directory if existing.",
+    )
+    subparser.set_defaults(func=run_dataset_copy)
 
 
-def run_dataset_inspect(args):
+def run_dataset_copy(args):
     import json
+    import shutil
 
+    from remora.util import prepare_out_dir
     from remora.data_chunks import (
         load_dataset,
         CoreRemoraDataset,
         RemoraDataset,
     )
 
-    paths, props, hashes = load_dataset(args.remora_dataset_path)
-    datasets = [
-        CoreRemoraDataset(path, do_check_super_batches=True) for path in paths
-    ]
-    dataset = RemoraDataset(datasets, props, hashes)
-    print(f"Dataset summary:\n{dataset.summary}")
-    if args.out_path is not None:
-        with open(args.out_path, "w") as fh:
-            json.dump(dataset.get_config(), fh)
+    out_dir = Path(args.out_path)
+    prepare_out_dir(args.out_path, args.overwrite)
+    paths, props, hashes = load_dataset(args.in_path)
+    src_fh = open(out_dir / "sources.txt", "w")
+    ds_out_dirs = []
+    for ds_idx, src_path in enumerate(paths):
+        for item in os.listdir(src_path):
+            if os.path.isdir(os.path.join(src_path, item)):
+                raise RemoraError(
+                    f"Source dataset has nested directory: {item}"
+                )
+        ds_out_dir = out_dir / f"dataset_{ds_idx:03}"
+        ds_out_dirs.append(ds_out_dir)
+        src_fh.write(f"{src_path}\t{ds_out_dir}\n")
+        try:
+            shutil.copytree(src_path, ds_out_dir)
+            LOGGER.info(f"'{src_path}' copied to '{ds_out_dir}' successfully.")
+        except FileExistsError:
+            raise RemoraError(f"Destination '{ds_out_dir}' already exists.")
+        except FileNotFoundError:
+            raise RemoraError(f"Source '{src_path}' does not exist.")
+        except PermissionError:
+            raise RemoraError("Permission denied.")
+        except Exception as e:
+            RemoraError(f"Error: {e}")
+    dataset = RemoraDataset(
+        [CoreRemoraDataset(ds_out_dir) for ds_out_dir in ds_out_dirs],
+        props,
+        hashes,
+    )
+    with open(out_dir / "dataset.cfg", "w") as fh:
+        json.dump(dataset.get_config(), fh)
+    LOGGER.info(dataset.summary)
 
 
 ################
