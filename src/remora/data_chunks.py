@@ -939,6 +939,10 @@ class CoreRemoraDataset:
     infinite_iter: bool = True
     do_check_super_batches: bool = False
 
+    # attribute to hold current super batch
+    _curr_sb = None
+    _curr_sb_offset = None
+
     _core_dtypes = {
         "signal": np.float32,
         "sequence": np.int8,
@@ -1501,12 +1505,13 @@ class CoreRemoraDataset:
                 # allow ragged batch from finite iterator if frac is 1.0
                 self.super_batch_size = sb_select_num_chunks
             chunks_per_sb = sb_select_num_chunks
-            LOGGER.debug(
-                f"Adjusted values for super_batch_sample_frac: "
-                f"{self.super_batch_sample_frac}\tbatch_size: "
-                f"{prev_batch_size}->{self.batch_size}\tsuper_batch_size: "
-                f"{prev_sb_size}->{self.super_batch_size}"
-            )
+            if (prev_batch_size != self.batch_size) or (prev_sb_size != self.super_batch_size):
+                LOGGER.debug(
+                    f"Adjusted values for super_batch_sample_frac: "
+                    f"{self.super_batch_sample_frac}\tbatch_size: "
+                    f"{prev_batch_size}->{self.batch_size}\tsuper_batch_size: "
+                    f"{prev_sb_size}->{self.super_batch_size}"
+                )
         return chunks_per_sb, sb_select_num_chunks
 
     def trim_sb_kmer_context_bases(self, super_batch):
@@ -1649,11 +1654,11 @@ class CoreRemoraDataset:
             super_batch_num += 1
             yield super_batch
 
-    def extract_batch(self, super_batch, batch_st):
+    def extract_batch(self, super_batch, batch_st, batch_size):
         batch_en = (
             super_batch["sequence"].shape[0]
-            if batch_st + self.batch_size > super_batch["sequence"].shape[0]
-            else batch_st + self.batch_size
+            if batch_st + batch_size > super_batch["sequence"].shape[0]
+            else batch_st + batch_size
         )
         batch = {
             "enc_kmers": encoded_kmers.compute_encoded_kmer_batch(
@@ -1681,7 +1686,7 @@ class CoreRemoraDataset:
         batch_num = 0
         for super_batch in super_batches:
             for batch_st in range(0, chunks_per_sb, self.batch_size):
-                yield self.extract_batch(super_batch, batch_st)
+                yield self.extract_batch(super_batch, batch_st, self.batch_size)
                 batch_num += 1
                 if max_batches is not None and batch_num >= max_batches:
                     return
