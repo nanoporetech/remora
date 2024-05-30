@@ -939,7 +939,8 @@ class CoreRemoraDataset:
     infinite_iter: bool = True
     do_check_super_batches: bool = False
 
-    # attribute to hold current super batch
+    # attributes to hold current super batch
+    _sb_iter = None
     _curr_sb = None
     _curr_sb_offset = None
 
@@ -1091,6 +1092,12 @@ class CoreRemoraDataset:
             f"{self.metadata.labels[lab_idx]}:{count:,}"
             for lab_idx, count in enumerate(self.get_label_counts())
         )
+
+    @property
+    def super_batch_sample_num_chunks(self):
+        if self.super_batch_sample_frac is None:
+            return None
+        return np.ceil(self.super_batch_size * self.super_batch_sample_frac)
 
     def load_metadata(self):
         """Load metadata from file and apply override_metadata attributes if
@@ -1347,6 +1354,7 @@ class CoreRemoraDataset:
         self._iter = None
 
     def write_batch(self, arrays):
+        # TODO look into adding explicit write buffer to this function
         if self.mode != "w":
             raise RemoraError("Cannot write when mode is not 'w'")
         batch_size = next(iter(arrays.values())).shape[0]
@@ -1472,48 +1480,6 @@ class CoreRemoraDataset:
                 b_pb.close()
                 arr_pb.update()
 
-    def adjust_batch_params(self):
-        """Adjust super-batch parameters to be valid values. Including setting
-        super batch size to no larger than the dataset and
-        """
-        if self.super_batch_size > self.size:
-            self.super_batch_size = self.size
-        if self.super_batch_sample_frac is None:
-            sb_select_num_chunks = None
-            chunks_per_sb = self.super_batch_size
-        else:
-            prev_batch_size = self.batch_size
-            prev_sb_size = self.super_batch_size
-            # round up to next number batch size and adjust other batch attrs
-            # accordingly
-            sb_select_num_chunks = int(
-                np.ceil(
-                    self.super_batch_size
-                    * self.super_batch_sample_frac
-                    / self.batch_size
-                )
-                * self.batch_size
-            )
-            if sb_select_num_chunks > self.super_batch_size:
-                sb_select_num_chunks -= self.batch_size
-            if sb_select_num_chunks == 0:
-                self.batch_size = int(
-                    self.super_batch_size * self.super_batch_sample_frac
-                )
-                sb_select_num_chunks = self.batch_size
-            if self.super_batch_sample_frac == 1.0:
-                # allow ragged batch from finite iterator if frac is 1.0
-                self.super_batch_size = sb_select_num_chunks
-            chunks_per_sb = sb_select_num_chunks
-            if (prev_batch_size != self.batch_size) or (prev_sb_size != self.super_batch_size):
-                LOGGER.debug(
-                    f"Adjusted values for super_batch_sample_frac: "
-                    f"{self.super_batch_sample_frac}\tbatch_size: "
-                    f"{prev_batch_size}->{self.batch_size}\tsuper_batch_size: "
-                    f"{prev_sb_size}->{self.super_batch_size}"
-                )
-        return chunks_per_sb, sb_select_num_chunks
-
     def trim_sb_kmer_context_bases(self, super_batch):
         """Trim super-batch sequence array to achieve loaded k-mer context
         bases. Note that the end trimming is applied at the encoded k-mer
@@ -1580,11 +1546,12 @@ class CoreRemoraDataset:
         )
         return super_batch
 
-    def load_super_batch(self, offset=0, size=None, select_num_chunks=None):
+    def load_super_batch(self, offset=0, size=None):
         super_batch = {}
         if self.infinite_iter:
             offset %= self.size
         else:
+            # finite iter requesting super batch past the end of the dataset
             if offset >= self.size:
                 return
         sb_arr_st = self.metadata.dataset_start + offset
@@ -1596,7 +1563,7 @@ class CoreRemoraDataset:
                 )
             size = self.metadata.dataset_end - sb_arr_st
         if size > self.size:
-            raise RemoraError("Super batch larger than dataset requested")
+            size = self.size
         sb_arr_en = sb_arr_st + size
         if sb_arr_en <= self.metadata.dataset_end:
             for arr_name in self.array_names:
@@ -1623,10 +1590,13 @@ class CoreRemoraDataset:
                 super_batch[arr_name] = getattr(self, arr_name)[
                     sb_arr_st : self.metadata.dataset_end
                 ]
-        if select_num_chunks is not None:
+        if self.super_batch_sample_num_chunks is not None:
             selected_indices = np.random.choice(
                 super_batch["labels"].size,
-                min(select_num_chunks, super_batch["labels"].size),
+                min(
+                    self.super_batch_sample_num_chunks,
+                    super_batch["labels"].size,
+                ),
                 replace=False,
             )
             for arr_name in self.array_names:
@@ -1637,7 +1607,7 @@ class CoreRemoraDataset:
         super_batch = self.trim_sb_chunk_context(super_batch)
         return super_batch
 
-    def iter_super_batches(self, select_num_chunks=None):
+    def iter_super_batches(self):
         super_batch_num = 0
         while True:
             self.refresh_memmaps()
@@ -1645,7 +1615,6 @@ class CoreRemoraDataset:
                 self.super_batch_offset
                 + (super_batch_num * self.super_batch_size),
                 self.super_batch_size,
-                select_num_chunks=select_num_chunks,
             )
             if super_batch is None:
                 break
@@ -1654,42 +1623,93 @@ class CoreRemoraDataset:
             super_batch_num += 1
             yield super_batch
 
-    def extract_batch(self, super_batch, batch_st, batch_size):
-        batch_en = (
-            super_batch["sequence"].shape[0]
-            if batch_st + batch_size > super_batch["sequence"].shape[0]
-            else batch_st + batch_size
-        )
-        batch = {
-            "enc_kmers": encoded_kmers.compute_encoded_kmer_batch(
-                *self.metadata.kmer_context_bases,
-                super_batch["sequence"][batch_st:batch_en],
-                super_batch["sequence_to_signal_mapping"][batch_st:batch_en],
-                super_batch["sequence_lengths"][batch_st:batch_en],
-            )
-        }
-        batch.update(
-            dict(
-                (
-                    arr_name,
-                    super_batch[arr_name][batch_st:batch_en],
-                )
-                for arr_name in ["signal", "labels"]
-                + self.metadata.extra_array_names
-            )
-        )
-        return batch
+    def get_next_super_batch(self):
+        if self._sb_iter is None:
+            self._sb_iter = self.iter_super_batches()
+        return next(self._sb_iter)
 
-    def iter_batches(self, max_batches=None):
-        chunks_per_sb, sb_select_num_chunks = self.adjust_batch_params()
-        super_batches = self.iter_super_batches(sb_select_num_chunks)
+    def extract_batch(self, batch_size=None):
+        if self._curr_sb is None:
+            self._curr_sb = self.get_next_super_batch()
+            self._curr_sb_offset = 0
+        if batch_size is None:
+            if self.batch_size is None:
+                raise RemoraError("Must provide batch size")
+            batch_size = self.batch_size
+        if batch_size <= 0:
+            raise RemoraError("Batch size must be positive")
+        batch_size = int(batch_size)
+        batch = {
+            (arr_name, [])
+            for arr_name in ["enc_kmers", "signal", "labels"]
+            + self.metadata.extra_array_names
+        }
+        chunks_left_to_add = batch_size
+        while (
+            self._curr_sb_offset + chunks_left_to_add
+            > self._curr_sb["labels"].shape[0]
+        ):
+            # add data from this super batch and load a new one
+            batch["enc_kmers"].append(
+                encoded_kmers.compute_encoded_kmer_batch(
+                    *self.metadata.kmer_context_bases,
+                    self._curr_sb["sequence"][self._curr_sb_offset :],
+                    self._curr_sb["sequence_to_signal_mapping"][
+                        self._curr_sb_offset :
+                    ],
+                    self._curr_sb["sequence_lengths"][self._curr_sb_offset :],
+                )
+            )
+            for arr_name in [
+                "signal",
+                "labels",
+            ] + self.metadata.extra_array_names:
+                batch[arr_name].append(
+                    self._curr_sb[arr_name][self._curr_sb_offset :]
+                )
+            # load new super batch
+            self._curr_sb = self.get_next_super_batch()
+            self._curr_sb_offset = 0
+        if chunks_left_to_add > 0:
+            b_st = self._curr_sb_offset
+            b_en = self._curr_sb_offset + chunks_left_to_add
+            batch["enc_kmers"].append(
+                encoded_kmers.compute_encoded_kmer_batch(
+                    *self.metadata.kmer_context_bases,
+                    self._curr_sb["sequence"][b_st:b_en],
+                    self._curr_sb["sequence_to_signal_mapping"][b_st:b_en],
+                    self._curr_sb["sequence_lengths"][b_st:b_en],
+                )
+            )
+            for arr_name in [
+                "signal",
+                "labels",
+            ] + self.metadata.extra_array_names:
+                batch[arr_name].append(
+                    self._curr_sb[arr_name][
+                        self._curr_sb_offset : self._curr_sb_offset
+                        + chunks_left_to_add
+                    ]
+                )
+            self._curr_sb_offset = b_en
+        r_batch = {}
+        for arr_name, arrs in batch.items():
+            num_arrs = len(arrs)
+            if num_arrs == 0:
+                raise RemoraError("No arrays extracted")
+            elif num_arrs == 1:
+                r_batch[arr_name] = arrs[0]
+            else:
+                r_batch[arr_name] = np.vstack(arrs)
+        return r_batch
+
+    def iter_batches(self, batch_size=None, max_batches=None):
         batch_num = 0
-        for super_batch in super_batches:
-            for batch_st in range(0, chunks_per_sb, self.batch_size):
-                yield self.extract_batch(super_batch, batch_st, self.batch_size)
-                batch_num += 1
-                if max_batches is not None and batch_num >= max_batches:
-                    return
+        while True:
+            yield self.extract_batch(batch_size)
+            batch_num += 1
+            if max_batches is not None and batch_num >= max_batches:
+                return
 
     def __iter__(self):
         if self._iter is None or not self.infinite_iter:
