@@ -1623,14 +1623,33 @@ class CoreRemoraDataset:
             super_batch_num += 1
             yield super_batch
 
-    def get_next_super_batch(self):
+    def init_super_batch_iter(self):
         if self._sb_iter is None:
             self._sb_iter = self.iter_super_batches()
-        return next(self._sb_iter)
+
+    def get_next_super_batch(self):
+        self.init_super_batch_iter()
+        return next(self._sb_iter, None)
 
     def extract_batch(self, batch_size=None):
+        def join_arrs(batch):
+            j_batch = {}
+            for arr_name, arrs in batch.items():
+                num_arrs = len(arrs)
+                if num_arrs == 0:
+                    raise RemoraError("No arrays extracted")
+                elif num_arrs == 1:
+                    j_batch[arr_name] = arrs[0]
+                else:
+                    j_batch[arr_name] = np.concatenate(arrs, axis=0)
+            return j_batch
+
         if self._curr_sb is None:
             self._curr_sb = self.get_next_super_batch()
+            if self._curr_sb is None:
+                raise RemoraError(
+                    "Extract batch called with no more data in dataset"
+                )
             self._curr_sb_offset = 0
         if batch_size is None:
             if self.batch_size is None:
@@ -1639,11 +1658,11 @@ class CoreRemoraDataset:
         if batch_size <= 0:
             raise RemoraError("Batch size must be positive")
         batch_size = int(batch_size)
-        batch = {
+        batch = dict(
             (arr_name, [])
             for arr_name in ["enc_kmers", "signal", "labels"]
             + self.metadata.extra_array_names
-        }
+        )
         chunks_left_to_add = batch_size
         while (
             self._curr_sb_offset + chunks_left_to_add
@@ -1669,6 +1688,8 @@ class CoreRemoraDataset:
                 )
             # load new super batch
             self._curr_sb = self.get_next_super_batch()
+            if self._curr_sb is None:
+                return join_arrs(batch)
             self._curr_sb_offset = 0
         if chunks_left_to_add > 0:
             b_st = self._curr_sb_offset
@@ -1692,21 +1713,16 @@ class CoreRemoraDataset:
                     ]
                 )
             self._curr_sb_offset = b_en
-        r_batch = {}
-        for arr_name, arrs in batch.items():
-            num_arrs = len(arrs)
-            if num_arrs == 0:
-                raise RemoraError("No arrays extracted")
-            elif num_arrs == 1:
-                r_batch[arr_name] = arrs[0]
-            else:
-                r_batch[arr_name] = np.vstack(arrs)
-        return r_batch
+        return join_arrs(batch)
 
     def iter_batches(self, batch_size=None, max_batches=None):
         batch_num = 0
         while True:
-            yield self.extract_batch(batch_size)
+            try:
+                yield self.extract_batch(batch_size)
+            except RemoraError as e:
+                LOGGER.debug(f"Exhausted Remora dataset iterator: {e}")
+                break
             batch_num += 1
             if max_batches is not None and batch_num >= max_batches:
                 return
