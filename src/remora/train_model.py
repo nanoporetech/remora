@@ -206,20 +206,14 @@ def train_model(
         override_metadata["kmer_context_bases"] = kmer_context_bases
     if chunk_context is not None:
         override_metadata["chunk_context"] = chunk_context
-    paths, props, hashes = load_dataset(remora_dataset_path)
-    dataset = RemoraDataset(
-        [
-            CoreRemoraDataset(
-                path,
-                override_metadata=override_metadata,
-            )
-            for path in paths
-        ],
-        props,
-        hashes,
-        batch_size=batch_size,
-        super_batch_size=super_batch_size,
-        super_batch_sample_frac=super_batch_sample_frac,
+    dataset = load_dataset(
+        remora_dataset_path,
+        core_ds_kwargs={"override_metadata": override_metadata},
+        ds_kwargs={
+            "batch_size": batch_size,
+            "super_batch_size": super_batch_size,
+            "super_batch_sample_frac": super_batch_sample_frac,
+        },
     )
     # TODO move hash computation into background worker and write this from
     # that worker as well. This command stalls startup too much
@@ -310,20 +304,16 @@ def train_model(
             assert len(ext_val_names) == len(ext_val)
         ext_datasets = []
         for e_name, e_path in zip(ext_val_names, ext_val):
-            paths, props, hashes = load_dataset(e_path.strip())
-            ext_val_ds = RemoraDataset(
-                [
-                    CoreRemoraDataset(
-                        path,
-                        override_metadata=override_metadata,
-                        infinite_iter=False,
-                        do_check_super_batches=True,
-                    )
-                    for path in paths
-                ],
-                props,
-                hashes,
-                batch_size=batch_size,
+            ext_val_ds = load_dataset(
+                e_path.strip(),
+                core_ds_kwargs={
+                    "override_metadata": override_metadata,
+                    "infinite_iter": False,
+                    "do_check_super_batches": True,
+                },
+                ds_kwargs={
+                    "batch_size": batch_size,
+                },
             )
             ext_val_ds.update_metadata(dataset)
             if not read_batches_from_disk:

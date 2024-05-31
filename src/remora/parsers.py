@@ -359,17 +359,12 @@ def register_dataset_inspect(parser):
 def run_dataset_inspect(args):
     import json
 
-    from remora.data_chunks import (
-        load_dataset,
-        CoreRemoraDataset,
-        RemoraDataset,
-    )
+    from remora.data_chunks import load_dataset
 
-    paths, props, hashes = load_dataset(args.remora_dataset_path)
-    datasets = [
-        CoreRemoraDataset(path, do_check_super_batches=True) for path in paths
-    ]
-    dataset = RemoraDataset(datasets, props, hashes)
+    dataset = load_dataset(
+        args.remora_dataset_path,
+        core_ds_kwargs={"do_check_super_batches": True},
+    )
     print(f"Dataset summary:\n{dataset.summary}")
     if args.out_path is not None:
         with open(args.out_path, "w") as fh:
@@ -416,11 +411,7 @@ def run_dataset_make_config(args):
 
     import numpy as np
 
-    from remora.data_chunks import (
-        load_dataset,
-        CoreRemoraDataset,
-        RemoraDataset,
-    )
+    from remora.data_chunks import load_dataset, RemoraDataset
 
     if args.log_filename is not None:
         log.init_logger(args.log_filename)
@@ -429,27 +420,30 @@ def run_dataset_make_config(args):
             raise RemoraError("Weights must be same length as input datasets.")
         if any(w <= 0 for w in args.dataset_weights):
             raise RemoraError("Weights must be positive.")
-    core_paths, core_weights, core_hashes = [], [], []
+    core_datasets, core_weights, core_hashes = [], [], []
     for ds_idx, ds_path in enumerate(args.dataset_paths):
-        paths, weights, hashes = load_dataset(ds_path)
-        if any(weights == 0):
+        dataset = load_dataset(ds_path)
+        if any(dataset.props == 0):
             empty_datasets = ", ".join(
-                [p for p, w in zip(paths, weights) if w == 0]
+                [p for p, w in zip(dataset.paths, dataset.props) if w == 0]
             )
             raise RemoraError(f"Encountered empty dataset: {empty_datasets}")
-        core_paths.extend(paths)
+        core_datasets.extend(dataset.datasets)
+        weights = dataset.props.copy()
         if args.dataset_weights is None:
-            weights *= sum([CoreRemoraDataset(path).size for path in paths])
+            weights *= sum([ds.size for ds in dataset.datasets])
         else:
             weights *= args.dataset_weights[ds_idx]
         core_weights.extend(weights)
-        if hashes is None or core_hashes is None:
+        # if hashes are available for all datasets then save them. If any are
+        # missing, skip storage of hashes
+        if core_hashes is None or not dataset.valid_hashes:
             core_hashes = None
             continue
-        core_hashes.extend(hashes)
+        core_hashes.extend(dataset.hashes)
     core_weights = np.array(core_weights)
     dataset = RemoraDataset(
-        [CoreRemoraDataset(path) for path in core_paths],
+        core_datasets,
         core_weights / core_weights.sum(),
         core_hashes,
     )
@@ -496,7 +490,7 @@ def run_dataset_merge(args):
 
     from remora.data_chunks import (
         compute_best_split,
-        load_dataset,
+        extract_core_dataset_paths,
         CoreRemoraDataset,
         RemoraDataset,
     )
@@ -506,7 +500,7 @@ def run_dataset_merge(args):
     all_paths = [
         sub_ds_path
         for ds_path in args.dataset_paths
-        for sub_ds_path in load_dataset(ds_path)[0]
+        for sub_ds_path in extract_core_dataset_paths(ds_path)
     ]
     dataset = RemoraDataset(
         [
@@ -694,16 +688,18 @@ def run_dataset_copy(args):
 
     out_dir = Path(args.out_path)
     prepare_out_dir(args.out_path, args.overwrite)
-    paths, props, hashes = load_dataset(args.in_path)
+    in_dataset = load_dataset(args.in_path)
     src_fh = open(out_dir / "sources.txt", "w")
     ds_out_dirs = []
-    for ds_idx, src_path in enumerate(paths):
+    if in_dataset.num_datasets > 1000:
+        raise RemoraError("Cannot copy more than 100,000 datasets")
+    for ds_idx, src_path in enumerate(in_dataset.paths):
         for item in os.listdir(src_path):
             if os.path.isdir(os.path.join(src_path, item)):
                 raise RemoraError(
                     f"Source dataset has nested directory: {item}"
                 )
-        ds_out_dir = out_dir / f"dataset_{ds_idx:03}"
+        ds_out_dir = out_dir / f"dataset_{ds_idx:05}"
         ds_out_dirs.append(ds_out_dir)
         src_fh.write(f"{src_path}\t{ds_out_dir}\n")
         try:
@@ -719,8 +715,8 @@ def run_dataset_copy(args):
             RemoraError(f"Error: {e}")
     dataset = RemoraDataset(
         [CoreRemoraDataset(ds_out_dir) for ds_out_dir in ds_out_dirs],
-        props,
-        hashes,
+        in_dataset.props,
+        in_dataset._hashes,
     )
     with open(out_dir / "dataset.cfg", "w") as fh:
         json.dump(dataset.get_config(), fh)
@@ -1893,11 +1889,7 @@ def run_validate_from_remora_dataset(args):
     from remora.util import parse_device
     from remora.model_util import load_model
     from remora.validate import ValidationLogger
-    from remora.data_chunks import (
-        RemoraDataset,
-        CoreRemoraDataset,
-        load_dataset,
-    )
+    from remora.data_chunks import load_dataset
 
     if args.log_filename is not None:
         log.init_logger(args.log_filename)
@@ -1921,20 +1913,14 @@ def run_validate_from_remora_dataset(args):
         "kmer_context_bases"
     ]
     override_metadata["chunk_context"] = model_metadata["chunk_context"]
-    paths, props, hashes = load_dataset(args.remora_dataset_path)
-    dataset = RemoraDataset(
-        [
-            CoreRemoraDataset(
-                path,
-                override_metadata=override_metadata,
-                infinite_iter=False,
-                do_check_super_batches=True,
-            )
-            for path in paths
-        ],
-        props,
-        hashes,
-        batch_size=args.batch_size,
+    dataset = load_dataset(
+        args.remora_dataset_path,
+        core_ds_kwargs={
+            "override_metadata": override_metadata,
+            "infinite_iter": False,
+            "do_check_super_batches": True,
+        },
+        ds_kwargs={"batch_size": args.batch_size},
     )
     LOGGER.info(f"Loaded dataset summary:\n{dataset.summary}")
     if not args.read_batches_from_disk:

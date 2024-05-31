@@ -932,7 +932,7 @@ class CoreRemoraDataset:
     mode: str = "r"
     metadata: DatasetMetadata = None
     override_metadata: dict = None
-    batch_size: int = constants.DEFAULT_BATCH_SIZE
+    batch_size: int = None
     super_batch_size: int = constants.DEFAULT_SUPER_BATCH_SIZE
     super_batch_sample_frac: float = None
     super_batch_offset: int = 0
@@ -1551,9 +1551,10 @@ class CoreRemoraDataset:
         if self.infinite_iter:
             offset %= self.size
         else:
-            # finite iter requesting super batch past the end of the dataset
             if offset >= self.size:
-                return
+                raise RemoraError(
+                    "Cannot extract super batch from exhausted finite dataset"
+                )
         sb_arr_st = self.metadata.dataset_start + offset
         # load full dataset if size is None
         if size is None:
@@ -1627,9 +1628,10 @@ class CoreRemoraDataset:
         if self._sb_iter is None:
             self._sb_iter = self.iter_super_batches()
 
-    def get_next_super_batch(self):
+    def _load_next_super_batch(self):
         self.init_super_batch_iter()
-        return next(self._sb_iter, None)
+        self._curr_sb = next(self._sb_iter, None)
+        self._curr_sb_offset = 0
 
     def extract_batch(self, batch_size=None):
         def join_arrs(batch):
@@ -1644,13 +1646,11 @@ class CoreRemoraDataset:
                     j_batch[arr_name] = np.concatenate(arrs, axis=0)
             return j_batch
 
-        if self._curr_sb is None:
-            self._curr_sb = self.get_next_super_batch()
-            if self._curr_sb is None:
-                raise RemoraError(
-                    "Extract batch called with no more data in dataset"
-                )
-            self._curr_sb_offset = 0
+        try:
+            self._load_next_super_batch()
+        except RemoraError as e:
+            LOGGER.debug(f"Super batch loading failed: {e}")
+            raise StopIteration
         if batch_size is None:
             if self.batch_size is None:
                 raise RemoraError("Must provide batch size")
@@ -1658,11 +1658,12 @@ class CoreRemoraDataset:
         if batch_size <= 0:
             raise RemoraError("Batch size must be positive")
         batch_size = int(batch_size)
-        batch = dict(
-            (arr_name, [])
-            for arr_name in ["enc_kmers", "signal", "labels"]
-            + self.metadata.extra_array_names
-        )
+        arr_names = [
+            "enc_kmers",
+            "signal",
+            "labels",
+        ] + self.metadata.extra_array_names
+        batch = dict((arr_name, []) for arr_name in arr_names)
         chunks_left_to_add = batch_size
         while (
             self._curr_sb_offset + chunks_left_to_add
@@ -1679,18 +1680,15 @@ class CoreRemoraDataset:
                     self._curr_sb["sequence_lengths"][self._curr_sb_offset :],
                 )
             )
-            for arr_name in [
-                "signal",
-                "labels",
-            ] + self.metadata.extra_array_names:
+            for arr_name in arr_names[1:]:
                 batch[arr_name].append(
                     self._curr_sb[arr_name][self._curr_sb_offset :]
                 )
-            # load new super batch
-            self._curr_sb = self.get_next_super_batch()
-            if self._curr_sb is None:
+            try:
+                self._load_next_super_batch()
+            except RemoraError as e:
+                LOGGER.debug(f"Super batch loading failed: {e}")
                 return join_arrs(batch)
-            self._curr_sb_offset = 0
         if chunks_left_to_add > 0:
             b_st = self._curr_sb_offset
             b_en = self._curr_sb_offset + chunks_left_to_add
@@ -1702,10 +1700,7 @@ class CoreRemoraDataset:
                     self._curr_sb["sequence_lengths"][b_st:b_en],
                 )
             )
-            for arr_name in [
-                "signal",
-                "labels",
-            ] + self.metadata.extra_array_names:
+            for arr_name in arr_names[1:]:
                 batch[arr_name].append(
                     self._curr_sb[arr_name][
                         self._curr_sb_offset : self._curr_sb_offset
@@ -1725,7 +1720,7 @@ class CoreRemoraDataset:
                 break
             batch_num += 1
             if max_batches is not None and batch_num >= max_batches:
-                return
+                break
 
     def __iter__(self):
         if self._iter is None or not self.infinite_iter:
@@ -1743,12 +1738,51 @@ class CoreRemoraDataset:
         self.refresh_memmaps()
 
 
-def parse_dataset_config(config_path, used_configs=None):
-    paths, weights, hashes = [], [], []
-    config_path = util.resolve_path(config_path)
+def extract_core_dataset_paths(input_path, used_configs=None):
+    """Extract the list of core dataset paths given a config or core dataset
+    path."""
+    paths = []
+    input_path = util.resolve_path(input_path)
     if used_configs is None:
-        used_configs = {config_path: config_path}
-    with open(config_path) as config_fh:
+        used_configs = {input_path: input_path}
+    if os.path.isdir(input_path):
+        # return core dataset
+        return [input_path]
+    with open(input_path) as config_fh:
+        for ds_info in json.load(config_fh):
+            if len(ds_info) == 2:
+                ds_path, _ = ds_info
+            elif len(ds_info) == 3:
+                ds_path, _, _ = ds_info
+            ds_path = util.resolve_path(ds_path)
+            if not os.path.exists(ds_path):
+                raise RemoraError(
+                    f"Core dataset path does not exist. {ds_path}"
+                )
+            if os.path.isdir(ds_path):
+                paths.append(ds_path)
+            else:
+                if ds_path in used_configs:
+                    raise RemoraError(
+                        "Circular or repeated dataset config refrence. "
+                        f"{ds_path} found in {input_path} and previously "
+                        f"found in {used_configs[ds_path]}"
+                    )
+                used_configs[ds_path] = input_path
+                sub_paths = extract_core_dataset_paths(
+                    ds_path, used_configs=used_configs
+                )
+                paths.extend(sub_paths)
+    paths = list(set(paths))
+    return paths
+
+
+def parse_dataset_config(input_path, used_configs=None):
+    paths, weights, hashes = [], [], []
+    input_path = util.resolve_path(input_path)
+    if used_configs is None:
+        used_configs = {input_path: input_path}
+    with open(input_path) as config_fh:
         for ds_info in json.load(config_fh):
             if len(ds_info) == 2:
                 ds_path, weight = ds_info
@@ -1777,10 +1811,10 @@ def parse_dataset_config(config_path, used_configs=None):
                 if ds_path in used_configs:
                     raise RemoraError(
                         "Circular or repeated dataset config refrence. "
-                        f"{ds_path} found in {config_path} and previously "
+                        f"{ds_path} found in {input_path} and previously "
                         f"found in {used_configs[ds_path]}"
                     )
-                used_configs[ds_path] = config_path
+                used_configs[ds_path] = input_path
                 sub_paths, sub_weights, sub_hashs = parse_dataset_config(
                     ds_path, used_configs=used_configs
                 )
@@ -1795,14 +1829,25 @@ def parse_dataset_config(config_path, used_configs=None):
     return paths, props, hashes
 
 
-def load_dataset(ds_path):
+def load_dataset(ds_path, core_ds_kwargs=None, ds_kwargs=None):
     """Parse either core dataset or dataset config"""
     ds_path = util.resolve_path(ds_path)
     if not os.path.exists(ds_path):
         raise RemoraError(f"Dataset path does not exist. {ds_path}")
     if os.path.isdir(ds_path):
-        return [ds_path], np.ones(1, dtype=float), None
-    return parse_dataset_config(ds_path)
+        paths, props, hashes = [ds_path], np.ones(1, dtype=float), None
+    else:
+        paths, props, hashes = parse_dataset_config(ds_path)
+    if core_ds_kwargs is None:
+        core_ds_kwargs = {}
+    if ds_kwargs is None:
+        ds_kwargs = {}
+    return RemoraDataset(
+        [CoreRemoraDataset(path, **core_ds_kwargs) for path in paths],
+        props,
+        hashes,
+        **ds_kwargs,
+    )
 
 
 def compute_best_split(total_size, props):
@@ -1824,6 +1869,26 @@ def compute_best_split(total_size, props):
     while sizes.sum() < total_size:
         sizes[np.argmin((sizes / sizes.sum()) - props)] += 1
     return sizes
+
+
+def compute_random_split(total_size, probs):
+    class_counts = np.random.multinomial(total_size, probs)
+
+    # If the sum is not exactly total (which can happen due to rounding
+    # issues), adjust the sum
+    while np.sum(class_counts) != total_size:
+        diff = total_size - np.sum(class_counts)
+        for i in range(abs(diff)):
+            if diff > 0:
+                idx = np.random.choice(np.arange(len(probs)), p=probs)
+                class_counts[idx] += 1
+            elif diff < 0:
+                idx = np.random.choice(
+                    np.arange(len(probs))[class_counts > 0],
+                    p=probs[class_counts > 0],
+                )
+                class_counts[idx] -= 1
+    return class_counts
 
 
 def dataloader_worker_init(worker_id):
@@ -1862,10 +1927,14 @@ class RemoraDataset(IterableDataset):
         return sum(ds.size for ds in self.datasets)
 
     @property
+    def valid_hashes(self):
+        return self._hashes is not None and all(
+            ds_hash is not None for ds_hash in self._hashes
+        )
+
+    @property
     def hashes(self):
-        if self._hashes is None or any(
-            ds_hash is None for ds_hash in self._hashes
-        ):
+        if not self.valid_hashes:
             LOGGER.debug("Computing dataset hashes")
             self._hashes = [ds.hash(ds.data_path) for ds in self.datasets]
         return self._hashes
@@ -2060,17 +2129,6 @@ class RemoraDataset(IterableDataset):
         ):
             setattr(self.metadata, md_key, getattr(other.metadata, md_key))
 
-    def set_batch_size(self, batch_size):
-        self.batch_size = batch_size
-        self.batch_sizes = compute_best_split(self.batch_size, self.props)
-        bs_str = "\n".join(
-            (
-                f"{bs}\t{ds.data_path}"
-                for bs, ds in zip(self.batch_sizes, self.datasets)
-            )
-        )
-        LOGGER.debug(f"Dataset batch sizes:\n{bs_str}")
-
     def __init__(
         self,
         datasets,
@@ -2080,6 +2138,7 @@ class RemoraDataset(IterableDataset):
         super_batch_size=constants.DEFAULT_SUPER_BATCH_SIZE,
         super_batch_sample_frac=None,
         seed=None,
+        use_constant_batch_mix=False,
     ):
         super(RemoraDataset).__init__()
         self.datasets = datasets
@@ -2089,10 +2148,11 @@ class RemoraDataset(IterableDataset):
         if len(self.datasets) != len(self.props):
             raise RemoraError("Dataset and proportions must be same length.")
         self._hashes = hashes
-        self.set_batch_size(batch_size)
+        self.batch_size = batch_size
         self.super_batch_size = super_batch_size
         self.super_batch_sample_frac = super_batch_sample_frac
         self.seed = seed
+        self.use_constant_batch_mix = use_constant_batch_mix
 
         # RemoraDataset is infinite iter if all core datasets are infinite
         self.infinite_iter = all(ds.infinite_iter for ds in self.datasets)
@@ -2101,7 +2161,9 @@ class RemoraDataset(IterableDataset):
         for ds in self.datasets:
             ds.update_metadata(self)
         self.super_batch_offsets = [0 for ds in self.datasets]
-        self._ds_iters = None
+        self._batch_sizes = None
+        if self.use_constant_batch_mix:
+            self._batch_sizes = compute_best_split(self.batch_size, self.props)
         self._iter = None
         self._all_batches = None
 
@@ -2181,22 +2243,25 @@ class RemoraDataset(IterableDataset):
             )
         return RemoraDataset(head_datasets, **self.init_kwargs)
 
-    def _set_sub_ds_iters(self):
-        for ds, bs, sb_offset in zip(
-            self.datasets, self.batch_sizes, self.super_batch_offsets
-        ):
-            ds.batch_size = bs
+    def _set_sub_ds_params(self):
+        for ds, sb_offset in zip(self.datasets, self.super_batch_offsets):
             ds.super_batch_offset = sb_offset
             ds.super_batch_size = self.super_batch_size
             ds.super_batch_sample_frac = self.super_batch_sample_frac
-        self._ds_iters = [ds.iter_batches() for ds in self.datasets]
 
     def iter_batches(self, return_arrays=("enc_kmers", "signal", "labels")):
-        if self._ds_iters is None:
-            self._set_sub_ds_iters()
+        self._set_sub_ds_params()
         while True:
+            ds_batch_sizes = (
+                self._batch_sizes
+                if self.use_constant_batch_mix
+                else compute_random_split(self.batch_size, self.props)
+            )
             try:
-                ds_arrays = [next(ds) for ds in self._ds_iters]
+                ds_arrays = [
+                    ds.extract_batch(bs)
+                    for ds, bs in zip(self.datasets, ds_batch_sizes)
+                ]
             except StopIteration:
                 break
             yield [
@@ -2208,8 +2273,8 @@ class RemoraDataset(IterableDataset):
 
     def load_all_batches(self):
         if self.infinite_iter:
-            raise RemoraError("Cannot save all batches for infinite dataset")
-        self._set_sub_ds_iters()
+            raise RemoraError("Cannot load all batches for infinite dataset")
+        self._set_sub_ds_params()
         self._all_batches = list(self.iter_batches())
         for ds in self.datasets:
             ds.close_memmaps()
@@ -2221,7 +2286,6 @@ class RemoraDataset(IterableDataset):
         # if first time calling iter or if this is an exhaustible dataset
         # re-initialize the iterator
         if self._iter is None or not self.infinite_iter:
-            self._set_sub_ds_iters()
             self._iter = self.iter_batches()
         return self._iter
 
@@ -2258,10 +2322,15 @@ class RemoraDataset(IterableDataset):
         ]
 
     def epoch_summary(self, batches_per_epoch):
-        epoch_chunk_totals = [
-            batches_per_epoch * ds_chunks_per_batch
-            for ds_chunks_per_batch in self.batch_sizes
-        ]
+        if self.use_constant_batch_mix:
+            epoch_chunk_totals = [
+                batches_per_epoch * ds_bs for ds_bs in self._batch_sizes
+            ]
+        else:
+            epoch_chunk_totals = [
+                batches_per_epoch * self.batch_size * prop
+                for prop in self.props
+            ]
         dss_lab_counts = [
             dict(
                 zip(
@@ -2281,10 +2350,10 @@ class RemoraDataset(IterableDataset):
         # each batch
         batch_lab_cols = [
             "\t".join(
-                f"{np.ceil(ds_lp.get(lab, 0) * ds_bs).astype(int):,}"
+                f"{ds_lp.get(lab, 0) * ds_bs:,.1f}"
                 for lab in self.metadata.labels
             )
-            for ds_lp, ds_bs in zip(dss_lab_props, self.batch_sizes)
+            for ds_lp, ds_bs in zip(dss_lab_props, self.batch_size * self.props)
         ]
         dss_lab_cols = [
             "\t".join(f"{ds_lc.get(lab, 0):,}" for lab in self.metadata.labels)
@@ -2293,7 +2362,7 @@ class RemoraDataset(IterableDataset):
         summ_strs = [
             f"{ds_chunks_per_epoch/ds.size:10.4%}\t"
             f"{b_lab_cols}\t"
-            f"{ds_chunks_per_epoch:,}\t"
+            f"{ds_chunks_per_epoch:,.1f}\t"
             f"{ds.size:,}\t"
             f"{ds_lab_cols}\t"
             f"{ds.data_path}"
