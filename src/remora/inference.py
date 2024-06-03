@@ -6,6 +6,7 @@ from copy import copy
 import array as pyarray
 from pathlib import Path
 from threading import Thread
+from functools import partial
 from itertools import chain, islice
 from collections import defaultdict
 
@@ -891,6 +892,10 @@ def add_mod_mappings_to_alignment(duplex_read_result, caller):
     return record, None
 
 
+def duplex_read_id_converter(read_id, duplex_deliminator):
+    return read_id.split(duplex_deliminator)[0]
+
+
 def infer_duplex(
     *,
     simplex_pod5_path: str,
@@ -907,12 +912,15 @@ def infer_duplex(
     skip_non_primary=True,
     duplex_deliminator=";",
 ):
+    duplex_read_id_converter_delim = partial(
+        duplex_read_id_converter, duplex_deliminator=duplex_deliminator
+    )
     LOGGER.info("Indexing Duplex BAM")
     duplex_bam_index = ReadIndexedBam(
         duplex_bam_path,
         skip_non_primary=skip_non_primary,
         req_tags=set(),
-        read_id_converter=lambda k: k.split(duplex_deliminator)[0],
+        read_id_converter=duplex_read_id_converter_delim,
     )
     if duplex_bam_index.num_records == 0:
         LOGGER.info("No records found in duplex BAM file.")
