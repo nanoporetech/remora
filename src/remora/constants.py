@@ -44,6 +44,18 @@ DEFAULT_REFINE_HBW = 5
 MODBASE_MODEL_NAME = "modbase_model.pt"
 MODEL_DATA_DIR_NAME = "trained_models"
 
+# set string values for sequence output types from datasets
+# encoded k-mers for standard Remora models
+DATASET_ENC_KMER = "enc_kmers"
+# sequences and lengths for basecaller
+DATASET_SEQ_AND_LENS = "seq_and_lens"
+DATASET_SEQ_OUTPUTS = dict(
+    [
+        (DATASET_ENC_KMER, ["enc_kmers"]),
+        (DATASET_SEQ_AND_LENS, ["seqs", "lens"]),
+    ]
+)
+
 """
 The default model is the first key at every level after the pore and mod.
 E.g. for "dna_r10.4.1_e8.2_400bps" and "5mc" the default model is

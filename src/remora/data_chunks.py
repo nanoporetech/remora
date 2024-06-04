@@ -922,6 +922,36 @@ def check_super_batch(super_batch, chunk_width):
         raise RemoraError("Sequence min must greater tha -2")
 
 
+def extract_enc_kmers(kmer_context_bases, seqs, seq_to_sig_maps, seq_lens):
+    return [
+        (
+            constants.DATASET_ENC_KMER,
+            encoded_kmers.compute_encoded_kmer_batch(
+                kmer_context_bases, seqs, seq_to_sig_maps, seq_lens
+            ),
+        )
+    ]
+
+
+def extract_seq_and_lens(
+    stored_kmer_context_bases,
+    kmer_context_bases,
+    seqs,
+    seq_to_sig_maps,
+    seq_lens,
+):
+    st_clip = stored_kmer_context_bases[0] - kmer_context_bases[0]
+    seq_lens_w_context = seq_lens + sum(kmer_context_bases)
+    clip_seqs = np.zeros_like(seqs)
+    for chunk_idx, chunk_len in enumerate(seq_lens_w_context):
+        # clip sequences to new kmer context bases
+        # Convert seq to 1=A, 2=C, 3=G, 4=T alphabet for bonito
+        clip_seqs[chunk_idx, :chunk_len] = np.array([1, 2, 3, 4])[
+            seqs[chunk_idx, st_clip : st_clip + chunk_len]
+        ]
+    return [("seqs", clip_seqs), ("seq_lens", seq_lens_w_context)]
+
+
 @dataclasses.dataclass
 class CoreRemoraDataset:
     """CoreRemoraDataset manages the storage and access to a single file of
@@ -938,6 +968,7 @@ class CoreRemoraDataset:
     super_batch_offset: int = 0
     infinite_iter: bool = True
     do_check_super_batches: bool = False
+    seq_outputs: str = constants.DATASET_ENC_KMER
 
     # attributes to hold current super batch
     _sb_iter = None
@@ -1031,6 +1062,10 @@ class CoreRemoraDataset:
     @property
     def array_names(self):
         return self._core_arrays + self.metadata.extra_array_names
+
+    @property
+    def seq_attrs(self):
+        return constants.DATASET_SEQ_OUTPUTS[self.seq_outputs]
 
     @property
     def arrays(self):
@@ -1350,6 +1385,11 @@ class CoreRemoraDataset:
             self.data_path = util.resolve_path(self.data_path)
             self.allocate_arrays()
             self.write_metadata()
+        if self.seq_outputs not in constants.DATASET_SEQ_OUTPUTS:
+            raise RemoraError(
+                f"Sequence output not supported: Found {self.seq_outputs}. "
+                f"Allowed values: {', '.join(constants.DATASET_SEQ_OUTPUTS)}"
+            )
         self.refresh_memmaps()
         self._iter = None
 
@@ -1604,6 +1644,7 @@ class CoreRemoraDataset:
                 super_batch[arr_name] = super_batch[arr_name][selected_indices]
         if self.label_conv is not None:
             super_batch["labels"] = self.label_conv[super_batch["labels"]]
+        # TODO add functionality to apply a set of filters at this point
         super_batch = self.trim_sb_kmer_context_bases(super_batch)
         super_batch = self.trim_sb_chunk_context(super_batch)
         return super_batch
@@ -1633,6 +1674,25 @@ class CoreRemoraDataset:
         self._curr_sb = next(self._sb_iter, None)
         self._curr_sb_offset = 0
 
+    def extract_seq_output(self, seqs, seq_to_sig_maps, seq_lens):
+        if self.seq_outputs == constants.DATASET_ENC_KMER:
+            return extract_enc_kmers(
+                self.kmer_context_bases, seqs, seq_to_sig_maps, seq_lens
+            )
+        elif self.seq_outputs == constants.DATASET_SEQ_AND_LENS:
+            return extract_seq_and_lens(
+                self.metadata.stored_kmer_context_bases,
+                self.kmer_context_bases,
+                seqs,
+                seq_to_sig_maps,
+                seq_lens,
+            )
+        else:
+            raise RemoraError(
+                f"Sequence output not supported: Found {self.seq_outputs}. "
+                f"Allowed values: {', '.join(constants.DATASET_SEQ_OUTPUTS)}"
+            )
+
     def extract_batch(self, batch_size=None):
         def join_arrs(batch):
             j_batch = {}
@@ -1658,29 +1718,29 @@ class CoreRemoraDataset:
         if batch_size <= 0:
             raise RemoraError("Batch size must be positive")
         batch_size = int(batch_size)
-        arr_names = [
-            "enc_kmers",
+        extra_arr_names = [
             "signal",
             "labels",
         ] + self.metadata.extra_array_names
-        batch = dict((arr_name, []) for arr_name in arr_names)
+        batch = dict(
+            (arr_name, []) for arr_name in self.seq_attrs + extra_arr_names
+        )
         chunks_left_to_add = batch_size
         while (
             self._curr_sb_offset + chunks_left_to_add
             > self._curr_sb["labels"].shape[0]
         ):
             # add data from this super batch and load a new one
-            batch["enc_kmers"].append(
-                encoded_kmers.compute_encoded_kmer_batch(
-                    *self.metadata.kmer_context_bases,
-                    self._curr_sb["sequence"][self._curr_sb_offset :],
-                    self._curr_sb["sequence_to_signal_mapping"][
-                        self._curr_sb_offset :
-                    ],
-                    self._curr_sb["sequence_lengths"][self._curr_sb_offset :],
-                )
-            )
-            for arr_name in arr_names[1:]:
+            # add sequence output (encoded k-mers or sequences and lengths)
+            for arr_name, arr_val in self.extract_seq_output(
+                self._curr_sb["sequence"][self._curr_sb_offset :],
+                self._curr_sb["sequence_to_signal_mapping"][
+                    self._curr_sb_offset :
+                ],
+                self._curr_sb["sequence_lengths"][self._curr_sb_offset :],
+            ):
+                batch[arr_name] = arr_val
+            for arr_name in extra_arr_names:
                 batch[arr_name].append(
                     self._curr_sb[arr_name][self._curr_sb_offset :]
                 )
@@ -1692,15 +1752,13 @@ class CoreRemoraDataset:
         if chunks_left_to_add > 0:
             b_st = self._curr_sb_offset
             b_en = self._curr_sb_offset + chunks_left_to_add
-            batch["enc_kmers"].append(
-                encoded_kmers.compute_encoded_kmer_batch(
-                    *self.metadata.kmer_context_bases,
-                    self._curr_sb["sequence"][b_st:b_en],
-                    self._curr_sb["sequence_to_signal_mapping"][b_st:b_en],
-                    self._curr_sb["sequence_lengths"][b_st:b_en],
-                )
-            )
-            for arr_name in arr_names[1:]:
+            for arr_name, arr_val in self.extract_seq_output(
+                self._curr_sb["sequence"][b_st:b_en],
+                self._curr_sb["sequence_to_signal_mapping"][b_st:b_en],
+                self._curr_sb["sequence_lengths"][b_st:b_en],
+            ):
+                batch[arr_name] = arr_val
+            for arr_name in extra_arr_names:
                 batch[arr_name].append(
                     self._curr_sb[arr_name][
                         self._curr_sb_offset : self._curr_sb_offset
@@ -2249,7 +2307,14 @@ class RemoraDataset(IterableDataset):
             ds.super_batch_size = self.super_batch_size
             ds.super_batch_sample_frac = self.super_batch_sample_frac
 
-    def iter_batches(self, return_arrays=("enc_kmers", "signal", "labels")):
+    def iter_batches(self, return_arrays=("signal", "labels")):
+        """Iterate over batches.
+
+        Args:
+            return_arrays (tuple): Arrays to return from dataset. The sequence
+                arrays as defined by the dataset seq_outputs setting will be
+                appended to this set of arrays in returned batches.
+        """
         self._set_sub_ds_params()
         while True:
             ds_batch_sizes = (
@@ -2268,7 +2333,7 @@ class RemoraDataset(IterableDataset):
                 torch.from_numpy(
                     np.concatenate([arr[arr_name] for arr in ds_arrays])
                 )
-                for arr_name in return_arrays
+                for arr_name in return_arrays + self.seq_sttrs
             ]
 
     def load_all_batches(self):
