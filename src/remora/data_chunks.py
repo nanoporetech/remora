@@ -927,7 +927,7 @@ def extract_enc_kmers(kmer_context_bases, seqs, seq_to_sig_maps, seq_lens):
         (
             constants.DATASET_ENC_KMER,
             encoded_kmers.compute_encoded_kmer_batch(
-                kmer_context_bases, seqs, seq_to_sig_maps, seq_lens
+                *kmer_context_bases, seqs, seq_to_sig_maps, seq_lens
             ),
         )
     ]
@@ -1677,12 +1677,15 @@ class CoreRemoraDataset:
     def extract_seq_output(self, seqs, seq_to_sig_maps, seq_lens):
         if self.seq_outputs == constants.DATASET_ENC_KMER:
             return extract_enc_kmers(
-                self.kmer_context_bases, seqs, seq_to_sig_maps, seq_lens
+                self.metadata.kmer_context_bases,
+                seqs,
+                seq_to_sig_maps,
+                seq_lens,
             )
         elif self.seq_outputs == constants.DATASET_SEQ_AND_LENS:
             return extract_seq_and_lens(
                 self.metadata.stored_kmer_context_bases,
-                self.kmer_context_bases,
+                self.metadata.kmer_context_bases,
                 seqs,
                 seq_to_sig_maps,
                 seq_lens,
@@ -1693,7 +1696,18 @@ class CoreRemoraDataset:
                 f"Allowed values: {', '.join(constants.DATASET_SEQ_OUTPUTS)}"
             )
 
-    def extract_batch(self, batch_size=None):
+    def extract_batch(self, batch_size=None, arr_names=None):
+        """Extract a batch of training data
+
+        Args:
+            batch_size (int): Number of chunks to provide
+            arr_names (list): Names of arrays to output in the batch. The
+                sequence arrays as defined by the dataset seq_outputs setting
+                will be appended to this set of arrays in returned batches. If
+                None, default of signal, labels and extra_array_names will be
+                used.
+        """
+
         def join_arrs(batch):
             j_batch = {}
             for arr_name, arrs in batch.items():
@@ -1718,17 +1732,13 @@ class CoreRemoraDataset:
         if batch_size <= 0:
             raise RemoraError("Batch size must be positive")
         batch_size = int(batch_size)
-        extra_arr_names = [
-            "signal",
-            "labels",
-        ] + self.metadata.extra_array_names
-        batch = dict(
-            (arr_name, []) for arr_name in self.seq_attrs + extra_arr_names
-        )
+        if arr_names is None:
+            arr_names = ["signal", "labels"] + self.metadata.extra_array_names
+        batch = dict((arr_name, []) for arr_name in self.seq_attrs + arr_names)
         chunks_left_to_add = batch_size
         while (
             self._curr_sb_offset + chunks_left_to_add
-            > self._curr_sb["labels"].shape[0]
+            > self._curr_sb["signal"].shape[0]
         ):
             # add data from this super batch and load a new one
             # add sequence output (encoded k-mers or sequences and lengths)
@@ -1740,7 +1750,7 @@ class CoreRemoraDataset:
                 self._curr_sb["sequence_lengths"][self._curr_sb_offset :],
             ):
                 batch[arr_name] = arr_val
-            for arr_name in extra_arr_names:
+            for arr_name in arr_names:
                 batch[arr_name].append(
                     self._curr_sb[arr_name][self._curr_sb_offset :]
                 )
@@ -1758,7 +1768,7 @@ class CoreRemoraDataset:
                 self._curr_sb["sequence_lengths"][b_st:b_en],
             ):
                 batch[arr_name] = arr_val
-            for arr_name in extra_arr_names:
+            for arr_name in arr_names:
                 batch[arr_name].append(
                     self._curr_sb[arr_name][
                         self._curr_sb_offset : self._curr_sb_offset
@@ -1768,11 +1778,23 @@ class CoreRemoraDataset:
             self._curr_sb_offset = b_en
         return join_arrs(batch)
 
-    def iter_batches(self, batch_size=None, max_batches=None):
+    def iter_batches(
+        self,
+        batch_size=None,
+        max_batches=None,
+        return_arrays=("signal", "labels"),
+    ):
+        """Iterate over batches.
+
+        Args:
+            return_arrays (tuple): Arrays to return from dataset. The sequence
+                arrays as defined by the dataset seq_outputs setting will be
+                appended to this set of arrays in returned batches.
+        """
         batch_num = 0
         while True:
             try:
-                yield self.extract_batch(batch_size)
+                yield self.extract_batch(batch_size, return_arrays)
             except RemoraError as e:
                 LOGGER.debug(f"Exhausted Remora dataset iterator: {e}")
                 break
@@ -2160,6 +2182,14 @@ class RemoraDataset(IterableDataset):
         self.metadata.mod_bases = mod_bases
         self.metadata.mod_long_names = mod_long_names
 
+        seq_attr_set = set(tuple(ds.seq_attrs) for ds in self.datasets)
+        if len(seq_attr_set) != 1:
+            raise RemoraError(
+                "Datasets contain different sequence output modes: "
+                f"{seq_attr_set}"
+            )
+        self.seq_attrs = next(seq_attr_set)
+
     def update_metadata(self, other):
         for md_key in (
             "modified_base_labels",
@@ -2324,7 +2354,7 @@ class RemoraDataset(IterableDataset):
             )
             try:
                 ds_arrays = [
-                    ds.extract_batch(bs)
+                    ds.extract_batch(bs, return_arrays)
                     for ds, bs in zip(self.datasets, ds_batch_sizes)
                 ]
             except StopIteration:
@@ -2333,7 +2363,7 @@ class RemoraDataset(IterableDataset):
                 torch.from_numpy(
                     np.concatenate([arr[arr_name] for arr in ds_arrays])
                 )
-                for arr_name in return_arrays + self.seq_sttrs
+                for arr_name in return_arrays + self.seq_attrs
             ]
 
     def load_all_batches(self):
