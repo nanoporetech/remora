@@ -1782,7 +1782,7 @@ class CoreRemoraDataset:
         self,
         batch_size=None,
         max_batches=None,
-        return_arrays=("signal", "labels"),
+        return_arrays=["signal", "labels"],
     ):
         """Iterate over batches.
 
@@ -2188,7 +2188,7 @@ class RemoraDataset(IterableDataset):
                 "Datasets contain different sequence output modes: "
                 f"{seq_attr_set}"
             )
-        self.seq_attrs = next(seq_attr_set)
+        self.seq_attrs = self.datasets[0].seq_attrs
 
     def update_metadata(self, other):
         for md_key in (
@@ -2337,7 +2337,7 @@ class RemoraDataset(IterableDataset):
             ds.super_batch_size = self.super_batch_size
             ds.super_batch_sample_frac = self.super_batch_sample_frac
 
-    def iter_batches(self, return_arrays=("signal", "labels")):
+    def iter_batches(self, return_arrays=["signal", "labels"]):
         """Iterate over batches.
 
         Args:
