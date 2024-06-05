@@ -16,6 +16,7 @@ def trim_sb_chunk_context_core(
     signed char[:, ::1] seqs,
     short[:, ::1] seq_mappings,
     short[::1] seq_lens,
+    short[::1] seq_clip_coords,
 ):
     cdef short cc_width = cc_before + cc_after
     cdef int chunk_idx, pos_idx
@@ -33,6 +34,7 @@ def trim_sb_chunk_context_core(
             csm = seq_mappings[chunk_idx]
             for pos_idx in range(seq_len + 1 - st_clip):
                 csm[pos_idx] = csm[st_clip + pos_idx]
+            seq_clip_coords[chunk_idx] = st_clip
             cs = seqs[chunk_idx]
             for pos_idx in range(seq_len + total_seq_context - st_clip):
                 cs[pos_idx] = cs[pos_idx + st_clip]

@@ -215,7 +215,7 @@ class ValidationLogger:
 
         if os.environ.get("LOG_SAFE", False):
             disable_pbar = True
-        for enc_kmers, sigs, labels in tqdm(
+        for sigs, labels, enc_kmers in tqdm(
             dataset,
             smoothing=0,
             desc="Batches",

@@ -174,9 +174,10 @@ def extract_chunk_dataset(
             mod_long_names=[] if mod_base_control else [mod_base[1]],
             motif_sequences=[motif.raw_motif for motif in motifs],
             motif_offsets=[motif.focus_pos for motif in motifs],
-            extra_arrays={
-                "read_ids": ("<U36", "Read identifier"),
-                "read_focus_bases": (
+            extra_metadata_arrays={
+                "modbase_label": ("int64", "Modified base label"),
+                "read_id": ("<U36", "Read identifier"),
+                "read_focus_base": (
                     "int64",
                     "Position within read training sequence",
                 ),
@@ -270,7 +271,7 @@ def extract_chunk_dataset(
 
     dataset.write_metadata()
     LOGGER.info(f"Extracted {dataset.size:,} chunks from {num_reads:,} reads.")
-    LOGGER.info(f"Label distribution: {dataset.label_summary}")
+    LOGGER.info(f"Label distribution: {dataset.modbase_label_summary}")
     if not skip_shuffle:
         LOGGER.info("Shuffling dataset")
         dataset.shuffle()

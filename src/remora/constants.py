@@ -48,13 +48,17 @@ MODEL_DATA_DIR_NAME = "trained_models"
 # encoded k-mers for standard Remora models
 DATASET_ENC_KMER = "enc_kmers"
 # sequences and lengths for basecaller
-DATASET_SEQ_AND_LENS = "seq_and_lens"
+DATASET_SEQS_AND_LENS = "seqs_and_lens"
 DATASET_SEQ_OUTPUTS = dict(
     [
         (DATASET_ENC_KMER, ["enc_kmers"]),
-        (DATASET_SEQ_AND_LENS, ["seqs", "lens"]),
+        (DATASET_SEQS_AND_LENS, ["seqs", "lens"]),
     ]
 )
+DATASET_TYPE_MODBASE = "modbase"
+DATASET_TYPE_SEQ = "sequence"
+DATASET_TYPES = set((DATASET_TYPE_MODBASE, DATASET_TYPE_SEQ))
+
 
 """
 The default model is the first key at every level after the pore and mod.

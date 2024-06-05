@@ -124,7 +124,7 @@ def export_model_torchscript(ckpt, model, save_filename):
     for ckpt_key in (
         "kmer_context_bases",
         "chunk_context",
-        "modified_base_labels",
+        "dataset_type",
         "mod_bases",
         "reverse_signal",
         "refine_kmer_center_idx",
@@ -510,7 +510,7 @@ def _extract_essential_metadata(model_metadata):
     for md_key in [
         "kmer_context_bases",
         "chunk_context",
-        "modified_base_labels",
+        "dataset_type",
         "mod_bases",
         "reverse_signal",
         "base_start_justify",

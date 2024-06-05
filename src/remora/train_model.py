@@ -199,7 +199,7 @@ def train_model(
 
     LOGGER.info("Loading dataset from Remora dataset config")
     # don't load extra arrays for training
-    override_metadata = {"extra_arrays": {}}
+    override_metadata = {"extra_metadata_arrays": {"modbase_label"}}
     if kmer_context_bases is not None:
         override_metadata["kmer_context_bases"] = kmer_context_bases
     if chunk_context is not None:
@@ -444,7 +444,7 @@ def train_model(
         "reverse_signal": dataset.metadata.reverse_signal,
         "mod_bases": dataset.metadata.mod_bases,
         "mod_long_names": dataset.metadata.mod_long_names,
-        "modified_base_labels": dataset.metadata.modified_base_labels,
+        "dataset_type": dataset.metadata.dataset_type,
         "kmer_context_bases": dataset.metadata.kmer_context_bases,
         "base_start_justify": dataset.metadata.base_start_justify,
         "offset": dataset.metadata.offset,
@@ -458,7 +458,7 @@ def train_model(
         model.train()
         pbar.n = 0
         pbar.refresh()
-        for epoch_i, (enc_kmers, sigs, labels) in enumerate(
+        for epoch_i, (sigs, labels, enc_kmers) in enumerate(
             islice(trn_loader, batches_per_epoch)
         ):
             outputs = model(sigs.to(device), enc_kmers.to(device))

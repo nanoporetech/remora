@@ -5,7 +5,6 @@ import hashlib
 import dataclasses
 from glob import glob
 from copy import deepcopy
-from itertools import chain
 
 import torch
 import numpy as np
@@ -416,7 +415,7 @@ class RemoraRead:
             chunk_focus_base=read_focus_base - seq_start,
             read_focus_base=read_focus_base,
             read_id=self.read_id,
-            label=label,
+            modbase_label=label,
         )
         if check_chunk:
             chunk.check()
@@ -497,7 +496,12 @@ class RemoraRead:
                 motif_offsets=motif_offsets,
                 chunk_context=model_metadata["chunk_context"],
                 kmer_context_bases=model_metadata["kmer_context_bases"],
-                extra_arrays={"read_focus_bases": ("int64", "")},
+                return_arrays=[
+                    "signal",
+                    "modbase_label",
+                    "read_focus_base",
+                    "enc_kmers",
+                ],
             ),
             infinite_iter=False,
         )
@@ -507,9 +511,9 @@ class RemoraRead:
             self.batches.append(
                 (
                     batch["signal"],
+                    batch["modbase_label"],
+                    batch["read_focus_base"],
                     batch["enc_kmers"],
-                    batch["labels"],
-                    batch["read_focus_bases"],
                 )
             )
 
@@ -562,7 +566,7 @@ class Chunk:
             bases) on which the chunk is focuesed for prediction.
         read_focus_base (int): Position within full read for validation purposes
         read_id (str): Read ID
-        label (int): Integer label for training/validation.
+        modbase_label (int): Integer label for training/validation.
     """
 
     signal: np.ndarray
@@ -573,7 +577,7 @@ class Chunk:
     chunk_focus_base: int
     read_focus_base: int
     read_id: str = None
-    label: int = None
+    modbase_label: int = None
     _base_sig_lens: np.ndarray = None
 
     def mask_focus_base(self):
@@ -663,12 +667,20 @@ class DatasetMetadata:
         dataset_end (int): Index one beyond the  last chunk to use when
             reading/iterating over the dataset
         version (int): Dataset version
-        modified_base_labels (bool): Are labels modified bases? Non-modified
-            base dataset will generally require custom scripts for inference.
-        extra_arrays (dict): Extra arrays to store information about chunks.
-            Dict keys define the name of the extra arrays and values contain
-            the string dtype of the array and a description of the data to self
-            document the dataset.
+        dataset_type (str): Type of dataset. Currently "modbase" and "sequence"
+            are the two accepted values. "modbase" datasets enable certain
+            specialized functionalities. For example merging different labeling
+            schemas.
+        extra_signal_arrays (dict): Extra arrays with the same dimensionality as
+            the signal array (chunk_size). For example, to support duplex model
+            inputs.
+        extra_metadata_arrays (dict): Extra arrays to store metadata information
+            about chunks. Dict keys define the name of the extra data and
+            values contain the string dtype of the array and a description of
+            the data to self document the dataset. Metadata values are
+            1-dimensional.
+        extra_sequence_arrays (dict): Extra arrays with the same dimensionality
+            as the sequence array.
         chunk_context (tuple): 2-tuple containing the number of signal points
             before and after the central position.
         base_start_justify (bool): Extract chunk centered on start of base
@@ -682,6 +694,7 @@ class DatasetMetadata:
             be extracted from a Dorado (v4.3+) basecalling model.
         sig_map_refiner (remora.refine_signal_map.SigMapRefiner): Signal
             mapping refiner
+        description (str): Global description of the dataset
     """
 
     # dataset attributes
@@ -697,9 +710,11 @@ class DatasetMetadata:
     dataset_start: int = 0
     dataset_end: int = 0
     version: int = DATASET_VERSION
-    modified_base_labels: bool = True
+    dataset_type: str = constants.DATASET_TYPE_MODBASE
     # extra arrays
-    extra_arrays: dict = None
+    extra_signal_arrays: dict = None
+    extra_metadata_arrays: dict = None
+    extra_sequence_arrays: dict = None
     # chunk extract
     chunk_context: tuple = constants.DEFAULT_CHUNK_CONTEXT
     base_start_justify: bool = False
@@ -710,9 +725,14 @@ class DatasetMetadata:
     pa_scaling: tuple = None
     sig_map_refiner: SigMapRefiner = None
     rough_rescale_method: str = constants.DEFAULT_ROUGH_RESCALE_METHOD
+    description: str = None
 
     _stored_kmer_context_bases: tuple = None
     _stored_chunk_context: tuple = None
+
+    @property
+    def is_modbase_dataset(self):
+        return self.dataset_type == constants.DATASET_TYPE_MODBASE
 
     @property
     def chunk_width(self):
@@ -751,37 +771,65 @@ class DatasetMetadata:
         return self.dataset_end - self.dataset_start
 
     @property
-    def labels(self):
-        return ["control"] + self.mod_long_names
+    def modbase_labels(self):
+        if self.is_modbase_dataset:
+            return ["control"] + self.mod_long_names
+        raise RemoraError(
+            "Labels attribute not defined for datasets which are not modified "
+            "base type."
+        )
 
     @property
     def num_labels(self):
-        return len(self.mod_long_names) + 1
+        if self.is_modbase_dataset:
+            return len(self.mod_long_names) + 1
+        raise RemoraError(
+            "Labels attribute not defined for datasets which are not modified "
+            "base type."
+        )
 
     @property
     def motifs(self):
-        return list(zip(self.motif_sequences, self.motif_offsets))
+        if self.is_modbase_dataset:
+            return list(zip(self.motif_sequences, self.motif_offsets))
+        raise RemoraError(
+            "Motifs attribute not defined for datasets which are not modified "
+            "base type."
+        )
 
     @property
     def num_motifs(self):
-        return len(self.motif_sequences)
+        if self.is_modbase_dataset:
+            return len(self.motif_sequences)
+        raise RemoraError(
+            "Motifs attribute not defined for datasets which are not modified "
+            "base type."
+        )
 
     @property
     def extra_array_names(self):
-        return (
-            [] if self.extra_arrays is None else list(self.extra_arrays.keys())
-        )
+        arr_names = []
+        if self.extra_signal_arrays is not None:
+            arr_names.extend(self.extra_signal_arrays.keys())
+        if self.extra_metadata_arrays is not None:
+            arr_names.extend(self.extra_metadata_arrays.keys())
+        if self.extra_sequence_arrays is not None:
+            arr_names.extend(self.extra_sequence_arrays.keys())
+        return arr_names
 
     @property
-    def extra_array_dtypes_and_shapes(self):
-        return (
-            []
-            if self.extra_arrays is None
-            else [
-                (arr_name, arr_dtype, self.extras_shape)
-                for arr_name, (arr_dtype, _) in self.extra_arrays.items()
-            ]
-        )
+    def extra_array_dtypes(self):
+        arr_dtypes = {}
+        if self.extra_signal_arrays is not None:
+            for name, (dtype, _) in self.extra_signal_arrays.items():
+                arr_dtypes[name] = dtype
+        if self.extra_metadata_arrays is not None:
+            for name, (dtype, _) in self.extra_metadata_arrays.items():
+                arr_dtypes[name] = dtype
+        if self.extra_sequence_arrays is not None:
+            for name, (dtype, _) in self.extra_sequence_arrays.items():
+                arr_dtypes[name] = dtype
+        return arr_dtypes
 
     @property
     def signal_shape(self):
@@ -808,14 +856,12 @@ class DatasetMetadata:
         return tuple((self.allocate_size,))
 
     @property
-    def labels_shape(self):
-        return tuple((self.allocate_size,))
-
-    @property
     def extras_shape(self):
         return tuple((self.allocate_size,))
 
     def check_motifs(self):
+        if not self.is_modbase_dataset:
+            return
         motifs = [util.Motif(*motif) for motif in self.motifs]
         ambig_focus_motifs = [
             motif for motif in motifs if motif.focus_base not in "ACGT"
@@ -833,15 +879,17 @@ class DatasetMetadata:
             )
 
     def __post_init__(self):
-        # Support original single letter codes or new list short names
-        # (including ChEBI codes)
-        if isinstance(self.mod_bases, str):
-            self.mod_bases = list(self.mod_bases)
-        self.mod_bases = list(map(str, self.mod_bases))
-        assert len(self.mod_bases) == len(self.mod_long_names), (
-            f"mod_bases ({self.mod_bases}) must be the same length as "
-            f"mod_long_names ({self.mod_long_names})"
-        )
+        if self.is_modbase_dataset:
+            # Support original single letter codes or new list short names
+            # (including ChEBI codes)
+            if isinstance(self.mod_bases, str):
+                self.mod_bases = list(self.mod_bases)
+            self.mod_bases = list(map(str, self.mod_bases))
+            assert len(self.mod_bases) == len(self.mod_long_names), (
+                f"mod_bases ({self.mod_bases}) must be the same length as "
+                f"mod_long_names ({self.mod_long_names})"
+            )
+            self.check_motifs()
         self.chunk_context = tuple(self.chunk_context)
         self.kmer_context_bases = tuple(self.kmer_context_bases)
         if self._stored_chunk_context is not None:
@@ -850,7 +898,6 @@ class DatasetMetadata:
             self._stored_kmer_context_bases = tuple(
                 self._stored_kmer_context_bases
             )
-        self.check_motifs()
 
     def asdict(self):
         r_dict = dataclasses.asdict(self)
@@ -919,37 +966,7 @@ def check_super_batch(super_batch, chunk_width):
     if seq_m.max() > 3:
         raise RemoraError("Sequence max must be less than 4")
     if seq_m.min() < -1:
-        raise RemoraError("Sequence min must greater tha -2")
-
-
-def extract_enc_kmers(kmer_context_bases, seqs, seq_to_sig_maps, seq_lens):
-    return [
-        (
-            constants.DATASET_ENC_KMER,
-            encoded_kmers.compute_encoded_kmer_batch(
-                *kmer_context_bases, seqs, seq_to_sig_maps, seq_lens
-            ),
-        )
-    ]
-
-
-def extract_seq_and_lens(
-    stored_kmer_context_bases,
-    kmer_context_bases,
-    seqs,
-    seq_to_sig_maps,
-    seq_lens,
-):
-    st_clip = stored_kmer_context_bases[0] - kmer_context_bases[0]
-    seq_lens_w_context = seq_lens + sum(kmer_context_bases)
-    clip_seqs = np.zeros_like(seqs)
-    for chunk_idx, chunk_len in enumerate(seq_lens_w_context):
-        # clip sequences to new kmer context bases
-        # Convert seq to 1=A, 2=C, 3=G, 4=T alphabet for bonito
-        clip_seqs[chunk_idx, :chunk_len] = np.array([1, 2, 3, 4])[
-            seqs[chunk_idx, st_clip : st_clip + chunk_len]
-        ]
-    return [("seqs", clip_seqs), ("seq_lens", seq_lens_w_context)]
+        raise RemoraError("Sequence min must greater than -2")
 
 
 @dataclasses.dataclass
@@ -968,19 +985,20 @@ class CoreRemoraDataset:
     super_batch_offset: int = 0
     infinite_iter: bool = True
     do_check_super_batches: bool = False
-    seq_outputs: str = constants.DATASET_ENC_KMER
+    return_arrays: list = None
 
     # attributes to hold current super batch
     _sb_iter = None
     _curr_sb = None
     _curr_sb_offset = None
 
+    _signal_core_array = "signal"
+    _sequence_core_array = "sequence"
     _core_dtypes = {
-        "signal": np.float32,
-        "sequence": np.int8,
+        _signal_core_array: np.float32,
+        _sequence_core_array: np.int8,
         "sequence_to_signal_mapping": np.int16,
         "sequence_lengths": np.int16,
-        "labels": np.int64,
     }
     _core_arrays = list(_core_dtypes.keys())
 
@@ -1064,14 +1082,46 @@ class CoreRemoraDataset:
         return self._core_arrays + self.metadata.extra_array_names
 
     @property
-    def seq_attrs(self):
-        return constants.DATASET_SEQ_OUTPUTS[self.seq_outputs]
+    def extra_sig_return_array_names(self):
+        return list(
+            set(self.return_arrays).intersection(
+                self.metadata.extra_signal_arrays
+            )
+        )
+
+    @property
+    def extra_metadata_return_array_names(self):
+        return list(
+            set(self.return_arrays).intersection(
+                self.metadata.extra_metadata_arrays
+            )
+        )
+
+    @property
+    def extra_seq_return_array_names(self):
+        return list(
+            set(self.return_arrays).intersection(
+                self.metadata.extra_sequence_arrays
+            )
+        )
+
+    @property
+    def output_return_arrays(self):
+        """Convert sequence arrays to specified output names"""
+        out_r_arrs = []
+        for arr_name in self.return_arrays:
+            try:
+                out_r_arrs.extend(constants.DATASET_SEQ_OUTPUTS[arr_name])
+            except KeyError:
+                out_r_arrs.append(arr_name)
+        return out_r_arrs
 
     @property
     def arrays(self):
-        """Generator of chunk arrys in dataset. Arrays will be sliced to current
-        dataset size not allocated arrays. Note that this will load each array
-        from disk.
+        """Generator of chunk arrays in dataset. Arrays will be sliced to
+        current dataset size not allocated arrays.
+
+        Note that this will load each array from disk into RAM.
         """
         for array_name in self.array_names:
             yield getattr(self, array_name)[
@@ -1080,52 +1130,71 @@ class CoreRemoraDataset:
 
     @property
     def arrays_info(self):
-        return list(
-            chain(
-                (
-                    (name, dtype, getattr(self.metadata, f"{name}_shape"))
-                    for name, dtype in self._core_dtypes.items()
-                ),
-                self.metadata.extra_array_dtypes_and_shapes,
+        arrays_info = []
+        for name, dtype in self._core_dtypes.items():
+            arrays_info.append(
+                (name, dtype, getattr(self.metadata, f"{name}_shape"))
             )
-        )
+        if self.metadata.extra_signal_arrays is not None:
+            for name, (dtype, _) in self.metadata.extra_signal_arrays.items():
+                arrays_info.append((name, dtype, self.metadata.signal_shape))
+        if self.metadata.extra_metadata_arrays is not None:
+            for name, (dtype, _) in self.metadata.extra_metadata_arrays.items():
+                arrays_info.append((name, dtype, self.metadata.extras_shape))
+        if self.metadata.extra_sequence_arrays is not None:
+            for name, (dtype, _) in self.metadata.extra_sequence_arrays.items():
+                arrays_info.append((name, dtype, self.metadata.sequence_shape))
+        return arrays_info
 
     @property
     def summary(self):
-        return (
+        summ_txt = (
             f"                data_path : {self.data_path}\n"
             f"                     size : {self.size:,}\n"
             f"            dataset_start : {self.metadata.dataset_start:,}\n"
             f"              dataset_end : {self.metadata.dataset_end:,}\n"
-            f"       label distribution : {self.label_summary}\n"
-            "     modified_base_labels : "
-            f"{self.metadata.modified_base_labels}\n"
-            f"                mod_bases : {self.metadata.mod_bases}\n"
-            f"           mod_long_names : {self.metadata.mod_long_names}\n"
             f"       kmer_context_bases : {self.metadata.kmer_context_bases}\n"
             f"            chunk_context : {self.metadata.chunk_context}\n"
-            f"                   motifs : {self.metadata.motifs}\n"
             f"           reverse_signal : {self.metadata.reverse_signal}\n"
             f" chunk_extract_base_start : {self.metadata.base_start_justify}\n"
             f"     chunk_extract_offset : {self.metadata.offset}\n"
             f"          sig_map_refiner : {self.metadata.sig_map_refiner}\n"
         )
+        # add modbase-specific metadata
+        if self.metadata.is_modbase_dataset:
+            summ_txt += (
+                f"                mod_bases : {self.metadata.mod_bases}\n"
+                f"           mod_long_names : {self.metadata.mod_long_names}\n"
+                "     modified base labels : "
+                f"{self.metadata.is_modbase_dataset}\n"
+                f"    mod label distribution : {self.modbase_label_summary}\n"
+                f"                   motifs : {self.metadata.motifs}\n"
+            )
+        return summ_txt
 
-    def get_label_counts(self):
-        ds_labels = self.labels[
+    def get_extra_counts(self, arr_name="label"):
+        """Get bincount of categorical metadata array"""
+        ds_labels = getattr(self, arr_name)[
             self.metadata.dataset_start : self.metadata.dataset_end
         ]
-        if self.label_conv is None:
-            lab_counts = np.bincount(ds_labels)
-        else:
-            lab_counts = np.bincount(self.label_conv[ds_labels])
-        return lab_counts
+        return np.bincount(ds_labels)
+
+    def get_modbase_label_counts(self):
+        """Get bincount of modbase labels array, applying label conversion if
+        necessary.
+        """
+        ds_labels = self.modbase_label[
+            self.metadata.dataset_start : self.metadata.dataset_end
+        ]
+        if self.modbase_label_conv is not None:
+            ds_labels = self.modbase_label_conv[ds_labels]
+        return np.bincount(ds_labels)
 
     @property
-    def label_summary(self):
+    def modbase_label_summary(self):
         return "; ".join(
-            f"{self.metadata.labels[lab_idx]}:{count:,}"
-            for lab_idx, count in enumerate(self.get_label_counts())
+            f"{self.metadata.modbase_labels[lab_idx]}:{count:,}"
+            for lab_idx, count in enumerate(self.get_modbase_label_counts())
         )
 
     @property
@@ -1156,6 +1225,22 @@ class CoreRemoraDataset:
         """
         with open(self.metadata_path) as metadata_fh:
             loaded_metadata = json.load(metadata_fh)
+            # support old metadata formats
+            try:
+                is_modbase_dataset = loaded_metadata["modified_base_labels"]
+                if not is_modbase_dataset:
+                    raise RemoraError(
+                        "v3 non-modified base datasets not supported"
+                    )
+                del loaded_metadata["modified_base_labels"]
+                loaded_metadata["dataset_type"] = constants.DATASET_TYPE_MODBASE
+
+                extra_arrays = loaded_metadata["extra_arrays"]
+                del loaded_metadata["extra_arrays"]
+                loaded_metadata["extra_metadata_arrays"] = extra_arrays
+            except KeyError:
+                pass
+
         if loaded_metadata.get("version") != DATASET_VERSION:
             raise RemoraError(
                 f"Remora dataset version ({loaded_metadata.get('version')}) "
@@ -1201,36 +1286,32 @@ class CoreRemoraDataset:
                     self.metadata.mod_bases
                     != md_val[: len(self.metadata.mod_bases)]
                 ):
-                    self.label_conv = np.empty(
+                    self.modbase_label_conv = np.empty(
                         self.metadata.num_labels, dtype=np.int64
                     )
-                    self.label_conv[0] = 0
+                    self.modbase_label_conv[0] = 0
                     for in_lab, mod_base in enumerate(self.metadata.mod_bases):
                         # apply at super chunks and label access
-                        self.label_conv[in_lab + 1] = next(
+                        self.modbase_label_conv[in_lab + 1] = next(
                             idx + 1
                             for idx, mb in enumerate(md_val)
                             if mb == mod_base
                         )
                     LOGGER.debug(
-                        f"Setting label conversion: {self.label_conv} "
+                        f"Setting label conversion: {self.modbase_label_conv} "
                         f"{self.data_path}"
                     )
             elif md_key == "mod_long_names":
                 assert "mod_bases" in self.override_metadata
-            elif md_key == "extra_arrays":
-                missing_arrays = set(md_val).difference(
-                    loaded_metadata["extra_arrays"]
-                )
+            elif md_key.startswith("extra_"):
+                missing_arrays = set(md_val).difference(loaded_metadata[md_key])
                 if len(missing_arrays) > 0:
                     raise RemoraError(
                         "Cannot load missing arrays: "
                         f"{', '.join(missing_arrays)}\nAvailable extra arrays: "
-                        f"{', '.join(loaded_metadata['extra_arrays'].keys())}"
+                        f"{', '.join(loaded_metadata[md_key].keys())}"
                     )
-                md_val = dict(
-                    (k, loaded_metadata["extra_arrays"][k]) for k in md_val
-                )
+                md_val = dict((k, loaded_metadata[md_key][k]) for k in md_val)
             elif md_key == "chunk_context":
                 md_val = tuple(md_val)
                 scc = loaded_metadata["chunk_context"] = tuple(
@@ -1283,9 +1364,10 @@ class CoreRemoraDataset:
                 for md_key in (
                     "mod_bases",
                     "mod_long_names",
-                    "extra_arrays",
+                    "extra_metadata_arrays",
                     "kmer_context_bases",
                     "chunk_context",
+                    "return_arrays",
                 )
             )
         )
@@ -1299,7 +1381,7 @@ class CoreRemoraDataset:
             )
             self.override_metadata = md
             # load metadata instead of setting values directly to set
-            # associated attributes (label_conv etc)
+            # associated attributes (modbase_label_conv etc)
             self.load_metadata()
 
     def get_array_path(self, array_name):
@@ -1307,7 +1389,7 @@ class CoreRemoraDataset:
             raise RemoraError("No path available for in-memory dataset")
         if array_name in self._core_arrays:
             return os.path.join(self.data_path, f"{array_name}.npy")
-        elif array_name in self.metadata.extra_arrays:
+        elif array_name in self.metadata.extra_array_names:
             return os.path.join(self.data_path, f"extra_{array_name}.npy")
         raise RemoraError(f"Invalid extra array name: {array_name}")
 
@@ -1367,7 +1449,7 @@ class CoreRemoraDataset:
         self.metadata.write(self.metadata_path, self.kmer_table_path)
 
     def __post_init__(self):
-        self.label_conv = None
+        self.modbase_label_conv = None
         assert self.mode in "rw", "mode must be 'r' or 'w'"
         if self.data_path is None:
             assert self.mode == "w", "In-memory dataset must have mode='w'"
@@ -1385,11 +1467,6 @@ class CoreRemoraDataset:
             self.data_path = util.resolve_path(self.data_path)
             self.allocate_arrays()
             self.write_metadata()
-        if self.seq_outputs not in constants.DATASET_SEQ_OUTPUTS:
-            raise RemoraError(
-                f"Sequence output not supported: Found {self.seq_outputs}. "
-                f"Allowed values: {', '.join(constants.DATASET_SEQ_OUTPUTS)}"
-            )
         self.refresh_memmaps()
         self._iter = None
 
@@ -1423,7 +1500,7 @@ class CoreRemoraDataset:
                 + batch_size
             ] = in_array
         # update size
-        self.metadata.dataset_end = self.metadata.dataset_end + batch_size
+        self.metadata.dataset_end += batch_size
 
     def write_chunk(self, chunk):
         if self.mode != "w":
@@ -1438,6 +1515,7 @@ class CoreRemoraDataset:
             dtype=self._core_dtypes["sequence_to_signal_mapping"],
         )
         ssm_arr[0, : chunk.seq_to_sig_map.size] = chunk.seq_to_sig_map
+        # construct core data arrays
         chunk_dict = {
             "signal": np.expand_dims(chunk.signal, axis=0).astype(
                 self._core_dtypes["signal"]
@@ -1447,25 +1525,12 @@ class CoreRemoraDataset:
             "sequence_lengths": np.array(
                 [chunk.seq_len], dtype=self._core_dtypes["sequence_lengths"]
             ),
-            "labels": np.array(
-                [chunk.label], dtype=self._core_dtypes["labels"]
-            ),
         }
-        if (
-            self.metadata.extra_arrays is not None
-            and "read_ids" in self.metadata.extra_arrays
-        ):
-            chunk_dict["read_ids"] = np.array(
-                [chunk.read_id],
-                dtype=self.metadata.extra_arrays["read_ids"][0],
-            )
-        if (
-            self.metadata.extra_arrays is not None
-            and "read_focus_bases" in self.metadata.extra_arrays
-        ):
-            chunk_dict["read_focus_bases"] = np.array(
-                [chunk.read_focus_base],
-                dtype=self.metadata.extra_arrays["read_focus_bases"][0],
+        # add all extra attributes
+        for arr_name in self.metadata.extra_array_names:
+            chunk_dict[arr_name] = np.array(
+                [getattr(chunk, arr_name)],
+                dtype=self.metadata.extra_array_dtypes[arr_name],
             )
         self.write_batch(chunk_dict)
 
@@ -1537,11 +1602,23 @@ class CoreRemoraDataset:
                 super_batch["sequence"][:, :-seq_diff] = super_batch[
                     "sequence"
                 ][:, seq_diff:]
+                if self.metadata.extra_sequence_arrays is not None:
+                    for arr_name in self.metadata.extra_sequence_arrays:
+                        super_batch[arr_name] = super_batch[arr_name].copy()
+                        super_batch[arr_name][:, :-seq_diff] = super_batch[
+                            arr_name
+                        ][:, seq_diff:]
             except ValueError:
                 super_batch["sequence"] = super_batch["sequence"].copy()
                 super_batch["sequence"][:, :-seq_diff] = super_batch[
                     "sequence"
                 ][:, seq_diff:]
+                if self.metadata.extra_sequence_arrays is not None:
+                    for arr_name in self.metadata.extra_sequence_arrays:
+                        super_batch[arr_name] = super_batch[arr_name].copy()
+                        super_batch[arr_name][:, :-seq_diff] = super_batch[
+                            arr_name
+                        ][:, seq_diff:]
         return super_batch
 
     def trim_sb_chunk_context(self, super_batch):
@@ -1565,10 +1642,14 @@ class CoreRemoraDataset:
         )
         super_batch["signal"] = super_batch["signal"][:, :, st_diff:new_en]
         super_batch["signal"] = np.ascontiguousarray(super_batch["signal"])
+        for arr_name in self.metadata.extra_signal_arrays:
+            super_batch[arr_name] = super_batch[arr_name][:, :, st_diff:new_en]
+            super_batch[arr_name] = np.ascontiguousarray(super_batch[arr_name])
 
         try:
             super_batch["sequence_to_signal_mapping"] -= st_diff
         except ValueError:
+            # for read only arrays from memmap make a copy
             super_batch["sequence_to_signal_mapping"] = (
                 super_batch["sequence_to_signal_mapping"].copy() - st_diff
             )
@@ -1576,6 +1657,12 @@ class CoreRemoraDataset:
             super_batch["sequence_lengths"] = super_batch[
                 "sequence_lengths"
             ].copy()
+            if self.metadata.extra_sequence_arrays is not None:
+                for arr_name in self.metadata.extra_sequence_arrays:
+                    super_batch[arr_name] = super_batch[arr_name].copy()
+
+        # trimming coordinates for extra sequence arrays
+        seq_clip_coords = np.empty_like(super_batch["sequence_lengths"])
         trim_sb_chunk_context_core(
             *self.metadata.stored_chunk_context,
             *self.metadata.chunk_context,
@@ -1583,10 +1670,25 @@ class CoreRemoraDataset:
             super_batch["sequence"],
             super_batch["sequence_to_signal_mapping"],
             super_batch["sequence_lengths"],
+            seq_clip_coords,
         )
+        if self.metadata.extra_sequence_arrays is not None:
+            for chunk_idx, st_clip in enumerate(seq_clip_coords):
+                if st_clip == 0:
+                    continue
+                if st_clip < 0:
+                    raise RemoraError(
+                        "Invalid coordinate in chunk context clipping."
+                    )
+                for arr_name in self.metadata.extra_sequence_arrays:
+                    super_batch[arr_name][chunk_idx, :-st_clip] = super_batch[
+                        arr_name
+                    ][chunk_idx, st_clip:]
         return super_batch
 
     def load_super_batch(self, offset=0, size=None):
+        if self.return_arrays is None:
+            raise RemoraError("Must specify return arrays")
         super_batch = {}
         if self.infinite_iter:
             offset %= self.size
@@ -1607,14 +1709,14 @@ class CoreRemoraDataset:
             size = self.size
         sb_arr_en = sb_arr_st + size
         if sb_arr_en <= self.metadata.dataset_end:
-            for arr_name in self.array_names:
+            for arr_name in self.return_arrays:
                 super_batch[arr_name] = getattr(self, arr_name)[
                     sb_arr_st:sb_arr_en
                 ].copy()
         elif self.infinite_iter:
             # wrap super batch around end of dataset
             wrap_en = sb_arr_en - self.size
-            for arr_name in self.array_names:
+            for arr_name in self.return_arrays:
                 super_batch[arr_name] = np.concatenate(
                     [
                         getattr(self, arr_name)[
@@ -1627,7 +1729,7 @@ class CoreRemoraDataset:
                 )
         else:
             # return last batch with smaller batch dim
-            for arr_name in self.array_names:
+            for arr_name in self.return_arrays:
                 super_batch[arr_name] = getattr(self, arr_name)[
                     sb_arr_st : self.metadata.dataset_end
                 ]
@@ -1640,10 +1742,15 @@ class CoreRemoraDataset:
                 ),
                 replace=False,
             )
-            for arr_name in self.array_names:
+            for arr_name in self.return_arrays:
                 super_batch[arr_name] = super_batch[arr_name][selected_indices]
-        if self.label_conv is not None:
-            super_batch["labels"] = self.label_conv[super_batch["labels"]]
+        if (
+            self.metadata.is_modbase_dataset
+            and self.modbase_label_conv is not None
+        ):
+            super_batch["labels"] = self.modbase_label_conv[
+                super_batch["labels"]
+            ]
         # TODO add functionality to apply a set of filters at this point
         super_batch = self.trim_sb_kmer_context_bases(super_batch)
         super_batch = self.trim_sb_chunk_context(super_batch)
@@ -1674,38 +1781,37 @@ class CoreRemoraDataset:
         self._curr_sb = next(self._sb_iter, None)
         self._curr_sb_offset = 0
 
-    def extract_seq_output(self, seqs, seq_to_sig_maps, seq_lens):
-        if self.seq_outputs == constants.DATASET_ENC_KMER:
-            return extract_enc_kmers(
-                self.metadata.kmer_context_bases,
-                seqs,
-                seq_to_sig_maps,
-                seq_lens,
-            )
-        elif self.seq_outputs == constants.DATASET_SEQ_AND_LENS:
-            return extract_seq_and_lens(
-                self.metadata.stored_kmer_context_bases,
-                self.metadata.kmer_context_bases,
-                seqs,
-                seq_to_sig_maps,
-                seq_lens,
-            )
+    def extract_seq_output(self, seq_out_name, seqs, seq_to_sig_maps, seq_lens):
+        if seq_out_name == constants.DATASET_ENC_KMER:
+            return [
+                (
+                    constants.DATASET_ENC_KMER,
+                    encoded_kmers.compute_encoded_kmer_batch(
+                        *self.metadata.kmer_context_bases,
+                        seqs,
+                        seq_to_sig_maps,
+                        seq_lens,
+                    ),
+                )
+            ]
+        elif seq_out_name == constants.DATASET_SEQS_AND_LENS:
+            # k-mer context was trimmed off in super batch. Seq lens updated
+            # here to be the full sequence length.
+            return [
+                ("seqs", seqs),
+                ("seq_lens", seq_lens + sum(self.metadata.kmer_context_bases)),
+            ]
         else:
             raise RemoraError(
-                f"Sequence output not supported: Found {self.seq_outputs}. "
-                f"Allowed values: {', '.join(constants.DATASET_SEQ_OUTPUTS)}"
+                f"Sequence output type ({seq_out_name}) not in accepted "
+                f"values: {list(constants.DATASET_SEQ_OUTPUTS.keys())}"
             )
 
-    def extract_batch(self, batch_size=None, arr_names=None):
+    def extract_batch(self, batch_size=None):
         """Extract a batch of training data
 
         Args:
             batch_size (int): Number of chunks to provide
-            arr_names (list): Names of arrays to output in the batch. The
-                sequence arrays as defined by the dataset seq_outputs setting
-                will be appended to this set of arrays in returned batches. If
-                None, default of signal, labels and extra_array_names will be
-                used.
         """
 
         def join_arrs(batch):
@@ -1720,11 +1826,30 @@ class CoreRemoraDataset:
                     j_batch[arr_name] = np.concatenate(arrs, axis=0)
             return j_batch
 
-        try:
-            self._load_next_super_batch()
-        except RemoraError as e:
-            LOGGER.debug(f"Super batch loading failed: {e}")
-            raise StopIteration
+        def update_batch(st, en=None):
+            for arr_name in self.return_arrays:
+                if arr_name in constants.DATASET_SEQ_OUTPUTS:
+                    # add sequence output (encoded k-mers or seqs and lens)
+                    for arr_name, arr_val in self.extract_seq_output(
+                        arr_name,
+                        self._curr_sb["sequence"][st:en],
+                        self._curr_sb["sequence_to_signal_mapping"][st:en],
+                        self._curr_sb["sequence_lengths"][st:en],
+                    ):
+                        batch[arr_name].append(arr_val)
+                else:
+                    batch[arr_name].append(self._curr_sb[arr_name][st:en])
+
+        # if super batch is not loaded or is exhausted load a new one
+        if (
+            self._curr_sb is None
+            or self._curr_sb_offset >= self._curr_sb["signal"].shape[0]
+        ):
+            try:
+                self._load_next_super_batch()
+            except RemoraError as e:
+                LOGGER.debug(f"Super batch loading failed: {e}")
+                raise StopIteration
         if batch_size is None:
             if self.batch_size is None:
                 raise RemoraError("Must provide batch size")
@@ -1732,28 +1857,16 @@ class CoreRemoraDataset:
         if batch_size <= 0:
             raise RemoraError("Batch size must be positive")
         batch_size = int(batch_size)
-        if arr_names is None:
-            arr_names = ["signal", "labels"] + self.metadata.extra_array_names
-        batch = dict((arr_name, []) for arr_name in self.seq_attrs + arr_names)
+        if self.return_arrays is None:
+            raise RemoraError("Must specify return arrays")
+        batch = dict((arr_name, []) for arr_name in self.output_return_arrays)
         chunks_left_to_add = batch_size
         while (
             self._curr_sb_offset + chunks_left_to_add
             > self._curr_sb["signal"].shape[0]
         ):
             # add data from this super batch and load a new one
-            # add sequence output (encoded k-mers or sequences and lengths)
-            for arr_name, arr_val in self.extract_seq_output(
-                self._curr_sb["sequence"][self._curr_sb_offset :],
-                self._curr_sb["sequence_to_signal_mapping"][
-                    self._curr_sb_offset :
-                ],
-                self._curr_sb["sequence_lengths"][self._curr_sb_offset :],
-            ):
-                batch[arr_name] = arr_val
-            for arr_name in arr_names:
-                batch[arr_name].append(
-                    self._curr_sb[arr_name][self._curr_sb_offset :]
-                )
+            update_batch(self._curr_sb_offset)
             try:
                 self._load_next_super_batch()
             except RemoraError as e:
@@ -1762,39 +1875,16 @@ class CoreRemoraDataset:
         if chunks_left_to_add > 0:
             b_st = self._curr_sb_offset
             b_en = self._curr_sb_offset + chunks_left_to_add
-            for arr_name, arr_val in self.extract_seq_output(
-                self._curr_sb["sequence"][b_st:b_en],
-                self._curr_sb["sequence_to_signal_mapping"][b_st:b_en],
-                self._curr_sb["sequence_lengths"][b_st:b_en],
-            ):
-                batch[arr_name] = arr_val
-            for arr_name in arr_names:
-                batch[arr_name].append(
-                    self._curr_sb[arr_name][
-                        self._curr_sb_offset : self._curr_sb_offset
-                        + chunks_left_to_add
-                    ]
-                )
+            update_batch(b_st, b_en)
             self._curr_sb_offset = b_en
         return join_arrs(batch)
 
-    def iter_batches(
-        self,
-        batch_size=None,
-        max_batches=None,
-        return_arrays=["signal", "labels"],
-    ):
-        """Iterate over batches.
-
-        Args:
-            return_arrays (tuple): Arrays to return from dataset. The sequence
-                arrays as defined by the dataset seq_outputs setting will be
-                appended to this set of arrays in returned batches.
-        """
+    def iter_batches(self, batch_size=None, max_batches=None):
+        """Iterate over batches."""
         batch_num = 0
         while True:
             try:
-                yield self.extract_batch(batch_size, return_arrays)
+                yield self.extract_batch(batch_size)
             except RemoraError as e:
                 LOGGER.debug(f"Exhausted Remora dataset iterator: {e}")
                 break
@@ -2023,8 +2113,8 @@ class RemoraDataset(IterableDataset):
     def summary(self):
         return (
             f"                     size : {self.size:,}\n"
-            "     modified_base_labels : "
-            f"{self.metadata.modified_base_labels}\n"
+            "     is_modbase_dataset : "
+            f"{self.metadata.is_modbase_dataset}\n"
             f"                mod_bases : {self.metadata.mod_bases}\n"
             f"           mod_long_names : {self.metadata.mod_long_names}\n"
             f"       kmer_context_bases : {self.metadata.kmer_context_bases}\n"
@@ -2068,7 +2158,7 @@ class RemoraDataset(IterableDataset):
         for ds in self.datasets[1:]:
             # first check attrs for which exact match is required
             for attr_name in (
-                "modified_base_labels",
+                "dataset_type",
                 "base_start_justify",
                 "offset",
                 "reverse_signal",
@@ -2192,7 +2282,7 @@ class RemoraDataset(IterableDataset):
 
     def update_metadata(self, other):
         for md_key in (
-            "modified_base_labels",
+            "dataset_type",
             "offset",
             "reverse_signal",
             "pa_scaling",
@@ -2211,7 +2301,9 @@ class RemoraDataset(IterableDataset):
         for md_key in (
             "mod_bases",
             "mod_long_names",
-            "extra_arrays",
+            "extra_siganl_arrays",
+            "extra_metadata_arrays",
+            "extra_sequence_arrays",
             "kmer_context_bases",
             "chunk_context",
         ):
@@ -2361,7 +2453,7 @@ class RemoraDataset(IterableDataset):
                 break
             yield [
                 torch.from_numpy(
-                    np.concatenate([arr[arr_name] for arr in ds_arrays])
+                    np.concatenate([arr[arr_name] for arr in ds_arrays], axis=0)
                 )
                 for arr_name in return_arrays + self.seq_attrs
             ]
@@ -2387,15 +2479,15 @@ class RemoraDataset(IterableDataset):
     def __next__(self):
         return next(self._iter)
 
-    def get_label_counts(self):
+    def get_modbase_label_counts(self):
         label_counts = np.zeros(self.metadata.num_labels, dtype=int)
         if self._all_batches is not None:
-            for _, _, b_labels in self._all_batches:
+            for _, b_labels, _ in self._all_batches:
                 for idx, idx_cnt in enumerate(np.bincount(b_labels)):
                     label_counts[idx] += idx_cnt
             return label_counts
         for ds in self.datasets:
-            for idx, count in enumerate(ds.get_label_counts()):
+            for idx, count in enumerate(ds.get_modbase_label_counts()):
                 label_counts[idx] += count
         return label_counts
 
@@ -2403,7 +2495,7 @@ class RemoraDataset(IterableDataset):
     def label_summary(self):
         return "; ".join(
             f"{self.metadata.labels[lab_idx]}:{count:,}"
-            for lab_idx, count in enumerate(self.get_label_counts())
+            for lab_idx, count in enumerate(self.get_modbase_label_counts())
         )
 
     def get_config(self):
@@ -2430,7 +2522,7 @@ class RemoraDataset(IterableDataset):
             dict(
                 zip(
                     ds.metadata.labels,
-                    ds.get_label_counts(),
+                    ds.get_modbase_label_counts(),
                 )
             )
             for ds in self.datasets
