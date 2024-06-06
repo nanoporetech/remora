@@ -1907,6 +1907,8 @@ class CoreRemoraDataset:
                 )
             ]
         elif seq_out_name == constants.DATASET_SEQS_AND_LENS:
+            # TODO for reverse signal have to reverse signal and sequence here
+            # this will likely require a new cython function
             # k-mer context was trimmed off in super batch. Seq lens updated
             # here to be the full sequence length.
             return [

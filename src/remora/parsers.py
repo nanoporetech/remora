@@ -54,6 +54,7 @@ def register_dataset(parser):
     subparser.set_defaults(func=lambda x: subparser.print_help())
     #  Register dataset sub commands
     register_dataset_prepare(ssubparser)
+    register_dataset_prepare_basecall(ssubparser)
     register_dataset_inspect(ssubparser)
     register_dataset_make_config(ssubparser)
     register_dataset_merge(ssubparser)
@@ -326,6 +327,218 @@ def run_dataset_prepare(args):
         kmer_context_bases=args.kmer_context_bases,
         base_start_justify=args.base_start_justify,
         offset=args.offset,
+        num_reads=args.num_reads,
+        num_extract_alignment_threads=args.num_extract_alignment_workers,
+        num_extract_chunks_threads=args.num_extract_chunks_workers,
+        basecall_anchor=args.basecall_anchor,
+        rev_sig=args.reverse_signal,
+        save_every=args.save_every,
+        skip_shuffle=args.skip_shuffle,
+    )
+    LOGGER.info("Done")
+
+
+def register_dataset_prepare_basecall(parser):
+    subparser = parser.add_parser(
+        "prepare_basecall",
+        description="Prepare a core Remora dataset for basecaller training",
+        help="Prepare a core Remora dataset for basecaller training",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    subparser.add_argument(
+        "pod5",
+        help="POD5 (file or directory) matched to bam file.",
+    )
+    subparser.add_argument(
+        "bam",
+        help="BAM file containing mv tags.",
+    )
+
+    out_grp = subparser.add_argument_group("Output Arguments")
+    out_grp.add_argument(
+        "--output-path",
+        default="remora_training_dataset",
+        help="Output Remora training dataset directory. Cannot exist unless "
+        "--overwrite is specified in which case the directory will be removed.",
+    )
+    out_grp.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing output directory if existing.",
+    )
+
+    data_grp = subparser.add_argument_group("Data Arguments")
+    data_grp.add_argument(
+        "--chunk-length",
+        default=constants.DEFAULT_BASECALL_CHUNK_LEN,
+        type=int,
+        help="""Number of signal points to include in a chunk. Smaller chunks
+        can be extracted at data reading time.""",
+    )
+    data_grp.add_argument(
+        "--min-samples-per-base",
+        type=int,
+        default=constants.DEFAULT_MIN_SAMPLES_PER_BASE,
+        help="""Minimum number of samples per base. This sets the size of the
+        ragged arrays of chunk sequences.""",
+    )
+    data_grp.add_argument(
+        "--kmer-context-bases",
+        nargs=2,
+        default=constants.DEFAULT_KMER_CONTEXT_BASES,
+        type=int,
+        metavar=("BASES_BEFORE", "BASES_AFTER"),
+        help="""Definition of k-mer (derived from the reference) passed into
+        the model along with each signal position.""",
+    )
+    data_grp.add_argument(
+        "--max-chunks-per-read",
+        type=int,
+        default=15,
+        help="Maxiumum number of chunks to extract from a single read.",
+    )
+    data_grp.add_argument(
+        "--num-reads",
+        type=int,
+        help="Number of reads.",
+    )
+    data_grp.add_argument(
+        "--basecall-anchor",
+        action="store_true",
+        help="""Make dataset from basecall sequence instead of aligned
+        reference sequence""",
+    )
+    data_grp.add_argument(
+        "--reverse-signal",
+        action="store_true",
+        help="""Is nanopore signal 3' to 5' orientation? Primarily for direct
+        RNA""",
+    )
+    data_grp.add_argument(
+        "--picoamp-scaling-basecall-model",
+        help="""Provide the path to the Dorado basecalling model directory
+        which will be linke with this modified base model. Produce dataset wtih
+        picoampere scaled signal. Note that this is incompatible with any
+        signal mapping refine arguments""",
+    )
+    data_grp.add_argument(
+        "--save-every",
+        default=100_000,
+        type=int,
+        help="""Flush dataset data and update dataset size at this interval.
+        Larger values will increase RAM usage, but could increase speed.""",
+    )
+    data_grp.add_argument(
+        "--skip-shuffle",
+        action="store_true",
+        help="""Skip shuffle of completed dataset. Note that shuffling requires
+        loading the entire signal array into memory. If dataset is very large
+        and shuffling is not required specify this flag.""",
+    )
+
+    refine_grp = subparser.add_argument_group("Signal Mapping Refine Arguments")
+    refine_grp.add_argument(
+        "--refine-kmer-level-table",
+        help="""Tab-delimited file containing no header and two fields:
+        1. string k-mer sequence and 2. float expected normalized level.
+        All k-mers must be the same length and all combinations of the bases
+        'ACGT' must be present in the file.""",
+    )
+    refine_grp.add_argument(
+        "--refine-rough-rescale",
+        action="store_true",
+        help="""Apply a rough rescaling using quantiles of signal+move table
+        and levels.""",
+    )
+    refine_grp.add_argument(
+        "--refine-scale-iters",
+        default=-1,
+        type=int,
+        help="""Number of iterations of signal mapping refinement and signal
+        re-scaling to perform. Set to 0 in order to perform signal mapping
+        refinement, but skip re-scaling. Set to -1 (default) to skip signal
+        mapping (potentially using levels for rough rescaling).""",
+    )
+    refine_grp.add_argument(
+        "--refine-half-bandwidth",
+        default=constants.DEFAULT_REFINE_HBW,
+        type=int,
+        help="""Half bandwidth around signal mapping over which to search for
+        "new path.""",
+    )
+    refine_grp.add_argument(
+        "--refine-algo",
+        default=constants.DEFAULT_REFINE_ALGO,
+        choices=constants.REFINE_ALGOS,
+        help="Refinement algorithm to apply (if kmer level table is provided).",
+    )
+    refine_grp.add_argument(
+        "--refine-short-dwell-parameters",
+        default=constants.DEFAULT_REFINE_SHORT_DWELL_PARAMS,
+        type=float,
+        nargs=3,
+        metavar=("TARGET", "LIMIT", "WEIGHT"),
+        help="""Short dwell penalty refiner parameters. Dwells shorter than
+        LIMIT will be penalized a value of `WEIGHT * (dwell - TARGET)^2`.""",
+    )
+    refine_grp.add_argument(
+        "--rough-rescale-method",
+        default=constants.DEFAULT_ROUGH_RESCALE_METHOD,
+        choices=constants.ROUGH_RESCALE_METHODS,
+        help="""Use either least squares or Theil-Sen estimator for rough
+        rescaling.""",
+    )
+
+    comp_grp = subparser.add_argument_group("Compute Arguments")
+    comp_grp.add_argument(
+        "--num-extract-alignment-workers",
+        type=int,
+        default=1,
+        help="Number of signal extraction workers.",
+    )
+    comp_grp.add_argument(
+        "--num-extract-chunks-workers",
+        type=int,
+        default=1,
+        help="""Number of chunk extraction workers. If performing signal
+        refinement this should be increased.""",
+    )
+
+    subparser.set_defaults(func=run_dataset_prepare_basecall)
+
+
+def run_dataset_prepare_basecall(args):
+    from remora.refine_signal_map import SigMapRefiner
+    from remora.util import prepare_out_dir, parse_picoamps
+    from remora.prepare_train_data import extract_basecall_chunk_dataset
+
+    prepare_out_dir(args.output_path, args.overwrite)
+
+    sig_map_refiner = SigMapRefiner(
+        kmer_model_filename=args.refine_kmer_level_table,
+        do_rough_rescale=args.refine_rough_rescale,
+        scale_iters=args.refine_scale_iters,
+        algo=args.refine_algo,
+        half_bandwidth=args.refine_half_bandwidth,
+        sd_params=args.refine_short_dwell_parameters,
+        do_fix_guage=True,
+        rough_rescale_method=args.rough_rescale_method,
+    )
+    if not sig_map_refiner.is_valid:
+        raise RemoraError("Invalid signal mapping refiner settings.")
+    pa_scaling = parse_picoamps(
+        args.picoamp_scaling_basecall_model, sig_map_refiner
+    )
+    extract_basecall_chunk_dataset(
+        bam_path=args.bam,
+        pod5_path=args.pod5,
+        out_path=args.output_path,
+        chunk_context=(0, args.chunk_length),
+        min_samps_per_base=args.min_samples_per_base,
+        max_chunks_per_read=args.max_chunks_per_read,
+        pa_scaling=pa_scaling,
+        sig_map_refiner=sig_map_refiner,
+        kmer_context_bases=args.kmer_context_bases,
         num_reads=args.num_reads,
         num_extract_alignment_threads=args.num_extract_alignment_workers,
         num_extract_chunks_threads=args.num_extract_chunks_workers,

@@ -275,3 +275,142 @@ def extract_chunk_dataset(
     if not skip_shuffle:
         LOGGER.info("Shuffling dataset")
         dataset.shuffle()
+
+
+def extract_basecall_chunk_dataset(
+    bam_path,
+    pod5_path,
+    out_path,
+    chunk_context,
+    min_samps_per_base,
+    max_chunks_per_read,
+    pa_scaling,
+    sig_map_refiner,
+    kmer_context_bases,
+    num_reads,
+    num_extract_alignment_threads,
+    num_extract_chunks_threads,
+    skip_non_primary=True,
+    basecall_anchor=False,
+    rev_sig=False,
+    save_every=100_000,
+    skip_shuffle=False,
+):
+    bam_idx = ReadIndexedBam(bam_path, skip_non_primary)
+    if bam_idx.num_records == 0:
+        LOGGER.info("No records found in BAM file.")
+        sys.exit()
+    with pod5.DatasetReader(Path(pod5_path)) as pod5_dr:
+        read_ids, num_reads = get_read_ids(
+            bam_idx, pod5_dr, num_reads, return_num_bam_reads=True
+        )
+    if num_reads == 0:
+        return
+
+    LOGGER.info(
+        f"Making {'basecall' if basecall_anchor else 'reference'}-"
+        f"anchored basecaller training data"
+    )
+    LOGGER.info("Opening dataset for output")
+    max_seq_len = sum(chunk_context) // min_samps_per_base
+    LOGGER.debug(f"Maximum chunk sequence length set to {max_seq_len}")
+    dataset = CoreRemoraDataset(
+        data_path=out_path,
+        mode="w",
+        metadata=DatasetMetadata(
+            allocate_size=max_chunks_per_read * num_reads,
+            max_seq_len=max_seq_len,
+            extra_metadata_arrays={
+                "read_id": ("<U36", "Read identifier"),
+                "read_focus_base": (
+                    "int64",
+                    "Position within read training sequence",
+                ),
+            },
+            chunk_context=chunk_context,
+            kmer_context_bases=kmer_context_bases,
+            reverse_signal=rev_sig,
+            pa_scaling=pa_scaling,
+            sig_map_refiner=sig_map_refiner,
+        ),
+    )
+
+    LOGGER.info("Processing reads")
+    signals = BackgroundIter(
+        iter_signal,
+        args=(pod5_path,),
+        kwargs={
+            "num_reads": num_reads,
+            "read_ids": read_ids,
+            "rev_sig": rev_sig,
+            "pa_scaling": pa_scaling,
+        },
+        name="ExtractSignal",
+        use_process=True,
+        q_maxsize=1000,
+    )
+    reads = MultitaskMap(
+        extract_alignments,
+        signals,
+        num_workers=num_extract_alignment_threads,
+        args=(bam_idx, rev_sig),
+        name="AddAlignments",
+        use_process=True,
+        q_maxsize=1000,
+    )
+    # TODO implement this function
+    chunks = MultitaskMap(
+        extract_basecall_chunks,
+        reads,
+        num_workers=num_extract_chunks_threads,
+        args=[
+            sig_map_refiner,
+            max_chunks_per_read,
+            chunk_context,
+            kmer_context_bases,
+            basecall_anchor,
+        ],
+        name="ExtractChunks",
+        use_process=True,
+        q_maxsize=1000,
+    )
+
+    errs = defaultdict(int)
+    for read_chunks in tqdm(
+        chunks,
+        total=len(read_ids),
+        smoothing=0,
+        unit=" Reads",
+        desc="Extracting chunks",
+        disable=os.environ.get("LOG_SAFE", False),
+    ):
+        if len(read_chunks) == 0:
+            errs["No chunks extracted"] += 1
+            continue
+        for read_align_chunks, err in read_chunks:
+            if read_align_chunks is None:
+                errs[err] += 1
+                continue
+            for chunk in read_align_chunks:
+                if chunk.seq_len > max_seq_len:
+                    errs["Sequence too long"] += 1
+                    continue
+                try:
+                    dataset.write_chunk(chunk)
+                    if dataset.size % save_every == 0:
+                        dataset.flush()
+                        dataset.write_metadata()
+                except RemoraError as e:
+                    errs[str(e)] += 1
+
+    if len(errs) > 0:
+        err_types = sorted([(num, err) for err, num in errs.items()])[::-1]
+        err_str = "\n".join(f"{num:>7,} : {err:<80}" for num, err in err_types)
+        LOGGER.info(f"Unsuccessful read/chunk reasons:\n{err_str}")
+
+    dataset.write_metadata()
+    LOGGER.info(f"Extracted {dataset.size:,} chunks from {num_reads:,} reads.")
+    LOGGER.info(f"Label distribution: {dataset.modbase_label_summary}")
+    if not skip_shuffle:
+        LOGGER.info("Shuffling dataset")
+        dataset.shuffle()
