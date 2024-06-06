@@ -17,7 +17,7 @@ from remora import constants, log, RemoraError, util, encoded_kmers
 
 LOGGER = log.get_logger()
 
-DATASET_VERSION = 3
+DATASET_VERSION = 4
 MISMATCH_ARRS = {
     0: np.array([1, 2, 3]),
     1: np.array([0, 2, 3]),
@@ -1047,6 +1047,10 @@ class CoreRemoraDataset:
                 for array_name in CoreRemoraDataset._core_arrays
             ]
         ]
+        # support deprecated modbase labels which used to be a core data type
+        deprecated_labels_path = os.path.join(data_path, "labels.npy")
+        if os.path.exists(deprecated_labels_path):
+            paths.append(deprecated_labels_path)
         paths.extend(glob(os.path.join(data_path, "extra_*.npy")))
         if os.path.isfile(os.path.join(data_path, "kmer_table.npy")):
             paths.append(os.path.join(data_path, "kmer_table.npy"))
@@ -1281,8 +1285,8 @@ class CoreRemoraDataset:
         """
         with open(self.metadata_path) as metadata_fh:
             loaded_metadata = json.load(metadata_fh)
-            # support old metadata formats
-            try:
+            # support old metadata format
+            if loaded_metadata["version"] == 3:
                 is_modbase_dataset = loaded_metadata["modified_base_labels"]
                 if not is_modbase_dataset:
                     raise RemoraError(
@@ -1291,17 +1295,27 @@ class CoreRemoraDataset:
                 del loaded_metadata["modified_base_labels"]
                 loaded_metadata["dataset_type"] = constants.DATASET_TYPE_MODBASE
 
-                extra_arrays = loaded_metadata["extra_arrays"]
+                loaded_metadata["extra_metadata_arrays"] = loaded_metadata[
+                    "extra_arrays"
+                ]
                 del loaded_metadata["extra_arrays"]
-                loaded_metadata["extra_metadata_arrays"] = extra_arrays
-            except KeyError:
-                pass
+                # add previously core labels array to extras array
+                loaded_metadata["extra_metadata_arrays"]["modbase_label"] = (
+                    "int64",
+                    "Modified base label",
+                )
 
         if loaded_metadata.get("version") != DATASET_VERSION:
-            raise RemoraError(
-                f"Remora dataset version ({loaded_metadata.get('version')}) "
-                f"does not match current distribution ({DATASET_VERSION})"
-            )
+            if loaded_metadata.get("version") == 3:
+                LOGGER.warning(
+                    "Support for v3 Remora datasets will be deprecated in a "
+                    "future release."
+                )
+            else:
+                raise RemoraError(
+                    f"Remora dataset version ({loaded_metadata.get('version')})"
+                    f" does not match current distribution ({DATASET_VERSION})"
+                )
         # load signal map refiner if supplied
         if os.path.exists(self.kmer_table_path):
             loaded_metadata["refine_kmer_levels"] = np.load(
@@ -1400,7 +1414,13 @@ class CoreRemoraDataset:
                 invalid_keys.append(md_key)
                 continue
             # if no error is raised, set metadata value
-            if loaded_metadata[md_key] != md_val:
+            if (
+                md_key in ("extra_signal_arrays", "extra_sequence_arrays")
+                and loaded_metadata["version"] == 3
+            ):
+                LOGGER.debug(f"Initializing {md_key} for version 3 dataset")
+                loaded_metadata[md_key] = None
+            elif loaded_metadata[md_key] != md_val:
                 LOGGER.debug(
                     f"Overriding {md_key} from value "
                     f"'{loaded_metadata[md_key]}' to '{md_val}'"
@@ -1452,6 +1472,12 @@ class CoreRemoraDataset:
             raise RemoraError("No path available for in-memory dataset")
         if array_name in self._core_arrays:
             return os.path.join(self.data_path, f"{array_name}.npy")
+        elif array_name == "modbase_label":
+            # handle old or new format
+            deprecated_labels_path = os.path.join(self.data_path, "labels.npy")
+            if os.path.exists(deprecated_labels_path):
+                return deprecated_labels_path
+            return os.path.join(self.data_path, "extra_modbase_label.npy")
         elif array_name in self.metadata.extra_array_names:
             return os.path.join(self.data_path, f"extra_{array_name}.npy")
         raise RemoraError(f"Invalid extra array name: {array_name}")
