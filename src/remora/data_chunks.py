@@ -1304,14 +1304,20 @@ class CoreRemoraDataset:
             elif md_key == "mod_long_names":
                 assert "mod_bases" in self.override_metadata
             elif md_key.startswith("extra_"):
-                missing_arrays = set(md_val).difference(loaded_metadata[md_key])
-                if len(missing_arrays) > 0:
-                    raise RemoraError(
-                        "Cannot load missing arrays: "
-                        f"{', '.join(missing_arrays)}\nAvailable extra arrays: "
-                        f"{', '.join(loaded_metadata[md_key].keys())}"
+                if md_val is not None:
+                    missing_arrays = set(md_val).difference(
+                        loaded_metadata[md_key]
                     )
-                md_val = dict((k, loaded_metadata[md_key][k]) for k in md_val)
+                    if len(missing_arrays) > 0:
+                        raise RemoraError(
+                            "Cannot load missing arrays: "
+                            f"{', '.join(missing_arrays)}\nAvailable extra "
+                            f"arrays: "
+                            "{', '.join(loaded_metadata[md_key].keys())}"
+                        )
+                    md_val = dict(
+                        (k, loaded_metadata[md_key][k]) for k in md_val
+                    )
             elif md_key == "chunk_context":
                 md_val = tuple(md_val)
                 scc = loaded_metadata["chunk_context"] = tuple(
@@ -1364,10 +1370,11 @@ class CoreRemoraDataset:
                 for md_key in (
                     "mod_bases",
                     "mod_long_names",
+                    "extra_signal_arrays",
                     "extra_metadata_arrays",
+                    "extra_sequence_arrays",
                     "kmer_context_bases",
                     "chunk_context",
-                    "return_arrays",
                 )
             )
         )
@@ -1469,6 +1476,20 @@ class CoreRemoraDataset:
             self.write_metadata()
         self.refresh_memmaps()
         self._iter = None
+        self.set_return_arrays(self.return_arrays)
+
+    def set_return_arrays(self, return_arrays):
+        if return_arrays is None:
+            self.return_arrays = None
+            return
+        # check that return arrays are available
+        if any(
+            arr_name not in self.array_names
+            and arr_name not in constants.DATASET_SEQ_OUTPUTS
+            for arr_name in return_arrays
+        ):
+            raise RemoraError("Requested return array not available")
+        self.return_arrays = return_arrays
 
     def write_batch(self, arrays):
         # TODO look into adding explicit write buffer to this function
@@ -2136,6 +2157,7 @@ class RemoraDataset(IterableDataset):
             "super_batch_size": self.super_batch_size,
             "super_batch_sample_frac": self.super_batch_sample_frac,
             "seed": self.seed,
+            "return_arrays": self.return_arrays,
         }
 
     def set_global_metadata(self):
@@ -2272,14 +2294,6 @@ class RemoraDataset(IterableDataset):
         self.metadata.mod_bases = mod_bases
         self.metadata.mod_long_names = mod_long_names
 
-        seq_attr_set = set(tuple(ds.seq_attrs) for ds in self.datasets)
-        if len(seq_attr_set) != 1:
-            raise RemoraError(
-                "Datasets contain different sequence output modes: "
-                f"{seq_attr_set}"
-            )
-        self.seq_attrs = self.datasets[0].seq_attrs
-
     def update_metadata(self, other):
         for md_key in (
             "dataset_type",
@@ -2319,6 +2333,7 @@ class RemoraDataset(IterableDataset):
         super_batch_sample_frac=None,
         seed=None,
         use_constant_batch_mix=False,
+        return_arrays=None,
     ):
         super(RemoraDataset).__init__()
         self.datasets = datasets
@@ -2346,6 +2361,16 @@ class RemoraDataset(IterableDataset):
             self._batch_sizes = compute_best_split(self.batch_size, self.props)
         self._iter = None
         self._all_batches = None
+        self.return_arrays = return_arrays
+        if self.return_arrays is None:
+            ds_return_arrays = set(ds.return_arrays for ds in self.datasets)
+            if len(set(ds_return_arrays)) == 1:
+                self.return_arrays = self.datasets[0].return_arrays
+            else:
+                raise RemoraError("Return arrays not set")
+        else:
+            for ds in self.datasets:
+                ds.set_return_arrays(return_arrays)
 
     @classmethod
     def from_config(
@@ -2429,14 +2454,8 @@ class RemoraDataset(IterableDataset):
             ds.super_batch_size = self.super_batch_size
             ds.super_batch_sample_frac = self.super_batch_sample_frac
 
-    def iter_batches(self, return_arrays=["signal", "labels"]):
-        """Iterate over batches.
-
-        Args:
-            return_arrays (tuple): Arrays to return from dataset. The sequence
-                arrays as defined by the dataset seq_outputs setting will be
-                appended to this set of arrays in returned batches.
-        """
+    def iter_batches(self):
+        """Iterate over batches."""
         self._set_sub_ds_params()
         while True:
             ds_batch_sizes = (
@@ -2446,7 +2465,7 @@ class RemoraDataset(IterableDataset):
             )
             try:
                 ds_arrays = [
-                    ds.extract_batch(bs, return_arrays)
+                    ds.extract_batch(bs)
                     for ds, bs in zip(self.datasets, ds_batch_sizes)
                 ]
             except StopIteration:
@@ -2455,7 +2474,7 @@ class RemoraDataset(IterableDataset):
                 torch.from_numpy(
                     np.concatenate([arr[arr_name] for arr in ds_arrays], axis=0)
                 )
-                for arr_name in return_arrays + self.seq_attrs
+                for arr_name in self.return_arrays
             ]
 
     def load_all_batches(self):
@@ -2494,7 +2513,7 @@ class RemoraDataset(IterableDataset):
     @property
     def label_summary(self):
         return "; ".join(
-            f"{self.metadata.labels[lab_idx]}:{count:,}"
+            f"{self.metadata.modbase_labels[lab_idx]}:{count:,}"
             for lab_idx, count in enumerate(self.get_modbase_label_counts())
         )
 
