@@ -500,7 +500,7 @@ class RemoraRead:
                     "signal",
                     "modbase_label",
                     "read_focus_base",
-                    "enc_kmers",
+                    "enc_kmer",
                 ],
             ),
             infinite_iter=False,
@@ -513,7 +513,7 @@ class RemoraRead:
                     batch["signal"],
                     batch["modbase_label"],
                     batch["read_focus_base"],
-                    batch["enc_kmers"],
+                    batch["enc_kmer"],
                 )
             )
 
@@ -1117,6 +1117,19 @@ class CoreRemoraDataset:
         return out_r_arrs
 
     @property
+    def super_batch_load_arrays(self):
+        """Convert sequence arrays to specified output names"""
+        core_arrays = self._core_arrays.copy() + list(
+            constants.DATASET_SEQ_OUTPUTS
+        )
+        sb_load_arrs = self._core_arrays.copy()
+        for arr_name in self.return_arrays:
+            if arr_name in core_arrays:
+                continue
+            sb_load_arrs.append(arr_name)
+        return sb_load_arrs
+
+    @property
     def arrays(self):
         """Generator of chunk arrays in dataset. Arrays will be sliced to
         current dataset size not allocated arrays.
@@ -1663,9 +1676,14 @@ class CoreRemoraDataset:
         )
         super_batch["signal"] = super_batch["signal"][:, :, st_diff:new_en]
         super_batch["signal"] = np.ascontiguousarray(super_batch["signal"])
-        for arr_name in self.metadata.extra_signal_arrays:
-            super_batch[arr_name] = super_batch[arr_name][:, :, st_diff:new_en]
-            super_batch[arr_name] = np.ascontiguousarray(super_batch[arr_name])
+        if self.metadata.extra_signal_arrays is not None:
+            for arr_name in self.metadata.extra_signal_arrays:
+                super_batch[arr_name] = super_batch[arr_name][
+                    :, :, st_diff:new_en
+                ]
+                super_batch[arr_name] = np.ascontiguousarray(
+                    super_batch[arr_name]
+                )
 
         try:
             super_batch["sequence_to_signal_mapping"] -= st_diff
@@ -1730,14 +1748,14 @@ class CoreRemoraDataset:
             size = self.size
         sb_arr_en = sb_arr_st + size
         if sb_arr_en <= self.metadata.dataset_end:
-            for arr_name in self.return_arrays:
+            for arr_name in self.super_batch_load_arrays:
                 super_batch[arr_name] = getattr(self, arr_name)[
                     sb_arr_st:sb_arr_en
                 ].copy()
         elif self.infinite_iter:
             # wrap super batch around end of dataset
             wrap_en = sb_arr_en - self.size
-            for arr_name in self.return_arrays:
+            for arr_name in self.super_batch_load_arrays:
                 super_batch[arr_name] = np.concatenate(
                     [
                         getattr(self, arr_name)[
@@ -1750,20 +1768,20 @@ class CoreRemoraDataset:
                 )
         else:
             # return last batch with smaller batch dim
-            for arr_name in self.return_arrays:
+            for arr_name in self.super_batch_load_arrays:
                 super_batch[arr_name] = getattr(self, arr_name)[
                     sb_arr_st : self.metadata.dataset_end
                 ]
         if self.super_batch_sample_num_chunks is not None:
             selected_indices = np.random.choice(
-                super_batch["labels"].size,
+                super_batch["sequence_lengths"].size,
                 min(
                     self.super_batch_sample_num_chunks,
-                    super_batch["labels"].size,
+                    super_batch["sequence_lengths"].size,
                 ),
                 replace=False,
             )
-            for arr_name in self.return_arrays:
+            for arr_name in self.super_batch_load_arrays:
                 super_batch[arr_name] = super_batch[arr_name][selected_indices]
         if (
             self.metadata.is_modbase_dataset
@@ -1799,7 +1817,11 @@ class CoreRemoraDataset:
 
     def _load_next_super_batch(self):
         self.init_super_batch_iter()
-        self._curr_sb = next(self._sb_iter, None)
+        try:
+            self._curr_sb = next(self._sb_iter, None)
+        except RemoraError as e:
+            LOGGER.debug(f"Could not load super batch: {e}")
+            self._curr_sb = None
         self._curr_sb_offset = 0
 
     def extract_seq_output(self, seq_out_name, seqs, seq_to_sig_maps, seq_lens):
@@ -1819,8 +1841,8 @@ class CoreRemoraDataset:
             # k-mer context was trimmed off in super batch. Seq lens updated
             # here to be the full sequence length.
             return [
-                ("seqs", seqs),
-                ("seq_lens", seq_lens + sum(self.metadata.kmer_context_bases)),
+                ("seq", seqs),
+                ("seq_len", seq_lens + sum(self.metadata.kmer_context_bases)),
             ]
         else:
             raise RemoraError(
@@ -1866,11 +1888,9 @@ class CoreRemoraDataset:
             self._curr_sb is None
             or self._curr_sb_offset >= self._curr_sb["signal"].shape[0]
         ):
-            try:
-                self._load_next_super_batch()
-            except RemoraError as e:
-                LOGGER.debug(f"Super batch loading failed: {e}")
-                raise StopIteration
+            self._load_next_super_batch()
+            if self._curr_sb is None:
+                return None
         if batch_size is None:
             if self.batch_size is None:
                 raise RemoraError("Must provide batch size")
@@ -1888,10 +1908,8 @@ class CoreRemoraDataset:
         ):
             # add data from this super batch and load a new one
             update_batch(self._curr_sb_offset)
-            try:
-                self._load_next_super_batch()
-            except RemoraError as e:
-                LOGGER.debug(f"Super batch loading failed: {e}")
+            self._load_next_super_batch()
+            if self._curr_sb is None:
                 return join_arrs(batch)
         if chunks_left_to_add > 0:
             b_st = self._curr_sb_offset
@@ -1904,11 +1922,10 @@ class CoreRemoraDataset:
         """Iterate over batches."""
         batch_num = 0
         while True:
-            try:
-                yield self.extract_batch(batch_size)
-            except RemoraError as e:
-                LOGGER.debug(f"Exhausted Remora dataset iterator: {e}")
+            batch = self.extract_batch(batch_size)
+            if batch is None:
                 break
+            yield batch
             batch_num += 1
             if max_batches is not None and batch_num >= max_batches:
                 break
@@ -2463,16 +2480,19 @@ class RemoraDataset(IterableDataset):
                 if self.use_constant_batch_mix
                 else compute_random_split(self.batch_size, self.props)
             )
-            try:
-                ds_arrays = [
-                    ds.extract_batch(bs)
-                    for ds, bs in zip(self.datasets, ds_batch_sizes)
-                ]
-            except StopIteration:
+            ds_arrays = [
+                ds.extract_batch(bs)
+                for ds, bs in zip(self.datasets, ds_batch_sizes)
+            ]
+            ds_arrays = [arr for arr in ds_arrays if arr is not None]
+            if len(ds_arrays) == 0:
                 break
             yield [
                 torch.from_numpy(
-                    np.concatenate([arr[arr_name] for arr in ds_arrays], axis=0)
+                    np.concatenate(
+                        [arr[arr_name] for arr in ds_arrays],
+                        axis=0,
+                    )
                 )
                 for arr_name in self.return_arrays
             ]
@@ -2511,7 +2531,7 @@ class RemoraDataset(IterableDataset):
         return label_counts
 
     @property
-    def label_summary(self):
+    def modbase_label_summary(self):
         return "; ".join(
             f"{self.metadata.modbase_labels[lab_idx]}:{count:,}"
             for lab_idx, count in enumerate(self.get_modbase_label_counts())
@@ -2540,7 +2560,7 @@ class RemoraDataset(IterableDataset):
         dss_lab_counts = [
             dict(
                 zip(
-                    ds.metadata.labels,
+                    ds.metadata.modbase_labels,
                     ds.get_modbase_label_counts(),
                 )
             )
@@ -2557,12 +2577,14 @@ class RemoraDataset(IterableDataset):
         batch_lab_cols = [
             "\t".join(
                 f"{ds_lp.get(lab, 0) * ds_bs:,.1f}"
-                for lab in self.metadata.labels
+                for lab in self.metadata.modbase_labels
             )
             for ds_lp, ds_bs in zip(dss_lab_props, self.batch_size * self.props)
         ]
         dss_lab_cols = [
-            "\t".join(f"{ds_lc.get(lab, 0):,}" for lab in self.metadata.labels)
+            "\t".join(
+                f"{ds_lc.get(lab, 0):,}" for lab in self.metadata.modbase_labels
+            )
             for ds_lc in dss_lab_counts
         ]
         summ_strs = [
@@ -2580,10 +2602,10 @@ class RemoraDataset(IterableDataset):
             )
         ]
         b_labels_header = "\t".join(
-            (f"batch_{lab}" for lab in self.metadata.labels)
+            (f"batch_{lab}" for lab in self.metadata.modbase_labels)
         )
         ds_labels_header = "\t".join(
-            (f"dataset_{lab}" for lab in self.metadata.labels)
+            (f"dataset_{lab}" for lab in self.metadata.modbase_labels)
         )
         return (
             f"percent_of_dataset_per_epoch\t{b_labels_header}\t"

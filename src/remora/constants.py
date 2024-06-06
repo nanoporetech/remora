@@ -46,13 +46,13 @@ MODEL_DATA_DIR_NAME = "trained_models"
 
 # set string values for sequence output types from datasets
 # encoded k-mers for standard Remora models
-DATASET_ENC_KMER = "enc_kmers"
+DATASET_ENC_KMER = "enc_kmer"
 # sequences and lengths for basecaller
-DATASET_SEQS_AND_LENS = "seqs_and_lens"
+DATASET_SEQS_AND_LENS = "seq_and_len"
 DATASET_SEQ_OUTPUTS = dict(
     [
-        (DATASET_ENC_KMER, ["enc_kmers"]),
-        (DATASET_SEQS_AND_LENS, ["seqs", "lens"]),
+        (DATASET_ENC_KMER, ["enc_kmer"]),
+        (DATASET_SEQS_AND_LENS, ["seq", "len"]),
     ]
 )
 DATASET_TYPE_MODBASE = "modbase"

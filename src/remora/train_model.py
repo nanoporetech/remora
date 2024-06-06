@@ -211,6 +211,7 @@ def train_model(
             "batch_size": batch_size,
             "super_batch_size": super_batch_size,
             "super_batch_sample_frac": super_batch_sample_frac,
+            "return_arrays": ["signal", "modbase_label", "enc_kmer"],
         },
     )
     # TODO move hash computation into background worker and write this from
@@ -311,6 +312,7 @@ def train_model(
                 },
                 ds_kwargs={
                     "batch_size": batch_size,
+                    "return_arrays": ["signal", "modbase_label", "enc_kmer"],
                 },
             )
             ext_val_ds.update_metadata(dataset)
@@ -366,10 +368,12 @@ def train_model(
     val_trn_ds.do_check_super_batches = True
     if not read_batches_from_disk:
         val_trn_ds.load_all_batches()
-    LOGGER.info(f"Dataset loaded with labels: {dataset.label_summary}")
-    LOGGER.info(f"Train labels: {trn_ds.label_summary}")
-    LOGGER.info(f"Held-out validation labels: {val_ds.label_summary}")
-    LOGGER.info(f"Training set validation labels: {val_trn_ds.label_summary}")
+    LOGGER.info(f"Dataset loaded with labels: {dataset.modbase_label_summary}")
+    LOGGER.info(f"Train labels: {trn_ds.modbase_label_summary}")
+    LOGGER.info(f"Held-out validation labels: {val_ds.modbase_label_summary}")
+    LOGGER.info(
+        f"Training set validation labels: {val_trn_ds.modbase_label_summary}"
+    )
 
     LOGGER.info("Running initial validation")
     # assess accuracy before first iteration
