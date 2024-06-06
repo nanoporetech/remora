@@ -76,7 +76,7 @@ def prepare_reads(read_errs, models_metadata, ref_anchored):
                 "motif_offsets": motif_offsets,
                 "chunk_context": md["chunk_context"],
                 "kmer_context_bases": md["kmer_context_bases"],
-                "extra_arrays": {"read_focus_bases": ("int64", "")},
+                "extra_metadata_arrays": {"read_focus_base": ("int64", "")},
             }
         )
     for io_read, err in read_errs:
@@ -130,6 +130,11 @@ def prepare_reads(read_errs, models_metadata, ref_anchored):
                 batch_size=num_chunks,
                 super_batch_size=num_chunks,
                 infinite_iter=False,
+                return_arrays=[
+                    "signal",
+                    "enc_kmer",
+                    "read_focus_base",
+                ],
             )
             for chunk in chunks:
                 dataset.write_chunk(chunk)
@@ -163,7 +168,6 @@ def prep_nn_input(read_errs):
         bases_chunks = {}
         for can_base, ds in read_datasets.items():
             base_chunks = next(iter(ds))
-            del base_chunks["labels"]
             bases_chunks[can_base] = base_chunks
         read_nn_inputs.append((io_read, bases_chunks, None))
     return read_nn_inputs
@@ -201,7 +205,7 @@ def batch_reads(prepped_nn_inputs, batches_q, batch_size, models_metadata):
                     b_readss[can_base].append([io_read, None, None, err])
                 continue
             for can_base, r_chunks in bases_chunks.items():
-                num_chunks = r_chunks["read_focus_bases"].size
+                num_chunks = r_chunks["read_focus_base"].size
                 # fill out and yield full batches
                 rb_consumed = 0
                 # while this read extends through a whole batch continue to
@@ -212,10 +216,10 @@ def batch_reads(prepped_nn_inputs, batches_q, batch_size, models_metadata):
                         rb_consumed:rb_en
                     ]
                     arrs[can_base][1][b_poss[can_base] :] = r_chunks[
-                        "enc_kmers"
+                        "enc_kmer"
                     ][rb_consumed:rb_en]
                     arrs[can_base][2][b_poss[can_base] :] = r_chunks[
-                        "read_focus_bases"
+                        "read_focus_base"
                     ][rb_consumed:rb_en]
                     # batch start is None once the first batch is complete
                     # from this read
@@ -236,10 +240,10 @@ def batch_reads(prepped_nn_inputs, batches_q, batch_size, models_metadata):
                     rb_consumed:
                 ]
                 arrs[can_base][1][b_poss[can_base] : b_en] = r_chunks[
-                    "enc_kmers"
+                    "enc_kmer"
                 ][rb_consumed:]
                 arrs[can_base][2][b_poss[can_base] : b_en] = r_chunks[
-                    "read_focus_bases"
+                    "read_focus_base"
                 ][rb_consumed:]
                 # if read continues from last batch set start to None
                 b_st = b_poss[can_base] if rb_consumed == 0 else None
@@ -248,13 +252,13 @@ def batch_reads(prepped_nn_inputs, batches_q, batch_size, models_metadata):
                 b_poss[can_base] = b_en
     for can_base in can_bases:
         if b_poss[can_base] > 0:
-            b_sigs, b_enc_kmers, b_read_pos = arrs[can_base]
+            b_sig, b_enc_kmer, b_read_pos = arrs[can_base]
             # send last batch
             _put_item(
                 (
                     can_base,
-                    b_sigs[: b_poss[can_base]],
-                    b_enc_kmers[: b_poss[can_base]],
+                    b_sig[: b_poss[can_base]],
+                    b_enc_kmer[: b_poss[can_base]],
                     b_read_pos[: b_poss[can_base]],
                     b_readss[can_base],
                 ),
@@ -300,15 +304,15 @@ def run_model_batched(
             dtype=torch.float32,
             pin_memory=pin_memory,
         )
-    for can_base, b_sigs, b_enc_kmers, b_read_pos, b_reads in _queue_iter(
+    for can_base, b_sig, b_enc_kmer, b_read_pos, b_reads in _queue_iter(
         batches_q
     ):
         if b_read_pos.size == batch_size:
-            sig_arrs[can_base][:] = torch.from_numpy(b_sigs)
-            enc_kmer_arrs[can_base][:] = torch.from_numpy(b_enc_kmers)
+            sig_arrs[can_base][:] = torch.from_numpy(b_sig)
+            enc_kmer_arrs[can_base][:] = torch.from_numpy(b_enc_kmer)
         else:
-            sig_arrs[can_base] = torch.from_numpy(b_sigs)
-            enc_kmer_arrs[can_base] = torch.from_numpy(b_enc_kmers)
+            sig_arrs[can_base] = torch.from_numpy(b_sig)
+            enc_kmer_arrs[can_base] = torch.from_numpy(b_enc_kmer)
         nn_out = models[can_base](
             sig_arrs[can_base].to(devices[can_base]),
             enc_kmer_arrs[can_base].to(devices[can_base]),

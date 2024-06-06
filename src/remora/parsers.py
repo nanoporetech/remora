@@ -418,8 +418,8 @@ def run_dataset_make_config(args):
     if args.dataset_weights is not None:
         if len(args.dataset_weights) != len(args.dataset_paths):
             raise RemoraError("Weights must be same length as input datasets.")
-        if any(w <= 0 for w in args.dataset_weights):
-            raise RemoraError("Weights must be positive.")
+        if any(w < 0 for w in args.dataset_weights):
+            raise RemoraError("Weights must not be negative.")
     core_datasets, core_weights, core_hashes = [], [], []
     for ds_idx, ds_path in enumerate(args.dataset_paths):
         dataset = load_dataset(ds_path)
@@ -428,18 +428,33 @@ def run_dataset_make_config(args):
                 [p for p, w in zip(dataset.paths, dataset.props) if w == 0]
             )
             raise RemoraError(f"Encountered empty dataset: {empty_datasets}")
-        core_datasets.extend(dataset.datasets)
         weights = dataset.props.copy()
         if args.dataset_weights is None:
             weights *= sum([ds.size for ds in dataset.datasets])
         else:
             weights *= args.dataset_weights[ds_idx]
-        core_weights.extend(weights)
+        # filter out zero weight datasets
+        positive_weights = np.not_equal(weights, 0)
+        core_datasets.extend(
+            [
+                ds
+                for ds, is_pos in zip(dataset.datasets, positive_weights)
+                if is_pos
+            ]
+        )
+        core_weights.extend(weights[positive_weights])
         # if hashes are available for all datasets then save them. If any are
         # missing, skip storage of hashes
         if core_hashes is None or not dataset.valid_hashes:
             core_hashes = None
             continue
+        core_hashes.extend(
+            [
+                ds_hash
+                for ds_hash, is_pos in zip(dataset.hashes, positive_weights)
+                if is_pos
+            ]
+        )
         core_hashes.extend(dataset.hashes)
     core_weights = np.array(core_weights)
     dataset = RemoraDataset(
@@ -626,7 +641,7 @@ def run_dataset_head(args):
         desc="Batches",
     ):
         if (
-            head_dataset.metadata.dataset_end + sb["labels"].size
+            head_dataset.metadata.dataset_end + sb["sequence_lengths"].size
             >= args.num_chunks
         ):
             num_chunks = args.num_chunks - head_dataset.metadata.dataset_end
@@ -1756,7 +1771,7 @@ def run_validate_modbams(args):
     from remora.validate import validate_modbams
 
     LOGGER.warning(
-        """This cmomand is deprecated and will be removed from a future version
+        """This command is deprecated and will be removed from a future version
         of Remora. Please use the `modkit validate` command."""
     )
     if args.explicit_mod_tag_used:
@@ -1908,7 +1923,7 @@ def run_validate_from_remora_dataset(args):
     torch.set_grad_enabled(False)
 
     LOGGER.info("Loading Remora dataset")
-    override_metadata = {"extra_arrays": {}}
+    override_metadata = {}
     override_metadata["kmer_context_bases"] = model_metadata[
         "kmer_context_bases"
     ]
@@ -1920,7 +1935,10 @@ def run_validate_from_remora_dataset(args):
             "infinite_iter": False,
             "do_check_super_batches": True,
         },
-        ds_kwargs={"batch_size": args.batch_size},
+        ds_kwargs={
+            "batch_size": args.batch_size,
+            "return_arrays": ["signal", "modbase_label", "enc_kmer"],
+        },
     )
     LOGGER.info(f"Loaded dataset summary:\n{dataset.summary}")
     if not args.read_batches_from_disk:

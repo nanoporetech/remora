@@ -37,7 +37,7 @@ def test_prep_can(can_chunks):
         batch_size=10,
     )
     assert dataset.size == EXPECTED_CAN_SIZE
-    assert dataset.get_label_counts()[0] == EXPECTED_CAN_SIZE
+    assert dataset.get_modbase_label_counts()[0] == EXPECTED_CAN_SIZE
 
 
 @pytest.mark.unit
@@ -48,7 +48,7 @@ def test_prep_mod(mod_chunks):
         batch_size=10,
     )
     assert dataset.size == EXPECTED_MOD_SIZE
-    assert dataset.get_label_counts()[1] == EXPECTED_MOD_SIZE
+    assert dataset.get_modbase_label_counts()[1] == EXPECTED_MOD_SIZE
 
 
 @pytest.mark.unit
@@ -59,7 +59,7 @@ def test_prep_mod_chebi(mod_chebi_chunks):
         batch_size=10,
     )
     assert dataset.size == EXPECTED_MOD_SIZE
-    assert dataset.get_label_counts()[1] == EXPECTED_MOD_SIZE
+    assert dataset.get_modbase_label_counts()[1] == EXPECTED_MOD_SIZE
 
 
 @pytest.mark.unit
@@ -69,7 +69,7 @@ def test_remora_dataset(chunks):
         str(chunks),
         batch_size=10,
     )
-    label_counts = dataset.get_label_counts()
+    label_counts = dataset.get_modbase_label_counts()
     assert label_counts.size == 2, "label counts sie should be 2"
     assert dataset.size == EXPECTED_CAN_SIZE + EXPECTED_MOD_SIZE
     assert label_counts[0] == EXPECTED_CAN_SIZE
@@ -83,7 +83,7 @@ def test_remora_dataset_chebi(chebi_chunks):
         str(chebi_chunks),
         batch_size=10,
     )
-    label_counts = dataset.get_label_counts()
+    label_counts = dataset.get_modbase_label_counts()
     assert label_counts.size == 4, "label counts sie should be 4"
     assert dataset.size == EXPECTED_CAN_SIZE + (3 * EXPECTED_MOD_SIZE)
     assert label_counts[0] == EXPECTED_CAN_SIZE

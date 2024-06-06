@@ -316,6 +316,7 @@ def train_model(
                 },
             )
             ext_val_ds.update_metadata(dataset)
+            ext_val_ds.set_use_constant_batch_mix(True)
             if not read_batches_from_disk:
                 ext_val_ds.load_all_batches()
             ext_datasets.append((e_name, ext_val_ds))
@@ -349,6 +350,7 @@ def train_model(
     )
     val_ds.super_batch_sample_frac = None
     val_ds.do_check_super_batches = True
+    val_ds.set_use_constant_batch_mix(True)
     if not read_batches_from_disk:
         val_ds.load_all_batches()
     trn_loader = DataLoader(

@@ -487,6 +487,7 @@ class RemoraRead:
         # prepare in memory dataset to perform chunk extraction
         dataset = CoreRemoraDataset(
             mode="w",
+            batch_size=batch_size,
             metadata=DatasetMetadata(
                 allocate_size=len(chunks),
                 max_seq_len=max(c.seq_len for c in chunks),
@@ -496,13 +497,20 @@ class RemoraRead:
                 motif_offsets=motif_offsets,
                 chunk_context=model_metadata["chunk_context"],
                 kmer_context_bases=model_metadata["kmer_context_bases"],
-                return_arrays=[
-                    "signal",
-                    "modbase_label",
-                    "read_focus_base",
-                    "enc_kmer",
-                ],
+                extra_metadata_arrays={
+                    "modbase_label": ("int64", "Modified base label"),
+                    "read_focus_base": (
+                        "int64",
+                        "Position within read training sequence",
+                    ),
+                },
             ),
+            return_arrays=[
+                "signal",
+                "modbase_label",
+                "read_focus_base",
+                "enc_kmer",
+            ],
             infinite_iter=False,
         )
         for chunk in chunks:
@@ -511,9 +519,9 @@ class RemoraRead:
             self.batches.append(
                 (
                     batch["signal"],
+                    batch["enc_kmer"],
                     batch["modbase_label"],
                     batch["read_focus_base"],
-                    batch["enc_kmer"],
                 )
             )
 
@@ -971,8 +979,34 @@ def check_super_batch(super_batch, chunk_width):
 
 @dataclasses.dataclass
 class CoreRemoraDataset:
-    """CoreRemoraDataset manages the storage and access to a single file of
+    """CoreRemoraDataset manages the storage and access to directory of
     training data.
+
+    Args:
+        data_path (str):
+        mode (str): Mode for dataset. "r"ead (default) or "w"rite
+        metadata (DatasetMetadata): Metadata associated with this dataset
+        override_metadata (dict): Values to override when reading metadata from
+            dataset. Only particular override options are valid. See
+            CoreRemoraDataset.load_metadata for details.
+        batch_size (int): Number of chunks to return from this dataset. This
+            can be specified during the CoreRemoraDataset.extract_batch method,
+            but when using iterators this object global value will be used.
+        super_batch_size (int): Number of chunks to read from disk at one time.
+        super_batch_sample_frac (float): Fraction of reads to retain from super
+            batch. Lower values allow greater randomization of chunks presented
+            within a batch through training, but require more disk IO.
+        super_batch_offset (int): Offset within the dataset to start iteration.
+            Note that this is relative to metadata.dataset_start for sliced
+            datasets. This allows multiple dataloaders to avoid supplying the
+            same chunks.
+        infinite_iter (bool): Iterate through chunks in an infinite loop via
+            wrapping around the end of the dataset. False value will iterate to
+            the end of the dataset and stop.
+        do_check_super_batches (bool): Check super batches after loading?
+        return_arrays (list): Specify arrays to return from batch
+            extraction/iteration methods. Set this value with set_return_arrays
+            method.
     """
 
     data_path: str = None
@@ -1107,7 +1141,9 @@ class CoreRemoraDataset:
 
     @property
     def output_return_arrays(self):
-        """Convert sequence arrays to specified output names"""
+        """Output return arrays requested from this dataset. This includes
+        converting sequence output encoding names.
+        """
         out_r_arrs = []
         for arr_name in self.return_arrays:
             try:
@@ -1115,6 +1151,13 @@ class CoreRemoraDataset:
             except KeyError:
                 out_r_arrs.append(arr_name)
         return out_r_arrs
+
+    @property
+    def valid_return_arrays(self):
+        """Set of return arrays that can be supplied from this dataset"""
+        return set(constants.DATASET_SEQ_OUTPUTS).union(
+            self.metadata.extra_array_names
+        )
 
     @property
     def super_batch_load_arrays(self):
@@ -1164,21 +1207,21 @@ class CoreRemoraDataset:
         summ_txt = (
             f"                data_path : {self.data_path}\n"
             f"                     size : {self.size:,}\n"
-            f"            dataset_start : {self.metadata.dataset_start:,}\n"
-            f"              dataset_end : {self.metadata.dataset_end:,}\n"
-            f"       kmer_context_bases : {self.metadata.kmer_context_bases}\n"
-            f"            chunk_context : {self.metadata.chunk_context}\n"
-            f"           reverse_signal : {self.metadata.reverse_signal}\n"
-            f" chunk_extract_base_start : {self.metadata.base_start_justify}\n"
-            f"     chunk_extract_offset : {self.metadata.offset}\n"
-            f"          sig_map_refiner : {self.metadata.sig_map_refiner}\n"
+            f"            dataset start : {self.metadata.dataset_start:,}\n"
+            f"              dataset end : {self.metadata.dataset_end:,}\n"
+            f"       kmer context bases : {self.metadata.kmer_context_bases}\n"
+            f"            chunk context : {self.metadata.chunk_context}\n"
+            f"           reverse signal : {self.metadata.reverse_signal}\n"
+            f" chunk extract base start : {self.metadata.base_start_justify}\n"
+            f"     chunk extract offset : {self.metadata.offset}\n"
+            f"          sig map refiner : {self.metadata.sig_map_refiner}\n"
         )
         # add modbase-specific metadata
         if self.metadata.is_modbase_dataset:
             summ_txt += (
                 f"                mod_bases : {self.metadata.mod_bases}\n"
-                f"           mod_long_names : {self.metadata.mod_long_names}\n"
-                "     modified base labels : "
+                f"           mod long names : {self.metadata.mod_long_names}\n"
+                "       is modbase dataset? : "
                 f"{self.metadata.is_modbase_dataset}\n"
                 f"    mod label distribution : {self.modbase_label_summary}\n"
                 f"                   motifs : {self.metadata.motifs}\n"
@@ -1496,12 +1539,12 @@ class CoreRemoraDataset:
             self.return_arrays = None
             return
         # check that return arrays are available
-        if any(
-            arr_name not in self.array_names
-            and arr_name not in constants.DATASET_SEQ_OUTPUTS
-            for arr_name in return_arrays
-        ):
-            raise RemoraError("Requested return array not available")
+        invalid_return_arrays = set(return_arrays).difference(
+            self.valid_return_arrays
+        )
+        if len(invalid_return_arrays) > 1:
+            ira_str = ",".join(invalid_return_arrays)
+            raise RemoraError(f"Invalid return array(s) requested: {ira_str}")
         self.return_arrays = return_arrays
 
     def write_batch(self, arrays):
@@ -1787,8 +1830,8 @@ class CoreRemoraDataset:
             self.metadata.is_modbase_dataset
             and self.modbase_label_conv is not None
         ):
-            super_batch["labels"] = self.modbase_label_conv[
-                super_batch["labels"]
+            super_batch["modbase_label"] = self.modbase_label_conv[
+                super_batch["modbase_label"]
             ]
         # TODO add functionality to apply a set of filters at this point
         super_batch = self.trim_sb_kmer_context_bases(super_batch)
@@ -2122,6 +2165,87 @@ class RemoraDataset(IterableDataset):
     will be combined at fixed ratios in the batches supplied.
     """
 
+    def __init__(
+        self,
+        datasets,
+        proportions,
+        hashes=None,
+        batch_size=constants.DEFAULT_BATCH_SIZE,
+        super_batch_size=constants.DEFAULT_SUPER_BATCH_SIZE,
+        super_batch_sample_frac=None,
+        seed=None,
+        use_constant_batch_mix=False,
+        return_arrays=None,
+    ):
+        super(RemoraDataset).__init__()
+        self.datasets = datasets
+        self.props = proportions
+        if not all(0 <= prop <= 1 for prop in self.props):
+            raise RemoraError("Dataset proportions must be between 0 and 1.")
+        if len(self.datasets) != len(self.props):
+            raise RemoraError("Dataset and proportions must be same length.")
+        self._hashes = hashes
+        self.batch_size = batch_size
+        self.super_batch_size = super_batch_size
+        self.super_batch_sample_frac = super_batch_sample_frac
+        self.seed = seed
+        self.set_use_constant_batch_mix(use_constant_batch_mix)
+
+        # RemoraDataset is infinite iter if all core datasets are infinite
+        self.infinite_iter = all(ds.infinite_iter for ds in self.datasets)
+        self.set_global_metadata()
+        # apply applicable global metadata to sub-datasets
+        for ds in self.datasets:
+            ds.update_metadata(self)
+        self.super_batch_offsets = [0 for ds in self.datasets]
+        self._iter = None
+        self._all_batches = None
+        self.return_arrays = return_arrays
+        if self.return_arrays is None:
+            ds_return_arrays = set(ds.return_arrays for ds in self.datasets)
+            if len(set(ds_return_arrays)) == 1:
+                self.return_arrays = self.datasets[0].return_arrays
+            else:
+                raise RemoraError("Return arrays not set")
+        else:
+            for ds in self.datasets:
+                ds.set_return_arrays(return_arrays)
+
+    def set_use_constant_batch_mix(self, value):
+        self.use_constant_batch_mix = value
+        if self.use_constant_batch_mix:
+            self._batch_sizes = compute_best_split(self.batch_size, self.props)
+
+    @classmethod
+    def from_config(
+        cls,
+        config_path,
+        override_metadata=None,
+        ds_kwargs=None,
+        **kwargs,
+    ):
+        paths, props, hashes = parse_dataset_config(config_path)
+        LOGGER.debug(f"Loaded dataset paths: {', '.join(paths)}")
+        LOGGER.debug(
+            f"Loaded dataset proportions: {', '.join(map(str, props))}"
+        )
+        LOGGER.debug(f"Loaded dataset hashes: {', '.join(map(str, hashes))}")
+        if override_metadata is None:
+            override_metadata = {}
+        if ds_kwargs is None:
+            ds_kwargs = {}
+        datasets = [
+            CoreRemoraDataset(
+                ds_path,
+                override_metadata=override_metadata.copy(),
+                **ds_kwargs,
+            )
+            for ds_path in paths
+        ]
+        label_summaries = "\n".join(ds.modbase_label_summary for ds in datasets)
+        LOGGER.debug(f"Loaded dataset label summaries:\n{label_summaries}")
+        return cls(datasets, props, hashes, **kwargs)
+
     @property
     def num_datasets(self):
         return len(self.datasets)
@@ -2340,85 +2464,6 @@ class RemoraDataset(IterableDataset):
         ):
             setattr(self.metadata, md_key, getattr(other.metadata, md_key))
 
-    def __init__(
-        self,
-        datasets,
-        proportions,
-        hashes=None,
-        batch_size=constants.DEFAULT_BATCH_SIZE,
-        super_batch_size=constants.DEFAULT_SUPER_BATCH_SIZE,
-        super_batch_sample_frac=None,
-        seed=None,
-        use_constant_batch_mix=False,
-        return_arrays=None,
-    ):
-        super(RemoraDataset).__init__()
-        self.datasets = datasets
-        self.props = proportions
-        if not all(0 <= prop <= 1 for prop in self.props):
-            raise RemoraError("Dataset proportions must be between 0 and 1.")
-        if len(self.datasets) != len(self.props):
-            raise RemoraError("Dataset and proportions must be same length.")
-        self._hashes = hashes
-        self.batch_size = batch_size
-        self.super_batch_size = super_batch_size
-        self.super_batch_sample_frac = super_batch_sample_frac
-        self.seed = seed
-        self.use_constant_batch_mix = use_constant_batch_mix
-
-        # RemoraDataset is infinite iter if all core datasets are infinite
-        self.infinite_iter = all(ds.infinite_iter for ds in self.datasets)
-        self.set_global_metadata()
-        # apply applicable global metadata to sub-datasets
-        for ds in self.datasets:
-            ds.update_metadata(self)
-        self.super_batch_offsets = [0 for ds in self.datasets]
-        self._batch_sizes = None
-        if self.use_constant_batch_mix:
-            self._batch_sizes = compute_best_split(self.batch_size, self.props)
-        self._iter = None
-        self._all_batches = None
-        self.return_arrays = return_arrays
-        if self.return_arrays is None:
-            ds_return_arrays = set(ds.return_arrays for ds in self.datasets)
-            if len(set(ds_return_arrays)) == 1:
-                self.return_arrays = self.datasets[0].return_arrays
-            else:
-                raise RemoraError("Return arrays not set")
-        else:
-            for ds in self.datasets:
-                ds.set_return_arrays(return_arrays)
-
-    @classmethod
-    def from_config(
-        cls,
-        config_path,
-        override_metadata=None,
-        ds_kwargs=None,
-        **kwargs,
-    ):
-        paths, props, hashes = parse_dataset_config(config_path)
-        LOGGER.debug(f"Loaded dataset paths: {', '.join(paths)}")
-        LOGGER.debug(
-            f"Loaded dataset proportions: {', '.join(map(str, props))}"
-        )
-        LOGGER.debug(f"Loaded dataset hashes: {', '.join(map(str, hashes))}")
-        if override_metadata is None:
-            override_metadata = {}
-        if ds_kwargs is None:
-            ds_kwargs = {}
-        datasets = [
-            CoreRemoraDataset(
-                ds_path,
-                override_metadata=override_metadata.copy(),
-                **ds_kwargs,
-            )
-            for ds_path in paths
-        ]
-        label_summaries = "\n".join(ds.label_summary for ds in datasets)
-        LOGGER.debug(f"Loaded dataset label summaries:\n{label_summaries}")
-        return cls(datasets, props, hashes, **kwargs)
-
     def train_test_split(self, num_test_chunks, override_metadata=None):
         test_sizes = compute_best_split(num_test_chunks, self.props)
         if override_metadata is None:
@@ -2483,6 +2528,7 @@ class RemoraDataset(IterableDataset):
             ds_arrays = [
                 ds.extract_batch(bs)
                 for ds, bs in zip(self.datasets, ds_batch_sizes)
+                if bs > 0
             ]
             ds_arrays = [arr for arr in ds_arrays if arr is not None]
             if len(ds_arrays) == 0:
