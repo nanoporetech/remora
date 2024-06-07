@@ -1795,6 +1795,7 @@ class Read:
             updated when io_read.set_refine_signal_mapping(ref_mapping=True)
             is called.
         full_align (dict): Dictionary representation of BAM record.
+        is_mapped (bool): Is this record mapped to the reference?
     """
 
     read_id: str
@@ -1816,6 +1817,7 @@ class Read:
     cigar: list = None
     ref_to_signal: np.ndarray = None
     full_align: dict = None
+    is_mapped: bool = False
     _child_read_id: str = None
     _sig_len: int = None
 
@@ -2044,7 +2046,9 @@ class Read:
         self.scale_dacs_to_norm = self.scale_dacs_to_pa * self.scale_pa_to_norm
 
         if not parse_ref_align or alignment_record.is_unmapped:
+            self.is_mapped = False
             return
+        self.is_mapped = True
 
         self.ref_reg = RefRegion(
             ctg=alignment_record.reference_name,

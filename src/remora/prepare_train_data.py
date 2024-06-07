@@ -48,6 +48,9 @@ def extract_chunks(
         if err is not None:
             read_chunks.append((None, err))
             continue
+        if not io_read.is_mapped:
+            read_chunks.append(((None, "Unmapped read")))
+            continue
         if io_read.ref_seq is None:
             read_chunks.append(
                 ((None, "No reference sequence (missing MD tag)"))
@@ -371,6 +374,7 @@ def extract_basecall_chunk_dataset(
     rev_sig=False,
     save_every=100_000,
     skip_shuffle=False,
+    shuffle_batch_size=200_000,
 ):
     bam_idx = ReadIndexedBam(bam_path, skip_non_primary)
     if bam_idx.num_records == 0:
@@ -484,4 +488,4 @@ def extract_basecall_chunk_dataset(
     LOGGER.info(f"Extracted {dataset.size:,} chunks from {num_reads:,} reads.")
     if not skip_shuffle:
         LOGGER.info("Shuffling dataset")
-        dataset.shuffle()
+        dataset.shuffle(shuffle_batch_size)

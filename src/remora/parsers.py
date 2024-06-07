@@ -435,6 +435,14 @@ def register_dataset_prepare_basecall(parser):
         loading the entire signal array into memory. If dataset is very large
         and shuffling is not required specify this flag.""",
     )
+    data_grp.add_argument(
+        "--shuffle-batch-size",
+        type=int,
+        default=200_000,
+        help="""Number of training chunks to include in each shuffle. Smaller
+        values will be faster, but chunks from the same read will be supplied
+        together more often during training.""",
+    )
 
     refine_grp = subparser.add_argument_group("Signal Mapping Refine Arguments")
     refine_grp.add_argument(
