@@ -417,6 +417,9 @@ class RemoraRead:
             read_id=self.read_id,
             modbase_label=label,
         )
+        chunk.percent_identity = getattr(self, "percent_identity", None)
+        chunk.start_time = getattr(self, "start_time", None)
+        chunk.duration = self.dacs.size
         if check_chunk:
             chunk.check()
         return chunk

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from collections import defaultdict
 from itertools import chain, product
 from functools import cached_property
+from datetime import datetime, timezone
 
 import pysam
 import numpy as np
@@ -35,6 +36,8 @@ BASE_COLORS = {
     "U": "#CC0000",
     "N": "#FFFFFF",
 }
+
+REF_DT = datetime(2000, 1, 1, tzinfo=timezone.utc)
 
 
 ##############
@@ -1743,6 +1746,17 @@ def plot_metric_at_ref_region(
 ###########
 
 
+def compute_percent_identity(bam_read):
+    """Compute percent identity, defined as edit distance over total alignment
+    length.
+    """
+    M, I, D, N, S, H, P, E, X, B, NM = bam_read.get_cigar_stats()[0]
+    num_align = M + E + X + I + D
+    if num_align == 0:
+        return 0
+    return 100.0 * NM / num_align
+
+
 @dataclass
 class Read:
     """Input/Output Read. Contains signal, basecalls, mapping between the two,
@@ -1796,6 +1810,8 @@ class Read:
             is called.
         full_align (dict): Dictionary representation of BAM record.
         is_mapped (bool): Is this record mapped to the reference?
+        percent_identity (float): Percent identity for reference mapping
+        start_time (int): Read start time in seconds since Jan 1, 2000
     """
 
     read_id: str
@@ -1818,6 +1834,8 @@ class Read:
     ref_to_signal: np.ndarray = None
     full_align: dict = None
     is_mapped: bool = False
+    percent_identity: float = 0
+    start_time: int = np.iinfo(np.uint32).max
     _child_read_id: str = None
     _sig_len: int = None
 
@@ -2010,6 +2028,15 @@ class Read:
         ]
         if reverse_signal:
             self.dacs = self.dacs[::-1]
+        self.start_time = tags.get("st", None)
+        if self.start_time is None:
+            self.start_time = np.iinfo(np.uint32).max
+        else:
+            self.start_time = int(
+                (
+                    datetime.fromisoformat(self.start_time) - REF_DT
+                ).total_seconds()
+            )
 
         parent_read_id = tags.get("pi", None)
         if parent_read_id is None:
@@ -2064,6 +2091,7 @@ class Read:
             )
             self.ref_seq = None
         self.cigar = alignment_record.cigartuples
+        self.percent_identity = compute_percent_identity(alignment_record)
         if alignment_record.is_reverse:
             if self.ref_seq is not None:
                 self.ref_seq = util.revcomp(self.ref_seq)
@@ -2177,6 +2205,9 @@ class Read:
             read_id=self.read_id,
             **scale_kwargs,
         )
+        remora_read.percent_identity = self.percent_identity
+        remora_read.start_time = self.start_time
+        remora_read.duration = self.dacs.size
         remora_read.check()
         return remora_read
 

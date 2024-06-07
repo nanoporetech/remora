@@ -53,7 +53,7 @@ def extract_chunks(
             continue
         if io_read.ref_seq is None:
             read_chunks.append(
-                ((None, "No reference sequence (missing MD tag)"))
+                ((None, "No reference sequence (unmapped or missing MD tag)"))
             )
             continue
         if basecall_anchor:
@@ -300,7 +300,7 @@ def extract_basecall_chunks(
             continue
         if io_read.ref_seq is None:
             read_chunks.append(
-                ((None, "No reference sequence (missing MD tag)"))
+                ((None, "No reference sequence (unmapped or missing MD tag)"))
             )
             continue
         if basecall_anchor:
@@ -326,6 +326,9 @@ def extract_basecall_chunks(
                 str_seq=io_read.ref_seq,
                 read_id=io_read.read_id,
             )
+            remora_read.percent_identity = io_read.percent_identity
+            remora_read.start_time = io_read.start_time
+            remora_read.duration = io_read.dacs.size
 
         remora_read.refine_signal_mapping(sig_map_refiner)
         remora_read.downsample_focus_bases(max_chunks_per_read)
@@ -403,6 +406,15 @@ def extract_basecall_chunk_dataset(
             dataset_type=constants.DATASET_TYPE_SEQ,
             extra_metadata_arrays={
                 "read_id": ("<U36", "Read identifier"),
+                "percent_identity": (
+                    "float32",
+                    "Reference mapping percent identity",
+                ),
+                "start_time": (
+                    "uint32",
+                    "Read start time in seconds since first read in dataset",
+                ),
+                "duration": ("int64", "Number of samples in trimmed read"),
             },
             chunk_context=chunk_context,
             kmer_context_bases=kmer_context_bases,
@@ -478,6 +490,13 @@ def extract_basecall_chunk_dataset(
                         dataset.write_metadata()
                 except RemoraError as e:
                     errs[str(e)] += 1
+
+    # manually shift start time array to difference from dataset min
+    dataset.start_time[
+        dataset.metadata.dataset_start : dataset.metadata.dataset_end
+    ] = dataset.start_time[
+        dataset.metadata.dataset_start : dataset.metadata.dataset_end
+    ].min()
 
     if len(errs) > 0:
         err_types = sorted([(num, err) for err, num in errs.items()])[::-1]
