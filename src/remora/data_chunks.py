@@ -476,14 +476,14 @@ class RemoraRead:
         or randomly selected over the read.
         """
         chunk_width = sum(chunk_context)
-        num_chunks = min(self.sig_len // chunk_width, max_chunks_per_read)
+        num_chunks = min(self.sig.size // chunk_width, max_chunks_per_read)
         if random_offsets:
             chunk_offsets = np.random.randint(
-                0, self.sig_len - chunk_width, num_chunks
+                0, self.sig.size - chunk_width, num_chunks
             )
         else:
             chunk_offsets = np.linspace(
-                0, self.sig_len - chunk_width, num_chunks, endpoint=True
+                0, self.sig.size - chunk_width, num_chunks, endpoint=True
             ).astype(int)
         # shift chunk by first offset (this is generally 0 though)
         chunk_offsets += chunk_context[0]
