@@ -464,6 +464,43 @@ class RemoraRead:
             except Exception as e:
                 LOGGER.debug(f"FAILED_CHUNK_EXTRACT {e}")
 
+    def iter_basecall_chunks(
+        self,
+        chunk_context,
+        kmer_context_bases,
+        max_chunks_per_read,
+        random_offsets=False,
+        check_chunks=False,
+    ):
+        """Iterate over chunks defined by signal position either evenly spaced
+        or randomly selected over the read.
+        """
+        chunk_width = sum(chunk_context)
+        num_chunks = min(self.sig_len // chunk_width, max_chunks_per_read)
+        if random_offsets:
+            chunk_offsets = np.random.randint(
+                0, self.sig_len - chunk_width, num_chunks
+            )
+        else:
+            chunk_offsets = np.linspace(
+                0, self.sig_len - chunk_width, num_chunks, endpoint=True
+            ).astype(int)
+        # shift chunk by first offset (this is generally 0 though)
+        chunk_offsets += chunk_context[0]
+        # TODO add accuracy and other relevant metrics to chunk data
+        for chunk_offset in chunk_offsets:
+            try:
+                yield self.extract_chunk(
+                    chunk_offset,
+                    chunk_context,
+                    kmer_context_bases,
+                    check_chunk=check_chunks,
+                )
+            except RemoraError as e:
+                LOGGER.debug(f"FAILED_CHUNK_CHECK {e}")
+            except Exception as e:
+                LOGGER.debug(f"FAILED_CHUNK_EXTRACT {e}")
+
     def prepare_batches(self, model_metadata, batch_size):
         """Prepare batches containing chunks from this read
 
@@ -708,12 +745,12 @@ class DatasetMetadata:
     # dataset attributes
     allocate_size: int
     max_seq_len: int
-    # labels
-    mod_bases: list
-    mod_long_names: list
-    # chunk extract
-    motif_sequences: list
-    motif_offsets: list
+
+    # modbase attributes
+    mod_bases: list = None
+    mod_long_names: list = None
+    motif_sequences: list = None
+    motif_offsets: list = None
 
     dataset_start: int = 0
     dataset_end: int = 0

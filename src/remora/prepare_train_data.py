@@ -7,7 +7,7 @@ import pod5
 import numpy as np
 from tqdm import tqdm
 
-from remora import log, RemoraError
+from remora import log, RemoraError, constants
 from remora.util import MultitaskMap, BackgroundIter
 from remora.io import (
     ReadIndexedBam,
@@ -277,6 +277,82 @@ def extract_chunk_dataset(
         dataset.shuffle()
 
 
+#############################
+# Basecall chunk extraction #
+#############################
+
+
+def extract_basecall_chunks(
+    read_errs,
+    sig_map_refiner,
+    max_chunks_per_read,
+    chunk_context,
+    kmer_context_bases,
+    basecall_anchor,
+):
+    read_chunks = []
+    for read_idx, (io_read, err) in enumerate(read_errs):
+        if err is not None:
+            read_chunks.append((None, err))
+            continue
+        if io_read.ref_seq is None:
+            read_chunks.append(
+                ((None, "No reference sequence (missing MD tag)"))
+            )
+            continue
+        if basecall_anchor:
+            remora_read = io_read.into_remora_read(use_reference_anchor=False)
+        else:
+            io_read.ref_to_signal = compute_ref_to_signal(
+                io_read.query_to_signal,
+                io_read.cigar,
+            )
+            assert io_read.ref_to_signal.size == len(io_read.ref_seq) + 1, (
+                "discordant ref seq lengths: move+cigar:"
+                f"{io_read.ref_to_signal.size} ref_seq:{len(io_read.ref_seq)}"
+            )
+            trim_dacs = io_read.dacs[
+                io_read.ref_to_signal[0] : io_read.ref_to_signal[-1]
+            ]
+            shift_ref_to_sig = io_read.ref_to_signal - io_read.ref_to_signal[0]
+            remora_read = RemoraRead(
+                dacs=trim_dacs,
+                shift=io_read.shift_dacs_to_norm,
+                scale=io_read.scale_dacs_to_norm,
+                seq_to_sig_map=shift_ref_to_sig,
+                str_seq=io_read.ref_seq,
+                read_id=io_read.read_id,
+            )
+
+        remora_read.refine_signal_mapping(sig_map_refiner)
+        remora_read.downsample_focus_bases(max_chunks_per_read)
+        try:
+            remora_read.check()
+        except RemoraError as e:
+            LOGGER.debug(f"Read prep failed: {e}")
+            continue
+        read_align_chunks = list(
+            remora_read.iter_basecall_chunks(
+                chunk_context,
+                kmer_context_bases,
+                max_chunks_per_read,
+                check_chunks=True,
+            )
+        )
+        LOGGER.debug(
+            f"extracted {len(read_align_chunks)} chunks from {io_read.read_id} "
+            f"alignment {read_idx}"
+        )
+        read_chunks.append((read_align_chunks, None))
+
+    return read_chunks
+
+
+#####################
+# Basecall pipeline #
+#####################
+
+
 def extract_basecall_chunk_dataset(
     bam_path,
     pod5_path,
@@ -320,12 +396,9 @@ def extract_basecall_chunk_dataset(
         metadata=DatasetMetadata(
             allocate_size=max_chunks_per_read * num_reads,
             max_seq_len=max_seq_len,
+            dataset_type=constants.DATASET_TYPE_SEQ,
             extra_metadata_arrays={
                 "read_id": ("<U36", "Read identifier"),
-                "read_focus_base": (
-                    "int64",
-                    "Position within read training sequence",
-                ),
             },
             chunk_context=chunk_context,
             kmer_context_bases=kmer_context_bases,
@@ -358,7 +431,6 @@ def extract_basecall_chunk_dataset(
         use_process=True,
         q_maxsize=1000,
     )
-    # TODO implement this function
     chunks = MultitaskMap(
         extract_basecall_chunks,
         reads,
@@ -410,7 +482,6 @@ def extract_basecall_chunk_dataset(
 
     dataset.write_metadata()
     LOGGER.info(f"Extracted {dataset.size:,} chunks from {num_reads:,} reads.")
-    LOGGER.info(f"Label distribution: {dataset.modbase_label_summary}")
     if not skip_shuffle:
         LOGGER.info("Shuffling dataset")
         dataset.shuffle()

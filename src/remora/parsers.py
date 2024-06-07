@@ -357,7 +357,7 @@ def register_dataset_prepare_basecall(parser):
     out_grp = subparser.add_argument_group("Output Arguments")
     out_grp.add_argument(
         "--output-path",
-        default="remora_training_dataset",
+        default="remora_basecaller_training_dataset",
         help="Output Remora training dataset directory. Cannot exist unless "
         "--overwrite is specified in which case the directory will be removed.",
     )
