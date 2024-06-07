@@ -1383,6 +1383,11 @@ class CoreRemoraDataset:
                 if md_val > loaded_metadata["dataset_end"]:
                     raise RemoraError("Cannot set dataset end past loaded end")
             elif md_key == "mod_bases":
+                if (
+                    self.override_metadata["mod_long_names"] is None
+                    and md_val is None
+                ):
+                    continue
                 assert "mod_long_names" in self.override_metadata
                 assert len(self.override_metadata["mod_long_names"]) == len(
                     md_val
@@ -2379,13 +2384,18 @@ class RemoraDataset(IterableDataset):
             "dataset_end",
         ):
             setattr(self.metadata, md_name, None)
-        self.metadata.motif_sequences, self.metadata.motif_offsets = zip(
-            *[
-                motif.to_tuple()
-                for motif in util.merge_motifs(self.metadata.motifs)
-            ]
-        )
-        self.metadata.check_motifs()
+        dataset_types = set(ds.metadata.dataset_type for ds in self.datasets)
+        if len(dataset_types) > 1:
+            raise RemoraError("Cannot process datasets of different types")
+        self.metadata.dataset_type = self.datasets[0].metadata.dataset_type
+        if self.metadata.is_modbase_dataset:
+            self.metadata.motif_sequences, self.metadata.motif_offsets = zip(
+                *[
+                    motif.to_tuple()
+                    for motif in util.merge_motifs(self.metadata.motifs)
+                ]
+            )
+            self.metadata.check_motifs()
         for ds in self.datasets[1:]:
             # first check attrs for which exact match is required
             for attr_name in (
@@ -2492,16 +2502,17 @@ class RemoraDataset(IterableDataset):
                 )
                 self.metadata.check_motifs()
 
-        # sort modified bases alphabetically
-        mod_bases, mod_long_names = [], []
-        for idx in sorted(
-            range(len(self.metadata.mod_bases)),
-            key=self.metadata.mod_bases.__getitem__,
-        ):
-            mod_bases.append(self.metadata.mod_bases[idx])
-            mod_long_names.append(self.metadata.mod_long_names[idx])
-        self.metadata.mod_bases = mod_bases
-        self.metadata.mod_long_names = mod_long_names
+        if self.metadata.is_modbase_dataset:
+            # sort modified bases alphabetically
+            mod_bases, mod_long_names = [], []
+            for idx in sorted(
+                range(len(self.metadata.mod_bases)),
+                key=self.metadata.mod_bases.__getitem__,
+            ):
+                mod_bases.append(self.metadata.mod_bases[idx])
+                mod_long_names.append(self.metadata.mod_long_names[idx])
+            self.metadata.mod_bases = mod_bases
+            self.metadata.mod_long_names = mod_long_names
 
     def update_metadata(self, other):
         for md_key in (
