@@ -2374,6 +2374,19 @@ class RemoraDataset(IterableDataset):
             "return_arrays": self.return_arrays,
         }
 
+    @property
+    def output_return_arrays(self):
+        """Output return arrays requested from this dataset. This includes
+        converting sequence output encoding names.
+        """
+        out_r_arrs = []
+        for arr_name in self.return_arrays:
+            try:
+                out_r_arrs.extend(constants.DATASET_SEQ_OUTPUTS[arr_name])
+            except KeyError:
+                out_r_arrs.append(arr_name)
+        return out_r_arrs
+
     def set_global_metadata(self):
         self.metadata = self.datasets[0].metadata.copy()
         # not applicable for super dataset
@@ -2619,7 +2632,7 @@ class RemoraDataset(IterableDataset):
                         axis=0,
                     )
                 )
-                for arr_name in self.return_arrays
+                for arr_name in self.output_return_arrays
             ]
 
     def load_all_batches(self):

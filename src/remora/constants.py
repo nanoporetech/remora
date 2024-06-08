@@ -55,7 +55,7 @@ DATASET_SEQS_AND_LENS = "seq_and_len"
 DATASET_SEQ_OUTPUTS = dict(
     [
         (DATASET_ENC_KMER, ["enc_kmer"]),
-        (DATASET_SEQS_AND_LENS, ["seq", "len"]),
+        (DATASET_SEQS_AND_LENS, ["seq", "seq_len"]),
     ]
 )
 DATASET_TYPE_MODBASE = "modbase"
