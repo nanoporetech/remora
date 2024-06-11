@@ -981,6 +981,7 @@ def register_dataset_create_filter(parser):
         "--filter",
         nargs=4,
         metavar=("COLUMN", "OPERATOR", "THRESHOLD", "IS_QUANTILE"),
+        action="append",
         help="""Filter to be applied. Four values are required and represent
         the 1) column to be filtered (must be available in dataset or specified
         in remora.data_chunks.DatasetFilters.derived_cols), 2) operator to be
@@ -1033,6 +1034,10 @@ def run_dataset_create_filter(args):
     ]
     if args.dataset is not None:
         ds = load_dataset(args.dataset)
+        if ds.num_datasets == 1:
+            ds = ds.datasets[0]
+        else:
+            raise NotImplementedError("Cannot apply filter to config dataset")
         filt_path = (
             Path(ds.data_path) / CoreRemoraDataset._filters_path
             if args.output_filter_path is None

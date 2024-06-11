@@ -989,7 +989,7 @@ class DatasetFilters:
 
     # derived columns potentially accessing multiple arrays
     _derived_cols = {
-        "samples_per_base": lambda sb: sb["signal"].shape[1]
+        "samples_per_base": lambda sb: sb["signal"].shape[2]
         / sb["sequence_lengths"]
     }
 
@@ -1009,7 +1009,7 @@ class DatasetFilters:
         """Convert operators to string for storage"""
         return [
             (col, op.__name__, thresh)
-            for col, op, thresh, is_quantile in self.filters
+            for col, op, thresh in self.filters
         ]
 
     @classmethod
@@ -1035,7 +1035,7 @@ class DatasetFilters:
                     )
                 try:
                     col_arr = DatasetFilters._derived_cols[col](
-                        dataset.array_dict
+                        dataset.arrays_dict
                     )
                 except KeyError:
                     try:
@@ -1055,7 +1055,7 @@ class DatasetFilters:
                 and col not in dataset
             ):
                 raise RemoraError(f"Dataset does not contain column: {col}")
-            filters.append(col, op, thresh)
+            filters.append((col, op, thresh))
         return filters
 
     @classmethod
