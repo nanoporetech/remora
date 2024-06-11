@@ -56,6 +56,19 @@ T_TO_U_BASES = {ord("T"): ord("U")}
 DEFAULT_QUEUE_SIZE = 10_000
 
 
+def str_to_bool(value):
+    truthy_values = {"true", "yes", "1", "t", "y"}
+    falsy_values = {"false", "no", "0", "f", "n"}
+
+    value_lower = value.strip().lower()
+    if value_lower in truthy_values:
+        return True
+    elif value_lower in falsy_values:
+        return False
+    else:
+        raise ValueError(f"Cannot convert {value} to boolean")
+
+
 def prepare_out_dir(out_dir, overwrite):
     out_path = Path(out_dir)
     if overwrite:

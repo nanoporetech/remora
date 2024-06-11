@@ -60,6 +60,7 @@ def register_dataset(parser):
     register_dataset_merge(ssubparser)
     register_dataset_head(ssubparser)
     register_dataset_copy(ssubparser)
+    register_dataset_create_filter(ssubparser)
 
 
 def register_dataset_prepare(parser):
@@ -892,7 +893,7 @@ def register_dataset_copy(parser):
         multi-part datasets to faster disk access locations. New config will be
         at [out_path]/dataset.cfg and core datasets will be sub-directories
         [out_path]/dataset_001, [out_path]/dataset_002, etc.""",
-        help="Move dataset to new location",
+        help="Copy dataset to new location",
         formatter_class=SubcommandHelpFormatter,
     )
     subparser.add_argument(
@@ -957,6 +958,105 @@ def run_dataset_copy(args):
     with open(out_dir / "dataset.cfg", "w") as fh:
         json.dump(dataset.get_config(), fh)
     LOGGER.info(dataset.summary)
+
+
+def register_dataset_create_filter(parser):
+    subparser = parser.add_parser(
+        "create_filter",
+        description="""Create dataset filter. Filters will be applied at access
+        time and will not effect the dataset contents.""",
+        help="Create dataset filter",
+        formatter_class=SubcommandHelpFormatter,
+    )
+    subparser.add_argument(
+        "--dataset",
+        help="""Dataset path. Filter will be saved in the default location and
+        applied by default.""",
+    )
+    subparser.add_argument(
+        "--output-filter-path",
+        help="""Output path for filter file.""",
+    )
+    subparser.add_argument(
+        "--filter",
+        nargs=4,
+        metavar=("COLUMN", "OPERATOR", "THRESHOLD", "IS_QUANTILE"),
+        help="""Filter to be applied. Four values are required and represent
+        the 1) column to be filtered (must be available in dataset or specified
+        in remora.data_chunks.DatasetFilters.derived_cols), 2) operator to be
+        applied (must be attribute of operator package) 3) threshold value,
+        and 4) is the thershold value a quantile? (default is a raw threshold
+        value""",
+    )
+    subparser.add_argument(
+        "--store-raw-thresholds",
+        action="store_true",
+        help="""Store raw threshold to avoid computing these at access time.
+        Storing quantiles where specified will make a filter file which can be
+        copied to new datasets retaining the quantile value.""",
+    )
+    subparser.add_argument(
+        "--log-filename",
+        help="Log filename. Default: Don't output log file.",
+    )
+    subparser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing filter file.",
+    )
+    subparser.set_defaults(func=run_dataset_create_filter)
+
+
+def run_dataset_create_filter(args):
+    import json
+
+    from remora import log, util
+    from remora.data_chunks import (
+        load_dataset,
+        CoreRemoraDataset,
+        DatasetFilters,
+    )
+
+    def open_filter_file(path):
+        if path.exists() and not args.overwrite:
+            raise RemoraError(
+                "Filter file already exists and --overwrite not specified"
+            )
+        return open(path, "w")
+
+    if args.log_filename is not None:
+        log.init_logger(args.log_filename)
+
+    raw_filters = [
+        (col, op_str, float(thresh), util.str_to_bool(is_quantile))
+        for col, op_str, thresh, is_quantile in args.filter
+    ]
+    if args.dataset is not None:
+        ds = load_dataset(args.dataset)
+        filt_path = (
+            Path(ds.data_path) / CoreRemoraDataset._filters_path
+            if args.output_filter_path is None
+            else Path(args.output_filter_path)
+        )
+        filt_fh = open_filter_file(filt_path)
+        # load filters to validate and compute quantiles
+        filters = DatasetFilters.from_raw_filters(raw_filters, ds)
+        if args.store_raw_thresholds:
+            raw_filters = filters.storage_filters
+    elif args.output_filter_path is not None:
+        filt_fh = open_filter_file(Path(args.output_filter_path))
+    else:
+        if args.store_raw_thresholds and any(
+            isq for _, _, _, isq in raw_filters
+        ):
+            raise RemoraError(
+                """Cannot store computed quantile values without loading a
+                dataset"""
+            )
+        filt_fh = sys.stdout
+    json.dump(raw_filters, filt_fh)
+    if filt_fh != sys.stdout:
+        filt_fh.close()
 
 
 ################

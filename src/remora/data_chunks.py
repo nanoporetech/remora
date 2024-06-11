@@ -2,6 +2,7 @@ import re
 import os
 import json
 import hashlib
+import operator
 import dataclasses
 from glob import glob
 from copy import deepcopy
@@ -983,6 +984,107 @@ class DatasetMetadata:
             json.dump(self_dict, metadata_fh, cls=NpEncoder)
 
 
+class DatasetFilters:
+    """Filters to be applied to a CoreRemoraDataset at retrieval time"""
+
+    # derived columns potentially accessing multiple arrays
+    _derived_cols = {
+        "samples_per_base": lambda sb: sb["signal"].shape[1]
+        / sb["sequence_lengths"]
+    }
+
+    def __init__(self, filters=None):
+        self.filters = filters
+
+    @property
+    def filter_columns(self):
+        return [
+            col
+            for col, _, _ in self.raw_filters
+            if col not in self._derived_cols
+        ]
+
+    @property
+    def storage_filters(self):
+        """Convert operators to string for storage"""
+        return [
+            (col, op.__name__, thresh)
+            for col, op, thresh, is_quantile in self.filters
+        ]
+
+    @classmethod
+    def from_raw_filters(cls, raw_filters, dataset=None):
+        if raw_filters is None:
+            return cls()
+        return cls(DatasetFilters.parse_filters(raw_filters, dataset))
+
+    @staticmethod
+    def parse_filters(raw_filters, dataset=None):
+        filters = []
+        for filt_i in raw_filters:
+            if len(filt_i) == 4:
+                col, op_str, thresh, is_quantile = filt_i
+            elif (filt_i) == 3:
+                col, op_str, thresh = filt_i
+                is_quantile = False
+            op = getattr(operator, op_str)
+            if is_quantile:
+                if dataset is None:
+                    raise RemoraError(
+                        "Dataset must be provided for quantile filter value"
+                    )
+                try:
+                    col_arr = DatasetFilters._derived_cols[col](
+                        dataset.array_dict
+                    )
+                except KeyError:
+                    try:
+                        col_arr = getattr(dataset, col)
+                    except AttributeError:
+                        raise RemoraError(
+                            f"Dataset does not contain column: {col}"
+                        )
+                # TODO potentially perform this operation lazily on first access
+                thresh = np.quantile(col_arr, thresh)
+                LOGGER.debug(
+                    f'Quantile filter set to: "{col}" {op_str} {thresh}'
+                )
+            elif (
+                dataset is not None
+                and col not in DatasetFilters._derived_cols
+                and col not in dataset
+            ):
+                raise RemoraError(f"Dataset does not contain column: {col}")
+            filters.append(col, op, thresh)
+        return filters
+
+    @classmethod
+    def from_file(cls, filters_path):
+        with open(filters_path) as filters_fh:
+            raw_filters = json.load(filters_fh)
+        return DatasetFilters.from_raw_filters(raw_filters)
+
+    def apply_filters(self, super_batch):
+        if self.filters is None:
+            return
+        filt_arrs = []
+        for col, op, thresh in self.filters:
+            try:
+                col_arr = self._derived_cols[col](super_batch)
+            except KeyError:
+                try:
+                    col_arr = super_batch[col]
+                except AttributeError:
+                    raise RemoraError(
+                        f"Super batch does not contain column: {col}"
+                    )
+                col_arr = super_batch[col]
+            filt_arrs.append(op(col_arr, thresh))
+        filt_rows = np.logical_and.reduce(filt_arrs)
+        for col in super_batch.keys():
+            super_batch[col] = super_batch[col][filt_rows]
+
+
 def check_super_batch(super_batch, chunk_width):
     if not np.all(super_batch["sequence_lengths"]) > 0:
         raise RemoraError("Sequence lengths must all be positive.")
@@ -1023,7 +1125,7 @@ class CoreRemoraDataset:
     training data.
 
     Args:
-        data_path (str):
+        data_path (str): Path to dataset stored on disk
         mode (str): Mode for dataset. "r"ead (default) or "w"rite
         metadata (DatasetMetadata): Metadata associated with this dataset
         override_metadata (dict): Values to override when reading metadata from
@@ -1075,6 +1177,8 @@ class CoreRemoraDataset:
         "sequence_lengths": np.int16,
     }
     _core_arrays = list(_core_dtypes.keys())
+
+    _filters_path = "filters.jsn"
 
     @staticmethod
     def dataset_paths(data_path):
@@ -1226,6 +1330,19 @@ class CoreRemoraDataset:
             yield getattr(self, array_name)[
                 self.metadata.dataset_start : self.metadata.dataset_end
             ]
+
+    @property
+    def arrays_dict(self):
+        """Generator of chunk arrays in dataset. Arrays will be sliced to
+        current dataset size not allocated arrays. Memory mapped ararys are
+        returned.
+        """
+        arr_dict = {}
+        for array_name in self.array_names:
+            arr_dict[array_name] = getattr(self, array_name)[
+                self.metadata.dataset_start : self.metadata.dataset_end
+            ]
+        return arr_dict
 
     @property
     def arrays_info(self):
@@ -1910,9 +2027,9 @@ class CoreRemoraDataset:
                 + sum(self.metadata.stored_kmer_context_bases)
             ):
                 super_batch["sequence"][sb_idx, chunk_len:] = -1
-        # TODO add functionality to apply a set of filters at this point
         super_batch = self.trim_sb_kmer_context_bases(super_batch)
         super_batch = self.trim_sb_chunk_context(super_batch)
+        self.filters.apply_filters(super_batch)
         return super_batch
 
     def iter_super_batches(self):
