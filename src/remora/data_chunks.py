@@ -258,9 +258,9 @@ class RemoraRead:
             str_seq=self.str_seq,
             read_id=self.read_id,
             labels=None if self.labels is None else self.labels.copy(),
-            focus_bases=None
-            if self.focus_bases is None
-            else self.focus_bases.copy(),
+            focus_bases=(
+                None if self.focus_bases is None else self.focus_bases.copy()
+            ),
         )
 
     def refine_signal_mapping(self, sig_map_refiner, check_read=False):
@@ -1219,9 +1219,8 @@ class CoreRemoraDataset:
     @property
     def arrays(self):
         """Generator of chunk arrays in dataset. Arrays will be sliced to
-        current dataset size not allocated arrays.
-
-        Note that this will load each array from disk into RAM.
+        current dataset size not allocated arrays. Memory mapped ararys are
+        returned.
         """
         for array_name in self.array_names:
             yield getattr(self, array_name)[
@@ -1904,6 +1903,13 @@ class CoreRemoraDataset:
             super_batch["modbase_label"] = self.modbase_label_conv[
                 super_batch["modbase_label"]
             ]
+        if constants.DATASET_SEQS_AND_LENS in self.return_arrays:
+            # replace padding with -1 required for bonito processing
+            for sb_idx, chunk_len in enumerate(
+                super_batch["sequence_lengths"]
+                + sum(self.metadata.stored_kmer_context_bases)
+            ):
+                super_batch["sequence"][sb_idx, chunk_len:] = -1
         # TODO add functionality to apply a set of filters at this point
         super_batch = self.trim_sb_kmer_context_bases(super_batch)
         super_batch = self.trim_sb_chunk_context(super_batch)
@@ -1956,9 +1962,11 @@ class CoreRemoraDataset:
             # this will likely require a new cython function
             # k-mer context was trimmed off in super batch. Seq lens updated
             # here to be the full sequence length.
+            seq_lens += sum(self.metadata.kmer_context_bases)
             return [
-                ("seq", seqs),
-                ("seq_len", seq_lens + sum(self.metadata.kmer_context_bases)),
+                # convert to bonito alphabet "NACGT"
+                ("seq", (seqs + 1).astype(np.int64)),
+                ("seq_len", seq_lens.astype(np.int64)),
             ]
         else:
             raise RemoraError(
@@ -1983,6 +1991,9 @@ class CoreRemoraDataset:
                     j_batch[arr_name] = arrs[0]
                 else:
                     j_batch[arr_name] = np.concatenate(arrs, axis=0)
+            if "seq" in j_batch:
+                # clip seq array to limit size for GPU transfer
+                j_batch["seq"] = j_batch["seq"][:, : j_batch["seq_len"].max()]
             return j_batch
 
         def update_batch(st, en=None):
