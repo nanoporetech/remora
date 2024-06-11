@@ -2331,6 +2331,10 @@ class RemoraDataset(IterableDataset):
         return cls(datasets, props, hashes, **kwargs)
 
     @property
+    def is_modbase_dataset(self):
+        return self.metadata.dataset_type == constants.DATASET_TYPE_MODBASE
+
+    @property
     def num_datasets(self):
         return len(self.datasets)
 
@@ -2357,21 +2361,25 @@ class RemoraDataset(IterableDataset):
 
     @property
     def summary(self):
-        return (
+        summ_txt = (
             f"                     size : {self.size:,}\n"
-            "     is_modbase_dataset : "
+            "        is_modbase_dataset : "
             f"{self.metadata.is_modbase_dataset}\n"
-            f"                mod_bases : {self.metadata.mod_bases}\n"
-            f"           mod_long_names : {self.metadata.mod_long_names}\n"
             f"       kmer_context_bases : {self.metadata.kmer_context_bases}\n"
             f"            chunk_context : {self.metadata.chunk_context}\n"
-            f"                   motifs : {self.metadata.motifs}\n"
             f"           reverse_signal : {self.metadata.reverse_signal}\n"
             f" chunk_extract_base_start : {self.metadata.base_start_justify}\n"
             f"     chunk_extract_offset : {self.metadata.offset}\n"
             f"               pa_scaling : {self.metadata.pa_scaling}\n"
             f"          sig_map_refiner : {self.metadata.sig_map_refiner}\n"
         )
+        if self.is_modbase_dataset:
+            summ_txt += (
+                f"                mod_bases : {self.metadata.mod_bases}\n"
+                f"           mod_long_names : {self.metadata.mod_long_names}\n"
+                f"                   motifs : {self.metadata.motifs}\n"
+            )
+        return summ_txt
 
     @property
     def init_kwargs(self):
@@ -2382,6 +2390,7 @@ class RemoraDataset(IterableDataset):
             "super_batch_size": self.super_batch_size,
             "super_batch_sample_frac": self.super_batch_sample_frac,
             "seed": self.seed,
+            "use_constant_batch_mix": self.use_constant_batch_mix,
             "return_arrays": self.return_arrays,
         }
 
@@ -2559,7 +2568,7 @@ class RemoraDataset(IterableDataset):
         for md_key in (
             "mod_bases",
             "mod_long_names",
-            "extra_siganl_arrays",
+            "extra_signal_arrays",
             "extra_metadata_arrays",
             "extra_sequence_arrays",
             "kmer_context_bases",
@@ -2591,9 +2600,11 @@ class RemoraDataset(IterableDataset):
                     override_metadata=test_md,
                 )
             )
-        return RemoraDataset(train_datasets, **self.init_kwargs), RemoraDataset(
-            test_datasets, **self.init_kwargs
-        )
+        trn_ds = RemoraDataset(train_datasets, **self.init_kwargs)
+        trn_ds.update_metadata(self)
+        test_ds = RemoraDataset(test_datasets, **self.init_kwargs)
+        test_ds.update_metadata(self)
+        return trn_ds, test_ds
 
     def head(self, num_chunks, override_metadata=None):
         ds_sizes = compute_best_split(num_chunks, self.props)
@@ -2611,7 +2622,9 @@ class RemoraDataset(IterableDataset):
                     ds.data_path, infinite_iter=False, override_metadata=head_md
                 )
             )
-        return RemoraDataset(head_datasets, **self.init_kwargs)
+        head_ds = RemoraDataset(head_datasets, **self.init_kwargs)
+        head_ds.update_metadata(self)
+        return head_ds
 
     def _set_sub_ds_params(self):
         for ds, sb_offset in zip(self.datasets, self.super_batch_offsets):

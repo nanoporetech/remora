@@ -344,10 +344,7 @@ def train_model(
     scheduler = train_opts.load_scheduler(opt)
 
     LOGGER.debug("Splitting dataset")
-    trn_ds, val_ds = dataset.train_test_split(
-        num_test_chunks,
-        override_metadata=override_metadata,
-    )
+    trn_ds, val_ds = dataset.train_test_split(num_test_chunks)
     val_ds.super_batch_sample_frac = None
     val_ds.do_check_super_batches = True
     val_ds.set_use_constant_batch_mix(True)
@@ -362,10 +359,7 @@ def train_model(
         worker_init_fn=dataloader_worker_init,
     )
     LOGGER.debug("Extracting head of train dataset")
-    val_trn_ds = trn_ds.head(
-        num_test_chunks,
-        override_metadata=override_metadata,
-    )
+    val_trn_ds = trn_ds.head(num_test_chunks)
     val_trn_ds.super_batch_sample_frac = None
     val_trn_ds.do_check_super_batches = True
     if not read_batches_from_disk:
