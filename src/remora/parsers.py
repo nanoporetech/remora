@@ -60,7 +60,7 @@ def register_dataset(parser):
     register_dataset_merge(ssubparser)
     register_dataset_head(ssubparser)
     register_dataset_copy(ssubparser)
-    register_dataset_create_filter(ssubparser)
+    register_dataset_make_filter(ssubparser)
 
 
 def register_dataset_prepare(parser):
@@ -960,10 +960,10 @@ def run_dataset_copy(args):
     LOGGER.info(dataset.summary)
 
 
-def register_dataset_create_filter(parser):
+def register_dataset_make_filter(parser):
     subparser = parser.add_parser(
-        "create_filter",
-        description="""Create dataset filter. Filters will be applied at access
+        "make_filter",
+        description="""Make dataset filter. Filters will be applied at access
         time and will not effect the dataset contents.""",
         help="Create dataset filter",
         formatter_class=SubcommandHelpFormatter,
@@ -1005,10 +1005,10 @@ def register_dataset_create_filter(parser):
         action="store_true",
         help="Overwrite existing filter file.",
     )
-    subparser.set_defaults(func=run_dataset_create_filter)
+    subparser.set_defaults(func=run_dataset_make_filter)
 
 
-def run_dataset_create_filter(args):
+def run_dataset_make_filter(args):
     import json
 
     from remora import log, util

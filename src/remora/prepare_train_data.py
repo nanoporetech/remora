@@ -184,6 +184,15 @@ def extract_chunk_dataset(
                     "int64",
                     "Position within read training sequence",
                 ),
+                "percent_identity": (
+                    "float32",
+                    "Reference mapping percent identity",
+                ),
+                "start_time": (
+                    "uint32",
+                    "Read start time in seconds since first read in dataset",
+                ),
+                "duration": ("int64", "Number of samples in trimmed read"),
             },
             chunk_context=chunk_context,
             kmer_context_bases=kmer_context_bases,
@@ -325,10 +334,8 @@ def extract_basecall_chunks(
                 seq_to_sig_map=shift_ref_to_sig,
                 str_seq=io_read.ref_seq,
                 read_id=io_read.read_id,
+                read_metrics=io_read.read_metrics,
             )
-            remora_read.percent_identity = io_read.percent_identity
-            remora_read.start_time = io_read.start_time
-            remora_read.duration = io_read.dacs.size
 
         remora_read.refine_signal_mapping(sig_map_refiner)
         remora_read.downsample_focus_bases(max_chunks_per_read)
@@ -397,6 +404,7 @@ def extract_basecall_chunk_dataset(
     LOGGER.info("Opening dataset for output")
     max_seq_len = sum(chunk_context) // min_samps_per_base
     LOGGER.debug(f"Maximum chunk sequence length set to {max_seq_len}")
+    # to add more extra metadata values see io.READ_METRICS
     dataset = CoreRemoraDataset(
         data_path=out_path,
         mode="w",

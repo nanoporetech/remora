@@ -143,6 +143,7 @@ class RemoraRead:
         labels (np.ndarray): Output label for each base in read
         focus_bases (np.ndarray): Sites from read to produce calls
         batches (list): List of batches from RemoraDataset
+        read_metrics (dict): Metrics related to this read. See util.READ_METRICS
 
     Note: Must provide either int_seq or str_seq. If str_seq is provided
     int_seq will be derived on init.
@@ -158,6 +159,7 @@ class RemoraRead:
     labels: np.ndarray = None
     focus_bases: np.ndarray = None
     batches: list = None
+    read_metrics: dict = None
 
     def __post_init__(self):
         if self.int_seq is None:
@@ -417,10 +419,8 @@ class RemoraRead:
             read_focus_base=read_focus_base,
             read_id=self.read_id,
             modbase_label=label,
+            read_metrics=self.read_metrics,
         )
-        chunk.percent_identity = getattr(self, "percent_identity", None)
-        chunk.start_time = getattr(self, "start_time", None)
-        chunk.duration = self.dacs.size
         if check_chunk:
             chunk.check()
         return chunk
@@ -616,6 +616,7 @@ class Chunk:
         read_focus_base (int): Position within full read for validation purposes
         read_id (str): Read ID
         modbase_label (int): Integer label for training/validation.
+        read_metrics (dict): Metrics related to this read. See util.READ_METRICS
     """
 
     signal: np.ndarray
@@ -627,6 +628,7 @@ class Chunk:
     read_focus_base: int
     read_id: str = None
     modbase_label: int = None
+    read_metrics: dict = None
     _base_sig_lens: np.ndarray = None
 
     def mask_focus_base(self):
@@ -999,18 +1001,13 @@ class DatasetFilters:
     @property
     def filter_columns(self):
         return [
-            col
-            for col, _, _ in self.raw_filters
-            if col not in self._derived_cols
+            col for col, _, _ in self.filters if col not in self._derived_cols
         ]
 
     @property
     def storage_filters(self):
         """Convert operators to string for storage"""
-        return [
-            (col, op.__name__, thresh)
-            for col, op, thresh in self.filters
-        ]
+        return [(col, op.__name__, thresh) for col, op, thresh in self.filters]
 
     @classmethod
     def from_raw_filters(cls, raw_filters, dataset=None):
@@ -1024,9 +1021,11 @@ class DatasetFilters:
         for filt_i in raw_filters:
             if len(filt_i) == 4:
                 col, op_str, thresh, is_quantile = filt_i
-            elif (filt_i) == 3:
+            elif len(filt_i) == 3:
                 col, op_str, thresh = filt_i
                 is_quantile = False
+            else:
+                raise RemoraError(f"Invalid filter length {len(filt_i)}")
             op = getattr(operator, op_str)
             if is_quantile:
                 if dataset is None:
@@ -1039,7 +1038,9 @@ class DatasetFilters:
                     )
                 except KeyError:
                     try:
-                        col_arr = getattr(dataset, col)
+                        st = dataset.metadata.dataset_start
+                        en = dataset.metadata.dataset_end
+                        col_arr = getattr(dataset, col)[st:en]
                     except AttributeError:
                         raise RemoraError(
                             f"Dataset does not contain column: {col}"
@@ -1060,6 +1061,9 @@ class DatasetFilters:
 
     @classmethod
     def from_file(cls, filters_path):
+        if filters_path is None:
+            return
+        print(filters_path)
         with open(filters_path) as filters_fh:
             raw_filters = json.load(filters_fh)
         return DatasetFilters.from_raw_filters(raw_filters)
@@ -1149,6 +1153,9 @@ class CoreRemoraDataset:
         return_arrays (list): Specify arrays to return from batch
             extraction/iteration methods. Set this value with set_return_arrays
             method.
+        filters_path (str): Path to a filters file. If not provided the default
+            location within the dataset directory will be checked.
+        filters (DatasetFilters): Parsed dataset filters object.
     """
 
     data_path: str = None
@@ -1162,6 +1169,8 @@ class CoreRemoraDataset:
     infinite_iter: bool = True
     do_check_super_batches: bool = False
     return_arrays: list = None
+    filters_path: str = None
+    filters: DatasetFilters = None
 
     # attributes to hold current super batch
     _sb_iter = None
@@ -1250,6 +1259,14 @@ class CoreRemoraDataset:
         return os.path.join(self.data_path, "metadata.jsn")
 
     @property
+    def filters_path_resolved(self):
+        if self.filters_path is not None:
+            return self.filters_path
+        if self.data_path is None:
+            raise RemoraError("No path available for in-memory dataset")
+        return os.path.join(self.data_path, self._filters_path)
+
+    @property
     def kmer_table_path(self):
         if self.data_path is None:
             raise RemoraError("No path available for in-memory dataset")
@@ -1318,6 +1335,15 @@ class CoreRemoraDataset:
             if arr_name in core_arrays:
                 continue
             sb_load_arrs.append(arr_name)
+        # add filter columns to be loaded
+        if self.filters is not None:
+            for arr_name, _, _ in self.filters.storage_filters:
+                if (
+                    arr_name in DatasetFilters._derived_cols
+                    or arr_name in sb_load_arrs
+                ):
+                    continue
+                sb_load_arrs.append(arr_name)
         return sb_load_arrs
 
     @property
@@ -1387,6 +1413,11 @@ class CoreRemoraDataset:
                 f"                   motifs : {self.metadata.motifs}\n"
             )
         return summ_txt
+
+    def load_filters(self):
+        if not os.path.exists(self.filters_path_resolved):
+            return
+        self.filters = DatasetFilters.from_file(self.filters_path_resolved)
 
     def get_extra_counts(self, arr_name="label"):
         """Get bincount of categorical metadata array"""
@@ -1698,6 +1729,19 @@ class CoreRemoraDataset:
     def write_metadata(self):
         self.metadata.write(self.metadata_path, self.kmer_table_path)
 
+    def set_return_arrays(self, return_arrays):
+        if return_arrays is None:
+            self.return_arrays = None
+            return
+        # check that return arrays are available
+        invalid_return_arrays = set(return_arrays).difference(
+            self.valid_return_arrays
+        )
+        if len(invalid_return_arrays) > 1:
+            ira_str = ",".join(invalid_return_arrays)
+            raise RemoraError(f"Invalid return array(s) requested: {ira_str}")
+        self.return_arrays = return_arrays
+
     def __post_init__(self):
         self.modbase_label_conv = None
         assert self.mode in "rw", "mode must be 'r' or 'w'"
@@ -1719,23 +1763,10 @@ class CoreRemoraDataset:
             self.write_metadata()
         self.refresh_memmaps()
         self._iter = None
-        self.set_return_arrays(self.return_arrays)
-
-    def set_return_arrays(self, return_arrays):
-        if return_arrays is None:
-            self.return_arrays = None
-            return
-        # check that return arrays are available
-        invalid_return_arrays = set(return_arrays).difference(
-            self.valid_return_arrays
-        )
-        if len(invalid_return_arrays) > 1:
-            ira_str = ",".join(invalid_return_arrays)
-            raise RemoraError(f"Invalid return array(s) requested: {ira_str}")
-        self.return_arrays = return_arrays
+        self.load_filters()
 
     def write_batch(self, arrays):
-        # TODO look into adding explicit write buffer to this function
+        # TODO add explicit write buffer to this function
         if self.mode != "w":
             raise RemoraError("Cannot write when mode is not 'w'")
         batch_size = next(iter(arrays.values())).shape[0]
@@ -1792,8 +1823,16 @@ class CoreRemoraDataset:
         }
         # add all extra attributes
         for arr_name in self.metadata.extra_array_names:
+            try:
+                # first try direct attributes of chunk
+                metric = getattr(chunk, arr_name)
+            except AttributeError:
+                # then try read metrics dict
+                metric = chunk.read_metrics.get(
+                    arr_name, util.READ_METRICS[arr_name].default
+                )
             chunk_dict[arr_name] = np.array(
-                [getattr(chunk, arr_name)],
+                [metric],
                 dtype=self.metadata.extra_array_dtypes[arr_name],
             )
         self.write_batch(chunk_dict)
@@ -2029,7 +2068,8 @@ class CoreRemoraDataset:
                 super_batch["sequence"][sb_idx, chunk_len:] = -1
         super_batch = self.trim_sb_kmer_context_bases(super_batch)
         super_batch = self.trim_sb_chunk_context(super_batch)
-        self.filters.apply_filters(super_batch)
+        if self.filters is not None:
+            self.filters.apply_filters(super_batch)
         return super_batch
 
     def iter_super_batches(self):
@@ -2703,11 +2743,13 @@ class RemoraDataset(IterableDataset):
                 raise RemoraError("Not enough chunks")
             trn_md = override_metadata.copy()
             trn_md["dataset_start"] = ds.metadata.dataset_start + test_size
+            trn_md["dataset_end"] = ds.metadata.dataset_end
             LOGGER.debug(f"train split override metadata: {trn_md}")
             train_datasets.append(
                 CoreRemoraDataset(ds.data_path, override_metadata=trn_md)
             )
             test_md = override_metadata.copy()
+            test_md["dataset_start"] = ds.metadata.dataset_start
             test_md["dataset_end"] = ds.metadata.dataset_start + test_size
             LOGGER.debug(f"test split override metadata: {test_md}")
             test_datasets.append(
@@ -2827,6 +2869,7 @@ class RemoraDataset(IterableDataset):
         ]
 
     def epoch_summary(self, batches_per_epoch):
+        # TODO add filters to this summary
         if self.use_constant_batch_mix:
             epoch_chunk_totals = [
                 batches_per_epoch * ds_bs for ds_bs in self._batch_sizes
@@ -2836,6 +2879,22 @@ class RemoraDataset(IterableDataset):
                 batches_per_epoch * self.batch_size * prop
                 for prop in self.props
             ]
+        if not self.is_modbase_dataset:
+            summ_strs = [
+                f"{ds_chunks_per_epoch/ds.size:10.4%}\t"
+                f"{ds_chunks_per_epoch:,.1f}\t"
+                f"{ds.size:,}\t"
+                f"{ds.data_path}"
+                for ds_chunks_per_epoch, ds in zip(
+                    epoch_chunk_totals,
+                    self.datasets,
+                )
+            ]
+            return (
+                "percent_of_dataset_per_epoch\tdataset_chunks_per_epoch\t"
+                "dataset_size\tpath\n"
+            ) + "\n".join(summ_strs)
+
         dss_lab_counts = [
             dict(
                 zip(
@@ -2851,8 +2910,8 @@ class RemoraDataset(IterableDataset):
             dss_lab_props.append(
                 dict((lab, cnt / ds_tot) for lab, cnt in ds_lab_counts.items())
             )
-        # compute the number of chunks of each label extracted from each dataset
-        # each batch
+        # compute the number of chunks of each label extracted from each
+        # dataset each batch
         batch_lab_cols = [
             "\t".join(
                 f"{ds_lp.get(lab, 0) * ds_bs:,.1f}"

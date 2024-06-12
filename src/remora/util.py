@@ -13,6 +13,8 @@ import multiprocessing as mp
 from threading import Thread
 from itertools import product
 from dataclasses import dataclass
+from collections import namedtuple
+from datetime import datetime, timezone
 from os.path import realpath, expanduser
 
 import torch
@@ -589,6 +591,54 @@ def profile(prof_path):
         return wrapper
 
     return inner
+
+
+################
+# Read Metrics #
+################
+
+
+REF_DT = datetime(2000, 1, 1, tzinfo=timezone.utc)
+
+READ_METRIC = namedtuple("READ_METRIC", ("func", "default"))
+
+
+def compute_duration(io_read):
+    return io_read.dacs.size
+
+
+SIGNAL_METRICS = {"duration": READ_METRIC(compute_duration, 0)}
+
+
+def compute_percent_identity(bam_read):
+    """Compute percent identity, defined as edit distance over total alignment
+    length.
+    """
+    M, I, D, N, S, H, P, E, X, B, NM = bam_read.get_cigar_stats()[0]
+    num_align = M + E + X + I + D
+    if num_align == 0:
+        return 0
+    return 100.0 * ((num_align - NM) / num_align)
+
+
+def compute_start_time(bam_read):
+    try:
+        return int(
+            (
+                datetime.fromisoformat(bam_read.get_tag("st")) - REF_DT
+            ).total_seconds()
+        )
+    except KeyError:
+        return np.iinfo(np.uint32).max
+
+
+MAPPING_METRICS = {
+    "percent_identity": READ_METRIC(compute_percent_identity, 0),
+    "start_time": READ_METRIC(compute_start_time, np.iinfo(np.uint32).max),
+}
+
+READ_METRICS = SIGNAL_METRICS.copy()
+READ_METRICS.update(MAPPING_METRICS)
 
 
 ###################
