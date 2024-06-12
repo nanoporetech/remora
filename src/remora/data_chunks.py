@@ -1063,7 +1063,6 @@ class DatasetFilters:
     def from_file(cls, filters_path):
         if filters_path is None:
             return
-        print(filters_path)
         with open(filters_path) as filters_fh:
             raw_filters = json.load(filters_fh)
         return DatasetFilters.from_raw_filters(raw_filters)
@@ -2148,9 +2147,6 @@ class CoreRemoraDataset:
                     j_batch[arr_name] = arrs[0]
                 else:
                     j_batch[arr_name] = np.concatenate(arrs, axis=0)
-            if "seq" in j_batch:
-                # clip seq array to limit size for GPU transfer
-                j_batch["seq"] = j_batch["seq"][:, : j_batch["seq_len"].max()]
             return j_batch
 
         def update_batch(st, en=None):
@@ -2611,30 +2607,49 @@ class RemoraDataset(IterableDataset):
                     f"Extra arrays not equal: {ds.metadata.extra_array_names} "
                     f"!= {self.metadata.extra_array_names}"
                 )
-            for mb, mln in zip(
-                ds.metadata.mod_bases, ds.metadata.mod_long_names
-            ):
-                if mb in self.metadata.mod_bases:
-                    # ensure same mod long name is specified for the short name
-                    md_mln = next(
-                        md_mln
-                        for md_mb, md_mln in zip(
-                            self.metadata.mod_bases,
-                            self.metadata.mod_long_names,
+            if ds.metadata.is_modbase_dataset:
+                for mb, mln in zip(
+                    ds.metadata.mod_bases, ds.metadata.mod_long_names
+                ):
+                    if mb in self.metadata.mod_bases:
+                        # ensure same mod short and long names
+                        md_mln = next(
+                            md_mln
+                            for md_mb, md_mln in zip(
+                                self.metadata.mod_bases,
+                                self.metadata.mod_long_names,
+                            )
+                            if mb == md_mb
                         )
-                        if mb == md_mb
+                        assert mln == md_mln, (
+                            "Mismatched modified bases.\n\tPreviously loaded "
+                            f"modified bases: {self.metadata.mod_bases} "
+                            f"{self.metadata.mod_long_names}\n\tNew modified "
+                            f"bases: {ds.metadata.mod_bases} "
+                            f"{ds.metadata.mod_long_names}"
+                        )
+                    else:
+                        # add mod base to super dataset metadata
+                        self.metadata.mod_bases.append(mb)
+                        self.metadata.mod_long_names.append(mln)
+                # merge motifs
+                if set(ds.metadata.motifs) != set(self.metadata.motifs):
+                    LOGGER.debug(
+                        f"Motif sets not equal: {set(ds.metadata.motifs)} "
+                        f"!= {set(self.metadata.motifs)}. Merging motif sets."
                     )
-                    assert mln == md_mln, (
-                        "Mismatched modified bases.\n\tPreviously loaded "
-                        f"modified bases: {self.metadata.mod_bases} "
-                        f"{self.metadata.mod_long_names}\n\tNew modified "
-                        f"bases: {ds.metadata.mod_bases} "
-                        f"{ds.metadata.mod_long_names}"
+                    (
+                        self.metadata.motif_sequences,
+                        self.metadata.motif_offsets,
+                    ) = zip(
+                        *[
+                            motif.to_tuple()
+                            for motif in util.merge_motifs(
+                                self.metadata.motifs + ds.metadata.motifs
+                            )
+                        ]
                     )
-                else:
-                    # add mod base to super dataset metadata
-                    self.metadata.mod_bases.append(mb)
-                    self.metadata.mod_long_names.append(mln)
+                    self.metadata.check_motifs()
 
             # kmer_context bases can be reduced
             if (
@@ -2673,24 +2688,6 @@ class RemoraDataset(IterableDataset):
                         ds.metadata.chunk_context[1],
                     ),
                 )
-            # merge motifs
-            if set(ds.metadata.motifs) != set(self.metadata.motifs):
-                LOGGER.debug(
-                    f"Motif sets not equal: {set(ds.metadata.motifs)} "
-                    f"!= {set(self.metadata.motifs)}. Merging motif sets."
-                )
-                (
-                    self.metadata.motif_sequences,
-                    self.metadata.motif_offsets,
-                ) = zip(
-                    *[
-                        motif.to_tuple()
-                        for motif in util.merge_motifs(
-                            self.metadata.motifs + ds.metadata.motifs
-                        )
-                    ]
-                )
-                self.metadata.check_motifs()
 
         if self.metadata.is_modbase_dataset:
             # sort modified bases alphabetically
@@ -2808,13 +2805,17 @@ class RemoraDataset(IterableDataset):
             ds_arrays = [arr for arr in ds_arrays if arr is not None]
             if len(ds_arrays) == 0:
                 break
-            yield [
-                torch.from_numpy(
-                    np.concatenate(
-                        [arr[arr_name] for arr in ds_arrays],
-                        axis=0,
-                    )
+            r_arrs = {}
+            for arr_name in self.output_return_arrays:
+                r_arrs[arr_name] = np.concatenate(
+                    [arr[arr_name] for arr in ds_arrays],
+                    axis=0,
                 )
+            if "seq" in r_arrs:
+                # clip seq array to limit size for GPU transfer
+                r_arrs["seq"] = r_arrs["seq"][:, : r_arrs["seq_len"].max()]
+            yield [
+                torch.from_numpy(r_arrs[arr_name])
                 for arr_name in self.output_return_arrays
             ]
 
@@ -2950,3 +2951,52 @@ class RemoraDataset(IterableDataset):
             f"dataset_chunks_per_epoch\tdataset_size\t{ds_labels_header}\t"
             "path\n"
         ) + "\n".join(summ_strs)
+
+
+def load_remora_dataset_for_bonito(
+    ds_path,
+    n_pre_context_bases,
+    n_post_context_bases,
+    batch_size,
+    super_batch_size=200_000,
+    super_batch_sample_frac=None,
+    chunks=None,
+    valid_chunks=1_000,
+    chunk_width=None,
+    seed=None,
+):
+    override_metadata = {
+        "kmer_context_bases": (n_pre_context_bases, n_post_context_bases)
+    }
+    if chunk_width is not None:
+        override_metadata["chunk_context"] = (0, chunk_width)
+    dataset = load_dataset(
+        ds_path,
+        core_ds_kwargs={"override_metadata": override_metadata},
+        ds_kwargs={
+            "batch_size": batch_size,
+            "super_batch_size": super_batch_size,
+            "super_batch_sample_frac": super_batch_sample_frac,
+            "return_arrays": ["signal", "seq_and_len"],
+            "seed": seed,
+        },
+    )
+    trn_ds, val_ds = dataset.train_test_split(valid_chunks)
+    val_ds.super_batch_sample_frac = None
+    val_ds.do_check_super_batches = True
+    val_ds.set_use_constant_batch_mix(True)
+    val_ds.load_all_batches()
+
+    train_loader_kwargs = {"dataset": trn_ds, "shuffle": False}
+    valid_loader_kwargs = {"dataset": val_ds, "shuffle": False}
+    return train_loader_kwargs, valid_loader_kwargs
+
+
+class RemoraDatasetBonitoLoader:
+    def __init__(self, config_path, **kwargs):
+        tl_kwargs, vl_kwargs = load_remora_dataset_for_bonito(
+            config_path, **kwargs
+        )
+        self.train_loader_kwargs = lambda **kwargs: tl_kwargs
+        self.valid_loader_kwargs = lambda **kwargs: vl_kwargs
+        self.worker_init_fn = dataloader_worker_init

@@ -686,7 +686,7 @@ def run_dataset_make_config(args):
     )
     with open(args.out_path, "w") as fh:
         json.dump(dataset.get_config(), fh)
-    LOGGER.info(dataset.summary)
+    LOGGER.info("\n" + dataset.summary)
 
 
 def register_dataset_merge(parser):
