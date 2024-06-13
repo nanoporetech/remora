@@ -2987,8 +2987,20 @@ def load_remora_dataset_for_bonito(
     val_ds.set_use_constant_batch_mix(True)
     val_ds.load_all_batches()
 
-    train_loader_kwargs = {"dataset": trn_ds, "shuffle": False}
-    valid_loader_kwargs = {"dataset": val_ds, "shuffle": False}
+    train_loader_kwargs = {
+        "dataset": trn_ds,
+        "shuffle": False,
+        "batch_size": None,
+        "persistent_workers": True,
+        "worker_init_fn": dataloader_worker_init,
+    }
+    valid_loader_kwargs = {
+        "dataset": val_ds,
+        "shuffle": False,
+        "batch_size": None,
+        "num_workers": 1,
+        "pin_memory": False,
+    }
     return train_loader_kwargs, valid_loader_kwargs
 
 
