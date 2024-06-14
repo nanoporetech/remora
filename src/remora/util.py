@@ -12,9 +12,9 @@ from shutil import rmtree
 import multiprocessing as mp
 from threading import Thread
 from itertools import product
+from datetime import datetime
 from dataclasses import dataclass
 from collections import namedtuple
-from datetime import datetime, timezone
 from os.path import realpath, expanduser
 
 import torch
@@ -598,7 +598,7 @@ def profile(prof_path):
 ################
 
 
-REF_DT = datetime(2000, 1, 1, tzinfo=timezone.utc)
+REF_DT = datetime(2000, 1, 1)
 
 READ_METRIC = namedtuple("READ_METRIC", ("func", "default"))
 
@@ -623,13 +623,27 @@ def compute_percent_identity(bam_read):
 
 def compute_start_time(bam_read):
     try:
-        return int(
-            (
-                datetime.fromisoformat(bam_read.get_tag("st")) - REF_DT
-            ).total_seconds()
-        )
+        st = bam_read.get_tag("st")
     except KeyError:
         return np.iinfo(np.uint32).max
+
+    if "+" in st:
+        st = st.split("+")[0]
+    elif "-" in st and st.count("-") > 2:
+        st = "-".join(st.split("-")[:3]) + "T" + st.split("T")[1]
+    try:
+        st = datetime.fromisoformat(st)
+    except ValueError:
+        # Handle cases with fractional seconds by padding zeros
+        st_parts = st.split(".")
+        if len(st_parts) < 2:
+            return np.iinfo(np.uint32).max
+        frac_sec = st_parts[1]
+        while len(frac_sec) < 6:
+            frac_sec += "0"
+        st = st_parts[0] + "." + frac_sec
+        st = datetime.fromisoformat(st)
+    return int((st - REF_DT).total_seconds())
 
 
 MAPPING_METRICS = {
@@ -637,8 +651,7 @@ MAPPING_METRICS = {
     "start_time": READ_METRIC(compute_start_time, np.iinfo(np.uint32).max),
 }
 
-READ_METRICS = SIGNAL_METRICS.copy()
-READ_METRICS.update(MAPPING_METRICS)
+READ_METRICS = {**SIGNAL_METRICS, **MAPPING_METRICS}
 
 
 ###################

@@ -1414,7 +1414,11 @@ class CoreRemoraDataset:
         return summ_txt
 
     def load_filters(self):
-        if not os.path.exists(self.filters_path_resolved):
+        try:
+            if not os.path.exists(self.filters_path_resolved):
+                return
+        except RemoraError:
+            # in-memory dataset
             return
         self.filters = DatasetFilters.from_file(self.filters_path_resolved)
 
@@ -1706,6 +1710,9 @@ class CoreRemoraDataset:
         for arr_name, arr_dtype, arr_shape in self.arrays_info:
             # close prev memmap to avoid mem leaks
             if hasattr(self, arr_name):
+                old_memmap = getattr(self, arr_name)
+                if isinstance(old_memmap, np.memmap):
+                    old_memmap._mmap.close()
                 delattr(self, arr_name)
             setattr(
                 self,
@@ -1826,6 +1833,8 @@ class CoreRemoraDataset:
                 # first try direct attributes of chunk
                 metric = getattr(chunk, arr_name)
             except AttributeError:
+                if chunk.read_metrics is None:
+                    raise RemoraError("Requested metric not available.")
                 # then try read metrics dict
                 metric = chunk.read_metrics.get(
                     arr_name, util.READ_METRICS[arr_name].default
@@ -2500,6 +2509,10 @@ class RemoraDataset(IterableDataset):
         return sum(ds.size for ds in self.datasets)
 
     @property
+    def batches_preloaded(self):
+        return self._all_batches is not None
+
+    @property
     def valid_hashes(self):
         return self._hashes is not None and all(
             ds_hash is not None for ds_hash in self._hashes
@@ -2525,6 +2538,7 @@ class RemoraDataset(IterableDataset):
             f"     chunk_extract_offset : {self.metadata.offset}\n"
             f"               pa_scaling : {self.metadata.pa_scaling}\n"
             f"          sig_map_refiner : {self.metadata.sig_map_refiner}\n"
+            f"        batches preloaded : {self.batches_preloaded}\n"
         )
         if self.is_modbase_dataset:
             summ_txt += (
@@ -2828,7 +2842,7 @@ class RemoraDataset(IterableDataset):
             ds.close_memmaps()
 
     def __iter__(self):
-        if self._all_batches is not None:
+        if self.batches_preloaded:
             self._iter = iter(self._all_batches)
             return self._iter
         # if first time calling iter or if this is an exhaustible dataset
@@ -2842,7 +2856,7 @@ class RemoraDataset(IterableDataset):
 
     def get_modbase_label_counts(self):
         label_counts = np.zeros(self.metadata.num_labels, dtype=int)
-        if self._all_batches is not None:
+        if self.batches_preloaded:
             for _, b_labels, _ in self._all_batches:
                 for idx, idx_cnt in enumerate(np.bincount(b_labels)):
                     label_counts[idx] += idx_cnt

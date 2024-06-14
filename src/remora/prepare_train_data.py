@@ -84,6 +84,7 @@ def extract_chunks(
                 str_seq=io_read.ref_seq,
                 labels=np.full(len(io_read.ref_seq), int_label, dtype=int),
                 read_id=io_read.read_id,
+                read_metrics=io_read.read_metrics,
             )
             if focus_ref_pos is None:
                 remora_read.set_motif_focus_bases(motifs)

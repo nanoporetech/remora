@@ -2016,9 +2016,21 @@ class Read:
         if self.read_metrics is None:
             self.read_metrics = {}
         for metric_name, metric in util.SIGNAL_METRICS.items():
-            self.read_metrics[metric_name] = metric.func(self)
+            try:
+                self.read_metrics[metric_name] = metric.func(self)
+            except Exception:
+                LOGGER.debug(
+                    f"Parsing {metric_name} from {self.read_id} failed"
+                )
+                self.read_metrics[metric_name] = metric.default
         for metric_name, metric in util.MAPPING_METRICS.items():
-            self.read_metrics[metric_name] = metric.func(alignment_record)
+            try:
+                self.read_metrics[metric_name] = metric.func(alignment_record)
+            except Exception:
+                LOGGER.debug(
+                    f"Parsing {metric_name} from {self.read_id} failed"
+                )
+                self.read_metrics[metric_name] = metric.default
 
         parent_read_id = tags.get("pi", None)
         if parent_read_id is None:
