@@ -1067,25 +1067,66 @@ class DatasetFilters:
             raw_filters = json.load(filters_fh)
         return DatasetFilters.from_raw_filters(raw_filters)
 
+    @property
+    def derived_filters(self):
+        if self.filters is None:
+            return
+        return [filt for filt in self.filters if filt[0] in self._derived_cols]
+
+    @property
+    def fixed_filters(self):
+        if self.filters is None:
+            return
+        return [
+            filt for filt in self.filters if filt[0] not in self._derived_cols
+        ]
+
+    @staticmethod
+    def _apply_filter_rows(super_batch, filt_arrs):
+        filt_arrs = np.logical_and.reduce(filt_arrs)
+        indices = np.nonzero(filt_arrs)[0]
+        for col in super_batch.keys():
+            super_batch[col] = np.take(super_batch[col], indices, axis=0)
+
+    def get_fixed_filter_rows(self, super_batch):
+        filt_arrs = []
+        for col, op, thresh in self.fixed_filters:
+            try:
+                col_arr = super_batch[col]
+            except KeyError:
+                raise RemoraError(f"Super batch does not contain column: {col}")
+            filt_arrs.append(op(col_arr, thresh))
+        return filt_arrs
+
+    def apply_fixed_filters(self, super_batch):
+        if self.filters is None:
+            return
+        self._apply_filter_rows(
+            super_batch, self.get_fixed_filter_rows(super_batch)
+        )
+
+    def get_derived_filter_rows(self, super_batch):
+        filt_arrs = []
+        for col, op, thresh in self.derived_filters:
+            col_arr = self._derived_cols[col](super_batch)
+            filt_arrs.append(op(col_arr, thresh))
+        return filt_arrs
+
+    def apply_derived_filters(self, super_batch):
+        if self.filters is None:
+            return
+        self._apply_filter_rows(
+            super_batch, self.get_derived_filter_rows(super_batch)
+        )
+
     def apply_filters(self, super_batch):
         if self.filters is None:
             return
-        filt_arrs = []
-        for col, op, thresh in self.filters:
-            try:
-                col_arr = self._derived_cols[col](super_batch)
-            except KeyError:
-                try:
-                    col_arr = super_batch[col]
-                except AttributeError:
-                    raise RemoraError(
-                        f"Super batch does not contain column: {col}"
-                    )
-                col_arr = super_batch[col]
-            filt_arrs.append(op(col_arr, thresh))
-        filt_rows = np.logical_and.reduce(filt_arrs)
-        for col in super_batch.keys():
-            super_batch[col] = super_batch[col][filt_rows]
+        self._apply_filter_rows(
+            super_batch,
+            self.get_fixed_filter_rows(super_batch)
+            + self.get_derived_filter_rows(super_batch),
+        )
 
 
 def check_super_batch(super_batch, chunk_width):
@@ -1879,7 +1920,7 @@ class CoreRemoraDataset:
             array = getattr(self, array_name)[
                 self.metadata.dataset_start : self.metadata.dataset_end
             ]
-            arr_copy = array.copy()
+            arr_copy = np.array(array)
             for b_idx, (b_st, b_en) in enumerate(b_ranges):
                 array[b_st : min(b_en, self.size)] = arr_copy[
                     shuf_indices[b_st:b_en]
@@ -2026,29 +2067,33 @@ class CoreRemoraDataset:
         sb_arr_en = sb_arr_st + size
         if sb_arr_en <= self.metadata.dataset_end:
             for arr_name in self.super_batch_load_arrays:
-                super_batch[arr_name] = getattr(self, arr_name)[
-                    sb_arr_st:sb_arr_en
-                ].copy()
+                super_batch[arr_name] = np.array(
+                    getattr(self, arr_name)[sb_arr_st:sb_arr_en]
+                )
         elif self.infinite_iter:
             # wrap super batch around end of dataset
             wrap_en = sb_arr_en - self.size
             for arr_name in self.super_batch_load_arrays:
-                super_batch[arr_name] = np.concatenate(
-                    [
-                        getattr(self, arr_name)[
-                            sb_arr_st : self.metadata.dataset_end
-                        ],
-                        getattr(self, arr_name)[
-                            self.metadata.dataset_start : wrap_en
-                        ],
-                    ]
+                super_batch[arr_name] = np.array(
+                    np.concatenate(
+                        [
+                            getattr(self, arr_name)[
+                                sb_arr_st : self.metadata.dataset_end
+                            ],
+                            getattr(self, arr_name)[
+                                self.metadata.dataset_start : wrap_en
+                            ],
+                        ]
+                    )
                 )
         else:
             # return last batch with smaller batch dim
             for arr_name in self.super_batch_load_arrays:
-                super_batch[arr_name] = getattr(self, arr_name)[
-                    sb_arr_st : self.metadata.dataset_end
-                ]
+                super_batch[arr_name] = np.array(
+                    getattr(self, arr_name)[
+                        sb_arr_st : self.metadata.dataset_end
+                    ]
+                )
         if self.super_batch_sample_num_chunks is not None:
             selected_indices = np.random.choice(
                 super_batch["sequence_lengths"].size,
@@ -2972,12 +3017,13 @@ def load_remora_dataset_for_bonito(
     n_pre_context_bases,
     n_post_context_bases,
     batch_size,
-    super_batch_size=200_000,
+    super_batch_size=100_000,
     super_batch_sample_frac=None,
     chunks=None,
     valid_chunks=1_000,
     chunk_width=None,
     seed=None,
+    prefetch_factor=10_000,
 ):
     override_metadata = {
         "kmer_context_bases": (n_pre_context_bases, n_post_context_bases)
@@ -3007,6 +3053,7 @@ def load_remora_dataset_for_bonito(
         "batch_size": None,
         "persistent_workers": True,
         "worker_init_fn": dataloader_worker_init,
+        "prefetch_factor": prefetch_factor,
     }
     valid_loader_kwargs = {
         "dataset": val_ds,
