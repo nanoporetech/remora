@@ -3027,6 +3027,7 @@ def load_remora_dataset_for_bonito(
     chunk_width=None,
     seed=None,
     prefetch_factor=10_000,
+    **kwargs,
 ):
     override_metadata = {
         "kmer_context_bases": (n_pre_context_bases, n_post_context_bases)
@@ -3062,7 +3063,7 @@ def load_remora_dataset_for_bonito(
         "dataset": val_ds,
         "shuffle": False,
         "batch_size": None,
-        "num_workers": 1,
+        "num_workers": 0,
         "pin_memory": False,
     }
     return train_loader_kwargs, valid_loader_kwargs
