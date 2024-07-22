@@ -1753,7 +1753,10 @@ class CoreRemoraDataset:
             if hasattr(self, arr_name):
                 old_memmap = getattr(self, arr_name)
                 if isinstance(old_memmap, np.memmap):
-                    old_memmap._mmap.close()
+                    try:
+                        old_memmap._mmap.close()
+                    except:
+                        pass
                 delattr(self, arr_name)
             setattr(
                 self,
