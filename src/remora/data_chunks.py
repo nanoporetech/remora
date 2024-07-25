@@ -1755,7 +1755,7 @@ class CoreRemoraDataset:
                 if isinstance(old_memmap, np.memmap):
                     try:
                         old_memmap._mmap.close()
-                    except:
+                    except AttributeError:
                         pass
                 delattr(self, arr_name)
             setattr(
