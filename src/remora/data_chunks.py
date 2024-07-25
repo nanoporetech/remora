@@ -2122,6 +2122,11 @@ class CoreRemoraDataset:
                 + sum(self.metadata.stored_kmer_context_bases)
             ):
                 super_batch["sequence"][sb_idx, chunk_len:] = -1
+            if self.reverse_signal:
+                # for seq and lens return need to provide signal in 3'->5'.
+                # reverse_signal is stored in 5'->3' direction in RemoraDataset
+                # (opposite of sequencing time)
+                super_batch["signal"] = super_batch["signal"][:, ::-1]
         super_batch = self.trim_sb_kmer_context_bases(super_batch)
         super_batch = self.trim_sb_chunk_context(super_batch)
         if self.filters is not None:
@@ -2171,10 +2176,12 @@ class CoreRemoraDataset:
                 )
             ]
         elif seq_out_name == constants.DATASET_SEQS_AND_LENS:
-            # TODO for reverse signal have to reverse signal and sequence here
-            # this will likely require a new cython function
             # k-mer context was trimmed off in super batch. Seq lens updated
             # here to be the full sequence length.
+            if self.reverse_signal:
+                # TODO this may be a compute bottleneck
+                for idx, seq_len in enumerate(seq_lens):
+                    seqs[idx, :seq_len] = seqs[idx, :seq_len:-1]
             seq_lens += sum(self.metadata.kmer_context_bases)
             return [
                 # convert to bonito alphabet "NACGT"
