@@ -882,33 +882,31 @@ class DatasetMetadata:
                 arr_dtypes[name] = dtype
         return arr_dtypes
 
-    @property
-    def signal_shape(self):
-        return self.allocate_size, 1, self.stored_chunk_width
+    def _size(self, mode="r"):
+        return self.allocate_size if mode == "w" else self.dataset_end
+
+    def signal_shape(self, mode="r"):
+        return self._size(mode), 1, self.stored_chunk_width
 
     @property
     def sequence_width(self):
         return self.max_seq_len + sum(self.stored_kmer_context_bases)
 
-    @property
-    def sequence_shape(self):
-        return self.allocate_size, self.sequence_width
+    def sequence_shape(self, mode="r"):
+        return self._size(mode), self.sequence_width
 
     @property
     def sequence_to_signal_mapping_width(self):
         return self.max_seq_len + 1
 
-    @property
-    def sequence_to_signal_mapping_shape(self):
-        return self.allocate_size, self.sequence_to_signal_mapping_width
+    def sequence_to_signal_mapping_shape(self, mode="r"):
+        return self._size(mode), self.sequence_to_signal_mapping_width
 
-    @property
-    def sequence_lengths_shape(self):
-        return tuple((self.allocate_size,))
+    def sequence_lengths_shape(self, mode="r"):
+        return tuple((self._size(mode),))
 
-    @property
-    def extras_shape(self):
-        return tuple((self.allocate_size,))
+    def extras_shape(self, mode="r"):
+        return tuple((self._size(mode),))
 
     def check_motifs(self):
         if not self.is_modbase_dataset:
@@ -1415,17 +1413,26 @@ class CoreRemoraDataset:
         arrays_info = []
         for name, dtype in self._core_dtypes.items():
             arrays_info.append(
-                (name, dtype, getattr(self.metadata, f"{name}_shape"))
+                (
+                    name,
+                    dtype,
+                    getattr(
+                        self.metadata,
+                        f"{name}_shape"
+                    )(self.mode)
+                )
             )
         if self.metadata.extra_signal_arrays is not None:
             for name, (dtype, _) in self.metadata.extra_signal_arrays.items():
-                arrays_info.append((name, dtype, self.metadata.signal_shape))
+                arrays_info.append((
+                    name, dtype, self.metadata.signal_shape(self.mode)
+                ))
         if self.metadata.extra_metadata_arrays is not None:
             for name, (dtype, _) in self.metadata.extra_metadata_arrays.items():
-                arrays_info.append((name, dtype, self.metadata.extras_shape))
+                arrays_info.append((name, dtype, self.metadata.extras_shape(self.mode)))
         if self.metadata.extra_sequence_arrays is not None:
             for name, (dtype, _) in self.metadata.extra_sequence_arrays.items():
-                arrays_info.append((name, dtype, self.metadata.sequence_shape))
+                arrays_info.append((name, dtype, self.metadata.sequence_shape(self.mode)))
         return arrays_info
 
     @property
@@ -1758,6 +1765,12 @@ class CoreRemoraDataset:
                     except AttributeError:
                         pass
                 delattr(self, arr_name)
+            LOGGER.debug("\n\t".join(map(str, (
+                    self.get_array_path(arr_name),
+                    arr_dtype,
+                    mode,
+                    arr_shape,
+            ))))
             setattr(
                 self,
                 arr_name,
@@ -2122,7 +2135,7 @@ class CoreRemoraDataset:
                 + sum(self.metadata.stored_kmer_context_bases)
             ):
                 super_batch["sequence"][sb_idx, chunk_len:] = -1
-            if self.reverse_signal:
+            if self.metadata.reverse_signal:
                 # for seq and lens return need to provide signal in 3'->5'.
                 # reverse_signal is stored in 5'->3' direction in RemoraDataset
                 # (opposite of sequencing time)
@@ -2178,7 +2191,7 @@ class CoreRemoraDataset:
         elif seq_out_name == constants.DATASET_SEQS_AND_LENS:
             # k-mer context was trimmed off in super batch. Seq lens updated
             # here to be the full sequence length.
-            if self.reverse_signal:
+            if self.metadata.reverse_signal:
                 # TODO this may be a compute bottleneck
                 for idx, seq_len in enumerate(seq_lens):
                     seqs[idx, :seq_len] = seqs[idx, :seq_len:-1]
