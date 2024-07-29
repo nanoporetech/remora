@@ -1416,23 +1416,24 @@ class CoreRemoraDataset:
                 (
                     name,
                     dtype,
-                    getattr(
-                        self.metadata,
-                        f"{name}_shape"
-                    )(self.mode)
+                    getattr(self.metadata, f"{name}_shape")(self.mode),
                 )
             )
         if self.metadata.extra_signal_arrays is not None:
             for name, (dtype, _) in self.metadata.extra_signal_arrays.items():
-                arrays_info.append((
-                    name, dtype, self.metadata.signal_shape(self.mode)
-                ))
+                arrays_info.append(
+                    (name, dtype, self.metadata.signal_shape(self.mode))
+                )
         if self.metadata.extra_metadata_arrays is not None:
             for name, (dtype, _) in self.metadata.extra_metadata_arrays.items():
-                arrays_info.append((name, dtype, self.metadata.extras_shape(self.mode)))
+                arrays_info.append(
+                    (name, dtype, self.metadata.extras_shape(self.mode))
+                )
         if self.metadata.extra_sequence_arrays is not None:
             for name, (dtype, _) in self.metadata.extra_sequence_arrays.items():
-                arrays_info.append((name, dtype, self.metadata.sequence_shape(self.mode)))
+                arrays_info.append(
+                    (name, dtype, self.metadata.sequence_shape(self.mode))
+                )
         return arrays_info
 
     @property
@@ -1765,12 +1766,19 @@ class CoreRemoraDataset:
                     except AttributeError:
                         pass
                 delattr(self, arr_name)
-            LOGGER.debug("\n\t".join(map(str, (
-                    self.get_array_path(arr_name),
-                    arr_dtype,
-                    mode,
-                    arr_shape,
-            ))))
+            LOGGER.debug(
+                "\n\t".join(
+                    map(
+                        str,
+                        (
+                            self.get_array_path(arr_name),
+                            arr_dtype,
+                            mode,
+                            arr_shape,
+                        ),
+                    )
+                )
+            )
             setattr(
                 self,
                 arr_name,
