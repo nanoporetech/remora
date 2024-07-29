@@ -1766,19 +1766,6 @@ class CoreRemoraDataset:
                     except AttributeError:
                         pass
                 delattr(self, arr_name)
-            LOGGER.debug(
-                "\n\t".join(
-                    map(
-                        str,
-                        (
-                            self.get_array_path(arr_name),
-                            arr_dtype,
-                            mode,
-                            arr_shape,
-                        ),
-                    )
-                )
-            )
             setattr(
                 self,
                 arr_name,
