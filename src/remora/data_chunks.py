@@ -859,14 +859,31 @@ class DatasetMetadata:
 
     @property
     def extra_array_names(self):
-        arr_names = []
+        arr_names = set()
         if self.extra_signal_arrays is not None:
-            arr_names.extend(self.extra_signal_arrays.keys())
+            arr_names.update(self.extra_signal_arrays.keys())
         if self.extra_metadata_arrays is not None:
-            arr_names.extend(self.extra_metadata_arrays.keys())
+            arr_names.update(self.extra_metadata_arrays.keys())
         if self.extra_sequence_arrays is not None:
-            arr_names.extend(self.extra_sequence_arrays.keys())
+            arr_names.update(self.extra_sequence_arrays.keys())
         return arr_names
+
+    def extra_arrays_intersection_update(self, other):
+        if self.extra_signal_arrays is not None:
+            for esak in set(self.extra_signal_arrays).difference(
+                other.extra_signal_arrays
+            ):
+                self.extra_signal_arrays.pop(esak)
+        if self.extra_metadata_arrays is not None:
+            for emak in set(self.extra_metadata_arrays).difference(
+                other.extra_metadata_arrays
+            ):
+                self.extra_metadata_arrays.pop(emak)
+        if self.extra_sequence_arrays is not None:
+            for emak in set(self.extra_sequence_arrays).difference(
+                other.extra_sequence_arrays
+            ):
+                self.extra_sequence_arrays.pop(emak)
 
     @property
     def extra_array_dtypes(self):
@@ -1316,7 +1333,7 @@ class CoreRemoraDataset:
 
     @property
     def array_names(self):
-        return self._core_arrays + self.metadata.extra_array_names
+        return self._core_arrays + list(self.metadata.extra_array_names)
 
     @property
     def extra_sig_return_array_names(self):
@@ -1625,9 +1642,9 @@ class CoreRemoraDataset:
                     if len(missing_arrays) > 0:
                         raise RemoraError(
                             "Cannot load missing arrays: "
-                            f"{', '.join(missing_arrays)}\nAvailable extra "
-                            f"arrays: "
-                            "{', '.join(loaded_metadata[md_key].keys())}"
+                            f"{', '.join(missing_arrays)}\n"
+                            "Available extra arrays: "
+                            f"{', '.join(loaded_metadata[md_key].keys())}"
                         )
                     md_val = dict(
                         (k, loaded_metadata[md_key][k]) for k in md_val
@@ -2677,13 +2694,12 @@ class RemoraDataset(IterableDataset):
                         f"{getattr(ds.metadata, attr_name)} != "
                         f"{getattr(self.metadata, attr_name)}"
                     )
-            if set(ds.metadata.extra_array_names) != set(
-                self.metadata.extra_array_names
-            ):
-                raise RemoraError(
+            if ds.metadata.extra_array_names != self.metadata.extra_array_names:
+                LOGGER.debug(
                     f"Extra arrays not equal: {ds.metadata.extra_array_names} "
-                    f"!= {self.metadata.extra_array_names}"
+                    f"!= {self.metadata.extra_array_names}; Using intersection."
                 )
+                self.metadata.extra_arrays_intersection_update(ds.metadata)
             if ds.metadata.is_modbase_dataset:
                 for mb, mln in zip(
                     ds.metadata.mod_bases, ds.metadata.mod_long_names
