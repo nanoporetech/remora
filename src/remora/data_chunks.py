@@ -482,17 +482,25 @@ class RemoraRead:
         """
         chunk_width = sum(chunk_context)
         num_chunks = min(self.sig.size // chunk_width, max_chunks_per_read)
+        sig_st = self.seq_to_sig_map[kmer_context_bases[0]]
+        sig_en = (
+            self.seq_to_sig_map[
+                self.seq_to_sig_map.size - kmer_context_bases[1] - 1
+            ]
+            - chunk_width
+        )
+        if sig_st >= sig_en:
+            LOGGER.debug("Read too small to extract chunks")
+            return
+
         if random_offsets:
-            chunk_offsets = np.random.randint(
-                0, self.sig.size - chunk_width, num_chunks
-            )
+            chunk_offsets = np.random.randint(sig_st, sig_en, num_chunks)
         else:
             chunk_offsets = np.linspace(
-                0, self.sig.size - chunk_width, num_chunks, endpoint=True
+                sig_st, sig_en, num_chunks, endpoint=True
             ).astype(int)
         # shift chunk by first offset (this is generally 0 though)
         chunk_offsets += chunk_context[0]
-        # TODO add accuracy and other relevant metrics to chunk data
         for chunk_offset in chunk_offsets:
             try:
                 yield self.extract_chunk(
