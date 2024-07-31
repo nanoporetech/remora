@@ -1333,10 +1333,10 @@ class CoreRemoraDataset:
                 return None
             return fp
         if self.data_path is None:
-            raise RemoraError("No path available for in-memory dataset")
+            return None
         fp = os.path.join(self.data_path, self._filters_path)
         if not os.path.exists(fp):
-            LOGGER.debug(f"Filters path does not exist: {fp}")
+            LOGGER.debug(f"Default filters path does not exist: {fp}")
             return None
         return fp
 
