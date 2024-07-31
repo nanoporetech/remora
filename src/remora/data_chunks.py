@@ -19,6 +19,7 @@ from remora import constants, log, RemoraError, util, encoded_kmers
 LOGGER = log.get_logger()
 
 DATASET_VERSION = 4
+VERSION_WARNED = False
 MISMATCH_ARRS = {
     0: np.array([1, 2, 3]),
     1: np.array([0, 2, 3]),
@@ -1071,6 +1072,8 @@ class DatasetFilters:
                 and col not in dataset
             ):
                 raise RemoraError(f"Dataset does not contain column: {col}")
+            if isinstance(thresh, float) and np.isclose(round(thresh), thresh):
+                thresh = round(thresh)
             filters.append((col, op, thresh))
         return filters
 
@@ -1316,10 +1319,18 @@ class CoreRemoraDataset:
     @property
     def filters_path_resolved(self):
         if self.filters_path is not None:
-            return self.filters_path
+            fp = util.resolve_path(self.filters_path)
+            if not os.path.exists(fp):
+                LOGGER.debug(f"Filters path does not exist: {fp}")
+                return None
+            return fp
         if self.data_path is None:
             raise RemoraError("No path available for in-memory dataset")
-        return os.path.join(self.data_path, self._filters_path)
+        fp = os.path.join(self.data_path, self._filters_path)
+        if not os.path.exists(fp):
+            LOGGER.debug(f"Filters path does not exist: {fp}")
+            return None
+        return fp
 
     @property
     def kmer_table_path(self):
@@ -1480,11 +1491,7 @@ class CoreRemoraDataset:
         return summ_txt
 
     def load_filters(self):
-        try:
-            if not os.path.exists(self.filters_path_resolved):
-                return
-        except RemoraError:
-            # in-memory dataset
+        if self.filters_path_resolved is None:
             return
         self.filters = DatasetFilters.from_file(self.filters_path_resolved)
 
@@ -1517,7 +1524,9 @@ class CoreRemoraDataset:
     def super_batch_sample_num_chunks(self):
         if self.super_batch_sample_frac is None:
             return None
-        return np.ceil(self.super_batch_size * self.super_batch_sample_frac)
+        return np.ceil(
+            self.super_batch_size * self.super_batch_sample_frac
+        ).astype(int)
 
     def load_metadata(self):
         """Load metadata from file and apply override_metadata attributes if
@@ -1563,10 +1572,13 @@ class CoreRemoraDataset:
 
         if loaded_metadata.get("version") != DATASET_VERSION:
             if loaded_metadata.get("version") == 3:
-                LOGGER.warning(
-                    "Support for v3 Remora datasets will be deprecated in a "
-                    "future release."
-                )
+                global VERSION_WARNED
+                if not VERSION_WARNED:
+                    LOGGER.warning(
+                        "Support for v3 Remora datasets will be deprecated in "
+                        "a future release.",
+                    )
+                    VERSION_WARNED = True
             else:
                 raise RemoraError(
                     f"Remora dataset version ({loaded_metadata.get('version')})"
@@ -2355,18 +2367,27 @@ def extract_core_dataset_paths(input_path, used_configs=None):
 
 
 def parse_dataset_config(input_path, used_configs=None):
-    paths, weights, hashes = [], [], []
+    paths, weights, hashes, filters = [], [], [], []
     input_path = util.resolve_path(input_path)
     if used_configs is None:
         used_configs = {input_path: input_path}
     with open(input_path) as config_fh:
         for ds_info in json.load(config_fh):
-            if len(ds_info) == 2:
-                ds_path, weight = ds_info
-                ds_hash = None
-            elif len(ds_info) == 3:
-                ds_path, weight, ds_hash = ds_info
-            assert weight > 0, "dataset config weight must be positive"
+            if isinstance(ds_info, dict):
+                ds_path = ds_info.get("path")
+                ds_weight = ds_info.get("weight")
+                ds_hash = ds_info.get("hash", None)
+                ds_filt = ds_info.get("filter", None)
+            else:
+                ds_path = ds_info[0]
+                ds_weight = ds_info[1]
+                ds_hash = ds_info[2] if len(ds_info) > 2 else None
+                ds_filt = ds_info[3] if len(ds_info) > 3 else None
+            if ds_weight <= 0:
+                LOGGER.debug(
+                    f"Dataset weight set to 0. Dropping dataset: {ds_path}"
+                )
+                continue
             ds_path = util.resolve_path(ds_path)
             if not os.path.exists(ds_path):
                 raise RemoraError(
@@ -2382,8 +2403,9 @@ def parse_dataset_config(input_path, used_configs=None):
                         f"for dataset at {ds_path}"
                     )
                 paths.append(ds_path)
-                weights.append(weight)
+                weights.append(ds_weight)
                 hashes.append(ds_hash)
+                filters.append(ds_filt)
             else:
                 if ds_path in used_configs:
                     raise RemoraError(
@@ -2392,18 +2414,24 @@ def parse_dataset_config(input_path, used_configs=None):
                         f"found in {used_configs[ds_path]}"
                     )
                 used_configs[ds_path] = input_path
-                sub_paths, sub_weights, sub_hashs = parse_dataset_config(
-                    ds_path, used_configs=used_configs
-                )
+                (
+                    sub_paths,
+                    sub_weights,
+                    sub_hashs,
+                    sub_filters,
+                ) = parse_dataset_config(ds_path, used_configs=used_configs)
                 paths.extend(sub_paths)
-                weights.extend(sub_weights * weight)
+                weights.extend(sub_weights * ds_weight)
                 hashes.extend(sub_hashs)
+                filters.extend(sub_filters)
+    if len(paths) == 0:
+        raise RemoraError("No datasets provided")
     if len(paths) != len(set(paths)):
         LOGGER.warning("Core datasets loaded multiple times")
     # normalize weights and return
     weights = np.array(weights)
     props = weights / weights.sum()
-    return paths, props, hashes
+    return paths, props, hashes, filters
 
 
 def load_dataset(ds_path, core_ds_kwargs=None, ds_kwargs=None):
@@ -2412,15 +2440,29 @@ def load_dataset(ds_path, core_ds_kwargs=None, ds_kwargs=None):
     if not os.path.exists(ds_path):
         raise RemoraError(f"Dataset path does not exist. {ds_path}")
     if os.path.isdir(ds_path):
-        paths, props, hashes = [ds_path], np.ones(1, dtype=float), None
+        paths, props, hashes, filters = (
+            [ds_path],
+            np.ones(1, dtype=float),
+            None,
+            [None],
+        )
     else:
-        paths, props, hashes = parse_dataset_config(ds_path)
+        paths, props, hashes, filters = parse_dataset_config(ds_path)
     if core_ds_kwargs is None:
         core_ds_kwargs = {}
     if ds_kwargs is None:
         ds_kwargs = {}
+    # use filter path from config if provided or core ds kwargs value
+    ovrd_filt = core_ds_kwargs.pop("filters_path", None)
     return RemoraDataset(
-        [CoreRemoraDataset(path, **core_ds_kwargs) for path in paths],
+        [
+            CoreRemoraDataset(
+                path,
+                filters_path=ovrd_filt if filt_path is None else filt_path,
+                **core_ds_kwargs,
+            )
+            for path, filt_path in zip(paths, filters)
+        ],
         props,
         hashes,
         **ds_kwargs,
@@ -2550,7 +2592,7 @@ class RemoraDataset(IterableDataset):
         ds_kwargs=None,
         **kwargs,
     ):
-        paths, props, hashes = parse_dataset_config(config_path)
+        paths, props, hashes, filters = parse_dataset_config(config_path)
         LOGGER.debug(f"Loaded dataset paths: {', '.join(paths)}")
         LOGGER.debug(
             f"Loaded dataset proportions: {', '.join(map(str, props))}"
@@ -2560,13 +2602,16 @@ class RemoraDataset(IterableDataset):
             override_metadata = {}
         if ds_kwargs is None:
             ds_kwargs = {}
+        # use filter path from config if provided or core ds kwargs value
+        ovrd_filt = ds_kwargs.pop("filters_path", None)
         datasets = [
             CoreRemoraDataset(
                 ds_path,
+                filters_path=ovrd_filt if filt_path is None else filt_path,
                 override_metadata=override_metadata.copy(),
                 **ds_kwargs,
             )
-            for ds_path in paths
+            for ds_path, filt_path in zip(paths, filters)
         ]
         label_summaries = "\n".join(ds.modbase_label_summary for ds in datasets)
         LOGGER.debug(f"Loaded dataset label summaries:\n{label_summaries}")
@@ -2606,10 +2651,14 @@ class RemoraDataset(IterableDataset):
         return self._hashes
 
     @property
+    def filters_paths(self):
+        return [ds.filters_path_resolved for ds in self.datasets]
+
+    @property
     def summary(self):
         summ_txt = (
             f"                     size : {self.size:,}\n"
-            "        is_modbase_dataset : "
+            "       is_modbase_dataset : "
             f"{self.metadata.is_modbase_dataset}\n"
             f"       kmer_context_bases : {self.metadata.kmer_context_bases}\n"
             f"            chunk_context : {self.metadata.chunk_context}\n"
@@ -2953,14 +3002,17 @@ class RemoraDataset(IterableDataset):
         )
 
     def get_config(self):
-        return [
-            (ds_path, ds_prop)
-            if ds_hash is None
-            else (ds_path, ds_prop, ds_hash)
-            for ds_path, ds_prop, ds_hash in zip(
-                self.paths, self.props, self.hashes
-            )
-        ]
+        datasets = []
+        for ds_path, ds_prop, ds_hash, ds_filts in zip(
+            self.paths, self.props, self.hashes, self.filters_paths
+        ):
+            ds = {"path": ds_path, "weight": ds_prop}
+            if ds_hash is not None:
+                ds["hash"] = ds_hash
+            if ds_filts is not None:
+                ds["filter"] = ds_filts
+            datasets.append(ds)
+        return datasets
 
     def epoch_summary(self, batches_per_epoch):
         # TODO add filters to this summary

@@ -210,7 +210,9 @@ def train_model(
         ds_kwargs={
             "batch_size": batch_size,
             "super_batch_size": super_batch_size,
-            "super_batch_sample_frac": super_batch_sample_frac,
+            "super_batch_sample_frac": super_batch_sample_frac
+            if super_batch_sample_frac < 1.0
+            else None,
             "return_arrays": ["signal", "modbase_label", "enc_kmer"],
         },
     )

@@ -119,9 +119,13 @@ This can be useful when handling config datasets composed of many core datasets.
 Copying a dataset is especially useful to achieve higher training speeds when core datasets are stored on a network file system (NFS).
 
 Composed dataset config files can also be specified manually.
-Config files are JSON format files containing a single list, where each element is a list of two items.
-The first is the path to the dataset and the second is the weight (must be a positive value).
-The ``make_config`` output config file will also contain the dataset hash to ensure the contents of a dataset are unchanged, but this is an optional third field in the config.
+Config files are JSON format files containing a single list.
+Each element in the list represents one dataset.
+Datasets must specify the path to the core dataset (or another config) and the weight of this sub-dataset.
+Optionally the dataset hash and a filter file may be included for each dataest.
+These values may be specified via a list (ordered: path, weight, hash, filter), or via a dictionary (keys: path, weight, hash, filter).
+The ``make_config`` output config file will contain the dataset hash to ensure the contents of a dataset are unchanged whe reading.
+See the ``remora dataset make_filter`` command for more details on filters.
 
 Metadata attributes from each core dataset are checked for compatibility and merged where applicable.
 Chunk raw data are loaded from each core dataset at specified proportions to construct batches at loading time.

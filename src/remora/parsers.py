@@ -622,6 +622,13 @@ def register_dataset_make_config(parser):
         globally with equal probability)""",
     )
     subparser.add_argument(
+        "--dataset-filters",
+        nargs="+",
+        help="""Specify filters file(s) to be applied to each dataset. Must be
+        the same length as the input datasets if provided. See remora dataset
+        make_filter for details.""",
+    )
+    subparser.add_argument(
         "--log-filename",
         help="Log filename. Default: Don't output log file.",
     )
@@ -630,6 +637,7 @@ def register_dataset_make_config(parser):
 
 def run_dataset_make_config(args):
     import json
+    from itertools import repeat
 
     import numpy as np
 
@@ -637,47 +645,48 @@ def run_dataset_make_config(args):
 
     if args.log_filename is not None:
         log.init_logger(args.log_filename)
-    if args.dataset_weights is not None:
+    if args.dataset_weights is None:
+        ds_weights = repeat(None)
+    else:
         if len(args.dataset_weights) != len(args.dataset_paths):
             raise RemoraError("Weights must be same length as input datasets.")
         if any(w < 0 for w in args.dataset_weights):
             raise RemoraError("Weights must not be negative.")
+        ds_weights = args.dataset_weights
+    if args.dataset_filters is None:
+        dss_filts = repeat(None)
+    else:
+        if len(args.dataset_filters) != len(args.dataset_paths):
+            raise RemoraError("Filters must be same length as input datasets.")
+        dss_filts = args.dataset_filters
     core_datasets, core_weights, core_hashes = [], [], []
-    for ds_idx, ds_path in enumerate(args.dataset_paths):
-        dataset = load_dataset(ds_path)
+    for ds_path, ds_weight, ds_filts in zip(
+        args.dataset_paths, ds_weights, dss_filts
+    ):
+        if ds_filts == "None":
+            ds_filts = None
+        dataset = load_dataset(
+            ds_path, core_ds_kwargs={"filters_path": ds_filts}
+        )
         if any(dataset.props == 0):
             empty_datasets = ", ".join(
                 [p for p, w in zip(dataset.paths, dataset.props) if w == 0]
             )
             raise RemoraError(f"Encountered empty dataset: {empty_datasets}")
         weights = dataset.props.copy()
-        if args.dataset_weights is None:
+        if ds_weight is None:
             weights *= sum([ds.size for ds in dataset.datasets])
         else:
-            weights *= args.dataset_weights[ds_idx]
-        # filter out zero weight datasets
-        positive_weights = np.not_equal(weights, 0)
-        core_datasets.extend(
-            [
-                ds
-                for ds, is_pos in zip(dataset.datasets, positive_weights)
-                if is_pos
-            ]
-        )
-        core_weights.extend(weights[positive_weights])
-        # if hashes are available for all datasets then save them. If any are
-        # missing, skip storage of hashes
-        if core_hashes is None or not dataset.valid_hashes:
-            core_hashes = None
-            continue
-        core_hashes.extend(
-            [
-                ds_hash
-                for ds_hash, is_pos in zip(dataset.hashes, positive_weights)
-                if is_pos
-            ]
-        )
-        core_hashes.extend(dataset.hashes)
+            weights *= ds_weight
+        for ds, ds_weight, ds_hash in zip(
+            dataset.datasets, weights, dataset.hashes
+        ):
+            # skip zero weight datasets
+            if ds_weight <= 0:
+                continue
+            core_datasets.append(ds)
+            core_weights.append(ds_weight)
+            core_hashes.append(ds_hash)
     core_weights = np.array(core_weights)
     dataset = RemoraDataset(
         core_datasets,
@@ -987,7 +996,7 @@ def register_dataset_make_filter(parser):
         in remora.data_chunks.DatasetFilters.derived_cols), 2) operator to be
         applied (must be attribute of operator package) 3) threshold value,
         and 4) is the thershold value a quantile? (default is a raw threshold
-        value""",
+        value)""",
     )
     subparser.add_argument(
         "--store-raw-thresholds",
