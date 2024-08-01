@@ -5,9 +5,9 @@ from pathlib import Path
 from typing import Callable
 from copy import copy, deepcopy
 from dataclasses import dataclass
+from collections import defaultdict
 from itertools import chain, product
 from functools import cached_property
-from collections import defaultdict
 
 import pysam
 import numpy as np

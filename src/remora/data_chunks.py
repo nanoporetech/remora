@@ -879,20 +879,20 @@ class DatasetMetadata:
 
     def extra_arrays_intersection_update(self, other):
         if self.extra_signal_arrays is not None:
-            for esak in set(self.extra_signal_arrays).difference(
+            for sig_ak in set(self.extra_signal_arrays).difference(
                 other.extra_signal_arrays
             ):
-                self.extra_signal_arrays.pop(esak)
+                self.extra_signal_arrays.pop(sig_ak)
         if self.extra_metadata_arrays is not None:
-            for emak in set(self.extra_metadata_arrays).difference(
+            for md_ak in set(self.extra_metadata_arrays).difference(
                 other.extra_metadata_arrays
             ):
-                self.extra_metadata_arrays.pop(emak)
+                self.extra_metadata_arrays.pop(md_ak)
         if self.extra_sequence_arrays is not None:
-            for emak in set(self.extra_sequence_arrays).difference(
+            for seq_ak in set(self.extra_sequence_arrays).difference(
                 other.extra_sequence_arrays
             ):
-                self.extra_sequence_arrays.pop(emak)
+                self.extra_sequence_arrays.pop(seq_ak)
 
     @property
     def extra_array_dtypes(self):
@@ -1485,15 +1485,14 @@ class CoreRemoraDataset:
             f" chunk extract base start : {self.metadata.base_start_justify}\n"
             f"     chunk extract offset : {self.metadata.offset}\n"
             f"          sig map refiner : {self.metadata.sig_map_refiner}\n"
+            f"      is modbase dataset? : {self.metadata.is_modbase_dataset}\n"
         )
         # add modbase-specific metadata
         if self.metadata.is_modbase_dataset:
             summ_txt += (
                 f"                mod_bases : {self.metadata.mod_bases}\n"
                 f"           mod long names : {self.metadata.mod_long_names}\n"
-                "       is modbase dataset? : "
-                f"{self.metadata.is_modbase_dataset}\n"
-                f"    mod label distribution : {self.modbase_label_summary}\n"
+                f"   mod label distribution : {self.modbase_label_summary}\n"
                 f"                   motifs : {self.metadata.motifs}\n"
             )
         return summ_txt
@@ -1832,8 +1831,8 @@ class CoreRemoraDataset:
         invalid_return_arrays = set(return_arrays).difference(
             self.valid_return_arrays
         )
-        if len(invalid_return_arrays) > 1:
-            ira_str = ",".join(invalid_return_arrays)
+        if len(invalid_return_arrays) >= 1:
+            ira_str = ", ".join(invalid_return_arrays)
             raise RemoraError(f"Invalid return array(s) requested: {ira_str}")
         self.return_arrays = return_arrays
 
@@ -2666,21 +2665,20 @@ class RemoraDataset(IterableDataset):
     def summary(self):
         summ_txt = (
             f"                     size : {self.size:,}\n"
-            "       is_modbase_dataset : "
-            f"{self.metadata.is_modbase_dataset}\n"
-            f"       kmer_context_bases : {self.metadata.kmer_context_bases}\n"
-            f"            chunk_context : {self.metadata.chunk_context}\n"
-            f"           reverse_signal : {self.metadata.reverse_signal}\n"
-            f" chunk_extract_base_start : {self.metadata.base_start_justify}\n"
-            f"     chunk_extract_offset : {self.metadata.offset}\n"
-            f"               pa_scaling : {self.metadata.pa_scaling}\n"
-            f"          sig_map_refiner : {self.metadata.sig_map_refiner}\n"
+            f"       kmer context bases : {self.metadata.kmer_context_bases}\n"
+            f"            chunk context : {self.metadata.chunk_context}\n"
+            f"           reverse signal : {self.metadata.reverse_signal}\n"
+            f" chunk extract base start : {self.metadata.base_start_justify}\n"
+            f"     chunk extract offset : {self.metadata.offset}\n"
+            f"               pa scaling : {self.metadata.pa_scaling}\n"
+            f"          sig map refiner : {self.metadata.sig_map_refiner}\n"
             f"        batches preloaded : {self.batches_preloaded}\n"
+            f"      is modbase dataset? : {self.metadata.is_modbase_dataset}\n"
         )
         if self.is_modbase_dataset:
             summ_txt += (
-                f"                mod_bases : {self.metadata.mod_bases}\n"
-                f"           mod_long_names : {self.metadata.mod_long_names}\n"
+                f"                mod bases : {self.metadata.mod_bases}\n"
+                f"           mod long names : {self.metadata.mod_long_names}\n"
                 f"                   motifs : {self.metadata.motifs}\n"
             )
         return summ_txt
