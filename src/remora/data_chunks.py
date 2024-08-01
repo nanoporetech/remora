@@ -1831,7 +1831,7 @@ class CoreRemoraDataset:
         invalid_return_arrays = set(return_arrays).difference(
             self.valid_return_arrays
         )
-        if len(invalid_return_arrays) >= 1:
+        if len(invalid_return_arrays) > 1:
             ira_str = ", ".join(invalid_return_arrays)
             raise RemoraError(f"Invalid return array(s) requested: {ira_str}")
         self.return_arrays = return_arrays
