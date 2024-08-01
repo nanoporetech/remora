@@ -481,7 +481,6 @@ class RemoraRead:
         or randomly selected over the read.
         """
         chunk_width = sum(chunk_context)
-        num_chunks = min(self.sig.size // chunk_width, max_chunks_per_read)
         sig_st = self.seq_to_sig_map[kmer_context_bases[0]]
         sig_en = (
             self.seq_to_sig_map[
@@ -489,7 +488,8 @@ class RemoraRead:
             ]
             - chunk_width
         )
-        if sig_st >= sig_en:
+        num_chunks = min((sig_en - sig_st) // chunk_width, max_chunks_per_read)
+        if num_chunks <= 1:
             LOGGER.debug("Read too small to extract chunks")
             return
 
@@ -3117,7 +3117,7 @@ def load_remora_dataset_for_bonito(
     valid_chunks=1_000,
     chunk_width=None,
     seed=None,
-    prefetch_factor=10_000,
+    prefetch_factor=10,
     **kwargs,
 ):
     override_metadata = {
