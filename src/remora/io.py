@@ -521,12 +521,11 @@ if _ITER_ALIGN_PROF_FN:
         return retval
 
 
-def add_signal(read_err, pod5_dr, rev_sig=False):
+def add_signal(read_err, p5_read, rev_sig=False):
     io_read, err = read_err
     if io_read is None:
         return [read_err]
     try:
-        p5_read = pod5_dr.get_read(io_read.read_id)
         io_read.add_signal(p5_read, reverse_signal=rev_sig)
     except RemoraError as e:
         LOGGER.debug(f"{io_read.read_id} Add signal error: {e}")
