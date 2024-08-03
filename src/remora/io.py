@@ -2058,13 +2058,12 @@ class Read:
         if reverse_signal:
             self.dacs = self.dacs[::-1]
         # trim for split read sp tag
-        self.dacs = self.dacs[self._trim_tags.get("sp", 0) :]
+        self.dacs = self.dacs[self._trim_tags["sp"] :]
         # trim for start and end read trimming
-        self.dacs = self.dacs[
-            self._trim_tags.get("ts", 0) : self._trim_tags.get(
-                "ns", self.dacs.size
-            )
-        ]
+        ns = self._trim_tags["ns"]
+        if ns is None:
+            ns = self.dacs.size
+        self.dacs = self.dacs[self._trim_tags["ts"] : ns]
         if reverse_signal:
             self.dacs = self.dacs[::-1]
 
@@ -2144,7 +2143,10 @@ class Read:
 
         tags = dict(alignment_record.tags)
         try:
-            self._trim_tags = dict((tag, tags[tag]) for tag in ("sp", "ts", "ns"))
+            self._trim_tags = dict(
+                (tag, tags.get(tag, dv))
+                for tag, dv in (("sp", 0), ("ts", 0), ("ns", None))
+            )
         except KeyError:
             pass
         self.trim_signal(reverse_signal)
