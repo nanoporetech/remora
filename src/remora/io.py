@@ -2143,7 +2143,10 @@ class Read:
         self.full_align = alignment_record.to_dict()
 
         tags = dict(alignment_record.tags)
-        self._trim_tags = dict((tag, tags[tag]) for tag in ("sp", "ts", "ns"))
+        try:
+            self._trim_tags = dict((tag, tags[tag]) for tag in ("sp", "ts", "ns"))
+        except KeyError:
+            pass
         self.trim_signal(reverse_signal)
         # update signal metrics and add mapping metrics
         self.add_signal_metrics()
@@ -2178,7 +2181,10 @@ class Read:
             if self.dacs is not None:
                 self.compute_pa_to_norm_scaling()
 
-        if self.shift_pa_to_norm is not None:
+        if (
+            self.shift_pa_to_norm is not None
+            and self.shift_dacs_to_pa is not None
+        ):
             self.shift_dacs_to_norm = self.shift_dacs_to_pa + (
                 self.scale_dacs_to_pa * self.shift_pa_to_norm
             )
@@ -2230,10 +2236,16 @@ class Read:
         self.adjust_move_table(reverse_signal=reverse_signal)
         if self.shift_pa_to_norm is None:
             self.compute_pa_to_norm_scaling()
-        self.shift_dacs_to_norm = self.shift_dacs_to_pa + (
-            self.scale_dacs_to_pa * self.shift_pa_to_norm
-        )
-        self.scale_dacs_to_norm = self.scale_dacs_to_pa * self.scale_pa_to_norm
+        if (
+            self.shift_pa_to_norm is not None
+            and self.shift_dacs_to_pa is not None
+        ):
+            self.shift_dacs_to_norm = self.shift_dacs_to_pa + (
+                self.scale_dacs_to_pa * self.shift_pa_to_norm
+            )
+            self.scale_dacs_to_norm = (
+                self.scale_dacs_to_pa * self.scale_pa_to_norm
+            )
         self.compute_ref_to_signal()
 
     @classmethod
