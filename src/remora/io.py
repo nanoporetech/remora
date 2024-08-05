@@ -261,6 +261,7 @@ class ReadIndexedBam:
         self._bam_idx = defaultdict(list)
         pbar = tqdm(
             smoothing=0,
+            dynamic_ncols=True,
             unit=" Reads",
             desc="Indexing BAM by parent read id",
             disable=os.environ.get("LOG_SAFE", False),

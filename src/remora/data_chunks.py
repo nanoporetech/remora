@@ -1950,6 +1950,7 @@ class CoreRemoraDataset:
                 total=len(self.array_names),
                 smoothing=0,
                 position=0,
+                dynamic_ncols=True,
                 desc="Arrays",
             )
         for array_name in self.array_names:
@@ -1957,6 +1958,7 @@ class CoreRemoraDataset:
                 b_pb = tqdm(
                     total=len(b_ranges),
                     smoothing=0,
+                    dynamic_ncols=True,
                     leave=False,
                     position=1,
                     desc="Batches",

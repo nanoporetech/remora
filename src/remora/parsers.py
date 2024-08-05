@@ -781,6 +781,7 @@ def run_dataset_merge(args):
     for ds, ds_out_size in tqdm(
         zip(dataset.datasets, ds_out_sizes),
         smoothing=0,
+        dynamic_ncols=True,
         desc="Datasets",
         total=ds_out_sizes.size,
     ):
@@ -796,6 +797,7 @@ def run_dataset_merge(args):
         for sb_idx, sb in tqdm(
             enumerate(ds.iter_super_batches()),
             smoothing=0,
+            dynamic_ncols=True,
             total=total_sbs,
             leave=False,
             position=1,
@@ -867,6 +869,7 @@ def run_dataset_head(args):
     for sb_idx, sb in tqdm(
         enumerate(in_ds.iter_super_batches()),
         smoothing=0,
+        dynamic_ncols=True,
         leave=False,
         position=1,
         desc="Batches",

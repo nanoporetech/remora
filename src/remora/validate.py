@@ -218,6 +218,7 @@ class ValidationLogger:
         for sigs, labels, enc_kmers in tqdm(
             dataset,
             smoothing=0,
+            dynamic_ncols=True,
             desc="Batches",
             disable=disable_pbar,
         ):
@@ -481,7 +482,7 @@ def parse_mod_bam(
     pysam_save = pysam.set_verbosity(0)
     do_warn_mod = do_warn_strand = True
     with pysam.AlignmentFile(bam_path, check_sq=False) as bam_fh:
-        for read in tqdm(bam_fh, smoothing=0):
+        for read in tqdm(bam_fh, smoothing=0, dynamic_ncols=True):
             do_warn_mod, do_warn_strand, valid_mods = check_mod_strand(
                 read, bam_path, alphabet, do_warn_mod, do_warn_strand
             )
