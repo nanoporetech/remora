@@ -757,6 +757,10 @@ def run_dataset_merge(args):
         ],
         np.ones(len(all_paths)),
     )
+    common_extra_arrays = set.intersection(
+        *[set(ds.metadata.extra_array_names) for ds in dataset.datasets]
+    )
+
     LOGGER.info(f"Loaded dataset:\n{dataset.summary}")
     merged_metadata = dataset.metadata.copy()
     ds_out_sizes = np.array([ds.size for ds in dataset.datasets])
@@ -791,9 +795,9 @@ def run_dataset_merge(args):
                 f"{ds_out_size:,}"
             )
             ds.metadata.dataset_end = ds_out_size
-        chunks_per_sb, _ = ds.adjust_batch_params()
-        total_sbs = ds.size // chunks_per_sb
+        total_sbs = ds.size // ds.super_batch_size
         LOGGER.debug(f"Adding dataset from {ds.data_path}")
+        ds.set_return_arrays(common_extra_arrays)
         for sb_idx, sb in tqdm(
             enumerate(ds.iter_super_batches()),
             smoothing=0,

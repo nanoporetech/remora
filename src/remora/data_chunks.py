@@ -2100,9 +2100,7 @@ class CoreRemoraDataset:
             offset %= self.size
         else:
             if offset >= self.size:
-                raise RemoraError(
-                    "Cannot extract super batch from exhausted finite dataset"
-                )
+                return
         sb_arr_st = self.metadata.dataset_start + offset
         # load full dataset if size is None
         if size is None:

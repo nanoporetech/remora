@@ -357,6 +357,7 @@ def train_model(
         batch_size=None,
         pin_memory=True,
         num_workers=2,
+        prefetch_factor=10,
         persistent_workers=True,
         worker_init_fn=dataloader_worker_init,
     )
