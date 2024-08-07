@@ -1331,13 +1331,14 @@ class CoreRemoraDataset:
             if not os.path.exists(fp):
                 LOGGER.debug(f"Filters path does not exist: {fp}")
                 return None
+            LOGGER.debug(f"Loading filter from: {fp}")
             return fp
         if self.data_path is None:
             return None
         fp = os.path.join(self.data_path, self._filters_path)
         if not os.path.exists(fp):
-            LOGGER.debug(f"Default filters path does not exist: {fp}")
             return None
+        LOGGER.debug(f"Loading default filter from: {fp}")
         return fp
 
     @property
