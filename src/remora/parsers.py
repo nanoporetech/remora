@@ -945,7 +945,7 @@ def run_dataset_copy(args):
     src_fh = open(out_dir / "sources.txt", "w")
     ds_out_dirs = []
     if in_dataset.num_datasets > 1000:
-        raise RemoraError("Cannot copy more than 100,000 datasets")
+        raise RemoraError("Cannot copy more than 1,000 datasets")
     for ds_idx, src_path in enumerate(in_dataset.paths):
         for item in os.listdir(src_path):
             if os.path.isdir(os.path.join(src_path, item)):
@@ -967,7 +967,12 @@ def run_dataset_copy(args):
         except Exception as e:
             RemoraError(f"Error: {e}")
     dataset = RemoraDataset(
-        [CoreRemoraDataset(ds_out_dir) for ds_out_dir in ds_out_dirs],
+        [
+            CoreRemoraDataset(ds_out_dir, filters_path=ds_filts_path)
+            for ds_out_dir, ds_filts_path in zip(
+                ds_out_dirs, in_dataset.filter_paths
+            )
+        ],
         in_dataset.props,
         in_dataset._hashes,
     )

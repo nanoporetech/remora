@@ -1033,6 +1033,15 @@ class DatasetFilters:
         """Convert operators to string for storage"""
         return [(col, op.__name__, thresh) for col, op, thresh in self.filters]
 
+    @property
+    def hash(self):
+        return hashlib.sha256(
+            ",".join(
+                ":".join(map(str, filt))
+                for filt in sorted(self.storage_filters)
+            ).encode("utf-8")
+        ).hexdigest()
+
     @classmethod
     def from_raw_filters(cls, raw_filters, dataset=None):
         if raw_filters is None:
@@ -1145,14 +1154,21 @@ class DatasetFilters:
             super_batch, self.get_derived_filter_rows(super_batch)
         )
 
+    def get_filter_rows(self, super_batch):
+        return self.get_fixed_filter_rows(
+            super_batch
+        ) + self.get_derived_filter_rows(super_batch)
+
+    def prop_removed_by_filters(self, super_batch):
+        filt_arrs = np.logical_not(
+            np.logical_and.reduce(self.get_filter_rows(super_batch))
+        )
+        return filt_arrs.mean()
+
     def apply_filters(self, super_batch):
         if self.filters is None:
             return
-        self._apply_filter_rows(
-            super_batch,
-            self.get_fixed_filter_rows(super_batch)
-            + self.get_derived_filter_rows(super_batch),
-        )
+        self._apply_filter_rows(super_batch, self.get_filter_rows(super_batch))
 
 
 def check_super_batch(super_batch, chunk_width):
@@ -1270,7 +1286,7 @@ class CoreRemoraDataset:
         deprecated_labels_path = os.path.join(data_path, "labels.npy")
         if os.path.exists(deprecated_labels_path):
             paths.append(deprecated_labels_path)
-        paths.extend(glob(os.path.join(data_path, "extra_*.npy")))
+        paths.extend(sorted(glob(os.path.join(data_path, "extra_*.npy"))))
         if os.path.isfile(os.path.join(data_path, "kmer_table.npy")):
             paths.append(os.path.join(data_path, "kmer_table.npy"))
         return paths
@@ -1535,6 +1551,17 @@ class CoreRemoraDataset:
         return np.ceil(
             self.super_batch_size * self.super_batch_sample_frac
         ).astype(int)
+
+    @property
+    def prop_removed_by_filters(self):
+        """Estimate of the proportion of chunks removed by filters from the
+        first super batch.
+        """
+        if self.filters is None:
+            return 0.0
+        if self._curr_sb is None:
+            self._load_next_super_batch()
+        return self.filters.prop_removed_by_filters(self._curr_sb)
 
     def load_metadata(self):
         """Load metadata from file and apply override_metadata attributes if
@@ -3022,7 +3049,6 @@ class RemoraDataset(IterableDataset):
         return datasets
 
     def epoch_summary(self, batches_per_epoch):
-        # TODO add filters to this summary
         if self.use_constant_batch_mix:
             epoch_chunk_totals = [
                 batches_per_epoch * ds_bs for ds_bs in self._batch_sizes
@@ -3032,20 +3058,35 @@ class RemoraDataset(IterableDataset):
                 batches_per_epoch * self.batch_size * prop
                 for prop in self.props
             ]
+        props_removed = [ds.prop_removed_by_filters for ds in self.datasets]
+        if max(props_removed) > constants.WARN_PROP_REMOVED_THRESH:
+            high_filt_paths = [
+                ds.data_path
+                for ds, pr in zip(self.datasets, props_removed)
+                if pr > constants.WARN_PROP_REMOVED_THRESH
+            ]
+            LOGGER.warning(
+                "Large percentage (> "
+                f"{100.0 * constants.WARN_PROP_REMOVED_THRESH:.1f}%) of "
+                "datasets removed by filters. High filtered rate datasets: "
+                f"{', '.join(high_filt_paths)}"
+            )
         if not self.is_modbase_dataset:
             summ_strs = [
                 f"{ds_chunks_per_epoch/ds.size:10.4%}\t"
                 f"{ds_chunks_per_epoch:,.1f}\t"
                 f"{ds.size:,}\t"
-                f"{ds.data_path}"
-                for ds_chunks_per_epoch, ds in zip(
+                f"{100.0 * pr}"
+                f"{ds.data_path:,}\t"
+                for ds_chunks_per_epoch, pr, ds in zip(
                     epoch_chunk_totals,
+                    props_removed,
                     self.datasets,
                 )
             ]
             return (
                 "percent_of_dataset_per_epoch\tdataset_chunks_per_epoch\t"
-                "dataset_size\tpath\n"
+                "dataset_size\tpercent_removed_by_filters\tpath\n"
             ) + "\n".join(summ_strs)
 
         dss_lab_counts = [
@@ -3083,10 +3124,12 @@ class RemoraDataset(IterableDataset):
             f"{b_lab_cols}\t"
             f"{ds_chunks_per_epoch:,.1f}\t"
             f"{ds.size:,}\t"
+            f"{100.0 * pr:,}\t"
             f"{ds_lab_cols}\t"
             f"{ds.data_path}"
-            for ds_chunks_per_epoch, b_lab_cols, ds, ds_lab_cols in zip(
+            for ds_chunks_per_epoch, pr, b_lab_cols, ds, ds_lab_cols in zip(
                 epoch_chunk_totals,
+                props_removed,
                 batch_lab_cols,
                 self.datasets,
                 dss_lab_cols,
@@ -3100,7 +3143,8 @@ class RemoraDataset(IterableDataset):
         )
         return (
             f"percent_of_dataset_per_epoch\t{b_labels_header}\t"
-            f"dataset_chunks_per_epoch\tdataset_size\t{ds_labels_header}\t"
+            "dataset_chunks_per_epoch\tdataset_size\t"
+            f"percent_removed_by_filters\t{ds_labels_header}\t"
             "path\n"
         ) + "\n".join(summ_strs)
 
