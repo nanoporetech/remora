@@ -1159,16 +1159,14 @@ class DatasetFilters:
             super_batch
         ) + self.get_derived_filter_rows(super_batch)
 
-    def prop_removed_by_filters(self, super_batch):
-        filt_arrs = np.logical_not(
-            np.logical_and.reduce(self.get_filter_rows(super_batch))
-        )
-        return filt_arrs.mean()
-
     def apply_filters(self, super_batch):
+        test_col = next(iter(super_batch.keys()))
+        prev_n_rows = super_batch[test_col].shape[0]
         if self.filters is None:
-            return
+            return 0.0
         self._apply_filter_rows(super_batch, self.get_filter_rows(super_batch))
+        n_rows = super_batch[test_col].shape[0]
+        return (prev_n_rows - n_rows) / prev_n_rows
 
 
 def check_super_batch(super_batch, chunk_width):
@@ -1258,6 +1256,7 @@ class CoreRemoraDataset:
     _sb_iter = None
     _curr_sb = None
     _curr_sb_offset = None
+    _curr_sb_prop_filt = None
 
     _signal_core_array = "signal"
     _sequence_core_array = "sequence"
@@ -1559,9 +1558,9 @@ class CoreRemoraDataset:
         """
         if self.filters is None:
             return 0.0
-        if self._curr_sb is None:
+        if self._curr_sb_prop_filt is None:
             self._load_next_super_batch()
-        return self.filters.prop_removed_by_filters(self._curr_sb)
+        return self._curr_sb_prop_filt
 
     def load_metadata(self):
         """Load metadata from file and apply override_metadata attributes if
@@ -2202,7 +2201,7 @@ class CoreRemoraDataset:
         super_batch = self.trim_sb_kmer_context_bases(super_batch)
         super_batch = self.trim_sb_chunk_context(super_batch)
         if self.filters is not None:
-            self.filters.apply_filters(super_batch)
+            self._curr_sb_prop_filt = self.filters.apply_filters(super_batch)
         return super_batch
 
     def iter_super_batches(self):
@@ -2737,6 +2736,26 @@ class RemoraDataset(IterableDataset):
                 out_r_arrs.append(arr_name)
         return out_r_arrs
 
+    def set_modbase_return_arrays(self):
+        for ds in self.datasets:
+            ds.set_return_arrays(
+                (
+                    CoreRemoraDataset._signal_core_array,
+                    *constants.DATASET_SEQ_OUTPUTS[constants.DATASET_ENC_KMER],
+                )
+            )
+
+    def set_basecall_return_arrays(self):
+        for ds in self.datasets:
+            ds.set_return_arrays(
+                (
+                    CoreRemoraDataset._signal_core_array,
+                    *constants.DATASET_SEQ_OUTPUTS[
+                        constants.DATASET_SEQS_AND_LENS
+                    ],
+                )
+            )
+
     def set_global_metadata(self):
         self.metadata = self.datasets[0].metadata.copy()
         # not applicable for super dataset
@@ -3076,7 +3095,7 @@ class RemoraDataset(IterableDataset):
                 f"{ds_chunks_per_epoch/ds.size:10.4%}\t"
                 f"{ds_chunks_per_epoch:,.1f}\t"
                 f"{ds.size:,}\t"
-                f"{100.0 * pr}"
+                f"{pr:8.2%}"
                 f"{ds.data_path:,}\t"
                 for ds_chunks_per_epoch, pr, ds in zip(
                     epoch_chunk_totals,
@@ -3124,7 +3143,7 @@ class RemoraDataset(IterableDataset):
             f"{b_lab_cols}\t"
             f"{ds_chunks_per_epoch:,.1f}\t"
             f"{ds.size:,}\t"
-            f"{100.0 * pr:,}\t"
+            f"{pr:8.2%}\t"
             f"{ds_lab_cols}\t"
             f"{ds.data_path}"
             for ds_chunks_per_epoch, pr, b_lab_cols, ds, ds_lab_cols in zip(
