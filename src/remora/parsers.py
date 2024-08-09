@@ -944,8 +944,8 @@ def run_dataset_copy(args):
     in_dataset = load_dataset(args.in_path)
     src_fh = open(out_dir / "sources.txt", "w")
     ds_out_dirs = []
-    if in_dataset.num_datasets > 1000:
-        raise RemoraError("Cannot copy more than 1,000 datasets")
+    if in_dataset.num_datasets > 10_000:
+        raise RemoraError("Cannot copy more than 10,000 datasets")
     for ds_idx, src_path in enumerate(in_dataset.paths):
         for item in os.listdir(src_path):
             if os.path.isdir(os.path.join(src_path, item)):

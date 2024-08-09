@@ -840,19 +840,21 @@ def get_io_reads(
     )
     io_reads = []
     for bam_read in bam_reads:
-        try:
-            io_read = Read.from_pod5_and_alignment(
-                pod5_read_record=pod5_reads[get_parent_id(bam_read)],
+        parent_rid = get_parent_id(bam_read)
+        p5_record = pod5_reads.get(parent_rid, None)
+        if p5_record is None:
+            if missing_ok:
+                continue
+            else:
+                raise RemoraError(f"BAM record not found in POD5 {parent_rid}")
+        io_reads.append(
+            Read.from_pod5_and_alignment(
+                pod5_read_record=p5_record,
                 alignment_record=bam_read,
                 reverse_signal=reverse_signal,
                 pa_scaling=pa_scaling,
             )
-        except Exception:
-            if missing_ok:
-                continue
-            else:
-                raise RemoraError("BAM record not found in POD5")
-        io_reads.append(io_read)
+        )
     return io_reads
 
 
@@ -1638,6 +1640,7 @@ def plot_signal_at_ref_region(
     reverse_signal=False,
     pa_scaling=None,
     signal_type="norm",
+    missing_ok=False,
     **kwargs,
 ):
     """Plot signal from reads at a reference region.
@@ -1650,6 +1653,9 @@ def plot_signal_at_ref_region(
         skip_sig_map_refine (bool): Skip signal mapping refinement
         max_reads (int): Maximum reads to plot (TODO: add overplotting options)
         reverse_signal (bool): Is nanopore signal 3'>5' orientation?
+        pa_scaling (tuple): pico-amp scaling values
+        signal_type (string): Signal normalization string
+        missing_ok (bool): Ok for BAM reads to be missing from POD5?
         **kwargs: Passed on to plot_ref_region_reads
 
     Returns:
@@ -1665,6 +1671,7 @@ def plot_signal_at_ref_region(
         reverse_signal=reverse_signal,
         pa_scaling=pa_scaling,
         signal_type=signal_type,
+        missing_ok=missing_ok,
     )
     seq, levels = get_ref_seq_and_levels_from_reads(
         ref_reg, chain(*reg_bam_reads), sig_map_refiner
