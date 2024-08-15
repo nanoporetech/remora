@@ -1019,8 +1019,22 @@ class DatasetFilters:
         / sb["sequence_lengths"]
     }
 
+    op_strs = {
+        operator.gt: ">",
+        operator.ge: ">=",
+        operator.lt: "<",
+        operator.le: "<=",
+        operator.eq: "==",
+        operator.ne: "!=",
+    }
+
     def __init__(self, filters=None):
         self.filters = filters
+
+    def __repr__(self):
+        return "&".join(
+            f"{md}{self.op_strs[op]}{th}" for md, op, th in self.filters
+        )
 
     @property
     def filter_columns(self):
@@ -1160,10 +1174,10 @@ class DatasetFilters:
         ) + self.get_derived_filter_rows(super_batch)
 
     def apply_filters(self, super_batch):
-        test_col = next(iter(super_batch.keys()))
-        prev_n_rows = super_batch[test_col].shape[0]
         if self.filters is None:
             return 0.0
+        test_col = next(iter(super_batch.keys()))
+        prev_n_rows = super_batch[test_col].shape[0]
         self._apply_filter_rows(super_batch, self.get_filter_rows(super_batch))
         n_rows = super_batch[test_col].shape[0]
         return (prev_n_rows - n_rows) / prev_n_rows
@@ -1257,6 +1271,7 @@ class CoreRemoraDataset:
     _curr_sb = None
     _curr_sb_offset = None
     _curr_sb_prop_filt = None
+    _modbase_label_counts = None
 
     _signal_core_array = "signal"
     _sequence_core_array = "sequence"
@@ -1529,12 +1544,14 @@ class CoreRemoraDataset:
         """Get bincount of modbase labels array, applying label conversion if
         necessary.
         """
-        ds_labels = self.modbase_label[
-            self.metadata.dataset_start : self.metadata.dataset_end
-        ]
-        if self.modbase_label_conv is not None:
-            ds_labels = self.modbase_label_conv[ds_labels]
-        return np.bincount(ds_labels)
+        if self._modbase_label_counts is None:
+            ds_labels = self.modbase_label[
+                self.metadata.dataset_start : self.metadata.dataset_end
+            ]
+            if self.modbase_label_conv is not None:
+                ds_labels = self.modbase_label_conv[ds_labels]
+            self._modbase_label_counts = np.bincount(ds_labels)
+        return self._modbase_label_counts
 
     @property
     def modbase_label_summary(self):
@@ -2400,7 +2417,7 @@ def extract_core_dataset_paths(input_path, used_configs=None):
     return paths
 
 
-def parse_dataset_config(input_path, used_configs=None):
+def parse_dataset_config(input_path, used_configs=None, skip_hash=False):
     paths, weights, hashes, filters = [], [], [], []
     input_path = util.resolve_path(input_path)
     if used_configs is None:
@@ -2428,14 +2445,15 @@ def parse_dataset_config(input_path, used_configs=None):
                     f"Core dataset path does not exist. {ds_path}"
                 )
             if os.path.isdir(ds_path):
-                computed_hash = CoreRemoraDataset.hash(ds_path)
-                if ds_hash is None:
-                    ds_hash = computed_hash
-                elif ds_hash != computed_hash:
-                    raise RemoraError(
-                        "Dataset hash does not match value from config "
-                        f"for dataset at {ds_path}"
-                    )
+                if not skip_hash:
+                    computed_hash = CoreRemoraDataset.hash(ds_path)
+                    if ds_hash is None:
+                        ds_hash = computed_hash
+                    elif ds_hash != computed_hash:
+                        raise RemoraError(
+                            "Dataset hash does not match value from config "
+                            f"for dataset at {ds_path}"
+                        )
                 paths.append(ds_path)
                 weights.append(ds_weight)
                 hashes.append(ds_hash)
@@ -2453,7 +2471,9 @@ def parse_dataset_config(input_path, used_configs=None):
                     sub_weights,
                     sub_hashs,
                     sub_filters,
-                ) = parse_dataset_config(ds_path, used_configs=used_configs)
+                ) = parse_dataset_config(
+                    ds_path, used_configs=used_configs, skip_hash=skip_hash
+                )
                 paths.extend(sub_paths)
                 weights.extend(sub_weights * ds_weight)
                 hashes.extend(sub_hashs)
@@ -2468,7 +2488,7 @@ def parse_dataset_config(input_path, used_configs=None):
     return paths, props, hashes, filters
 
 
-def load_dataset(ds_path, core_ds_kwargs=None, ds_kwargs=None):
+def load_dataset(ds_path, core_ds_kwargs=None, ds_kwargs=None, skip_hash=False):
     """Parse either core dataset or dataset config"""
     ds_path = util.resolve_path(ds_path)
     if not os.path.exists(ds_path):
@@ -2481,7 +2501,9 @@ def load_dataset(ds_path, core_ds_kwargs=None, ds_kwargs=None):
             [None],
         )
     else:
-        paths, props, hashes, filters = parse_dataset_config(ds_path)
+        paths, props, hashes, filters = parse_dataset_config(
+            ds_path, skip_hash=skip_hash
+        )
     if core_ds_kwargs is None:
         core_ds_kwargs = {}
     if ds_kwargs is None:
@@ -2624,9 +2646,13 @@ class RemoraDataset(IterableDataset):
         config_path,
         override_metadata=None,
         ds_kwargs=None,
+        skip_hash=False,
+        skip_label_summary=False,
         **kwargs,
     ):
-        paths, props, hashes, filters = parse_dataset_config(config_path)
+        paths, props, hashes, filters = parse_dataset_config(
+            config_path, skip_hash=skip_hash
+        )
         LOGGER.debug(f"Loaded dataset paths: {', '.join(paths)}")
         LOGGER.debug(
             f"Loaded dataset proportions: {', '.join(map(str, props))}"
@@ -2647,8 +2673,11 @@ class RemoraDataset(IterableDataset):
             )
             for ds_path, filt_path in zip(paths, filters)
         ]
-        label_summaries = "\n".join(ds.modbase_label_summary for ds in datasets)
-        LOGGER.debug(f"Loaded dataset label summaries:\n{label_summaries}")
+        if not skip_label_summary:
+            label_summaries = "\n".join(
+                ds.modbase_label_summary for ds in datasets
+            )
+            LOGGER.debug(f"Loaded dataset label summaries:\n{label_summaries}")
         return cls(datasets, props, hashes, **kwargs)
 
     @property
@@ -3096,7 +3125,8 @@ class RemoraDataset(IterableDataset):
                 f"{ds_chunks_per_epoch:,.1f}\t"
                 f"{ds.size:,}\t"
                 f"{pr:8.2%}"
-                f"{ds.data_path:,}\t"
+                f"{ds.filters}\t"
+                f"{ds.data_path:,}"
                 for ds_chunks_per_epoch, pr, ds in zip(
                     epoch_chunk_totals,
                     props_removed,
@@ -3105,7 +3135,7 @@ class RemoraDataset(IterableDataset):
             ]
             return (
                 "percent_of_dataset_per_epoch\tdataset_chunks_per_epoch\t"
-                "dataset_size\tpercent_removed_by_filters\tpath\n"
+                "dataset_size\tpercent_removed_by_filters\tfilters\tpath\n"
             ) + "\n".join(summ_strs)
 
         dss_lab_counts = [
@@ -3143,8 +3173,9 @@ class RemoraDataset(IterableDataset):
             f"{b_lab_cols}\t"
             f"{ds_chunks_per_epoch:,.1f}\t"
             f"{ds.size:,}\t"
-            f"{pr:8.2%}\t"
             f"{ds_lab_cols}\t"
+            f"{pr:8.2%}\t"
+            f"{ds.filters}\t"
             f"{ds.data_path}"
             for ds_chunks_per_epoch, pr, b_lab_cols, ds, ds_lab_cols in zip(
                 epoch_chunk_totals,
@@ -3163,8 +3194,8 @@ class RemoraDataset(IterableDataset):
         return (
             f"percent_of_dataset_per_epoch\t{b_labels_header}\t"
             "dataset_chunks_per_epoch\tdataset_size\t"
-            f"percent_removed_by_filters\t{ds_labels_header}\t"
-            "path\n"
+            f"{ds_labels_header}\tpercent_removed_by_filters\t"
+            "filters\tpath\n"
         ) + "\n".join(summ_strs)
 
 
