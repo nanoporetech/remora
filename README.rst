@@ -32,6 +32,17 @@ Install from github source for development:
 It is recommended that Remora be installed in a virtual environment.
 For example ``python3 -m venv venv; source venv/bin/activate``.
 
+For GPU optimization using torch, ensure that a version of torch compatible with the system GPU/CUDA drivers is installed.
+Note that Remora does not attempt to resolve the correct version of torch.
+See the `torch installation page <https://pytorch.org/get-started/locally/>`_ for compatible drivers and installation instructions.
+
+As an example to install Remora with CUDA 11.8 drivers the following command can be used:
+
+::
+
+   pip install torch --index-url https://download.pytorch.org/whl/cu118
+   pip install ont-remora
+
 See help for any Remora sub-command with the ``-h`` flag.
 
 Getting Started

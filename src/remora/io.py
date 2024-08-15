@@ -1977,17 +1977,14 @@ class Read:
             raise RemoraError("Zero-centered pA scaling factors not set")
         return self.scale_dacs_to_pa * self.scale_pa_to_zc_pa
 
-    def prune(self, drop_mod_tags=True, drop_move_tag=True):
+    def prune(self, drop_tags=None):
         """Drop larger memory arrays: dacs, mv_table, *_to_signal"""
-        drop_tags = set()
-        if drop_mod_tags:
-            drop_tags.update(("MM", "ML"))
-        if drop_move_tag:
-            drop_tags.add("mv")
-        if len(drop_tags) > 0:
+        if drop_tags is not None:
             # drop tags from input reads
             self.full_align["tags"] = [
-                tag for tag in self.full_align["tags"] if tag not in drop_tags
+                tag
+                for tag in self.full_align["tags"]
+                if tag[:2] not in drop_tags
             ]
         # access sig len to save the value
         self.sig_len

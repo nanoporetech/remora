@@ -150,7 +150,7 @@ _kit14_5hmc_5mc_ac_models = {
         "v4.2.0": {1: "dna_r10.4.1_e8.2_5khz_400bps_sup_v4.2.0_5hmc_5mc_v1"},
     },
     "hac": {
-        "v5.0.0": {1: "dna_r10.4.1_e8.2_400bps_sup@v5.0.0_5mC_5hmC@v1"},
+        "v5.0.0": {1: "dna_r10.4.1_e8.2_400bps_hac@v5.0.0_5mC_5hmC@v1"},
         "v4.3.0": {1: "dna_r10.4.1_e8.2_400bps_sup@v4.3.0_5mC_5hmC@v1"},
     },
 }
@@ -165,7 +165,7 @@ _kit14_6ma_ac_models = {
         "v4.0.1": {2: "res_dna_r10.4.1_e8.2_4khz_400bps_sup_v4.0.1_6mA_v2"},
     },
     "hac": {
-        "v5.0.0": {1: "dna_r10.4.1_e8.2_400bps_sup@v5.0.0_6mA@v1"},
+        "v5.0.0": {1: "dna_r10.4.1_e8.2_400bps_hac@v5.0.0_6mA@v1"},
         "v4.3.0": {1: "dna_r10.4.1_e8.2_400bps_sup@v4.3.0_6mA@v1"},
     },
 }
@@ -175,7 +175,7 @@ _kit14_4mc_5mc_ac_models = {
         "v4.3.0": {1: "res_dna_r10.4.1_e8.2_400bps_sup@v4.3.0_4mC_5mC@v1"},
     },
     "hac": {
-        "v5.0.0": {1: "dna_r10.4.1_e8.2_400bps_sup@v5.0.0_5mC_4mC@v1"},
+        "v5.0.0": {1: "dna_r10.4.1_e8.2_400bps_hac@v5.0.0_5mC_4mC@v1"},
     },
 }
 

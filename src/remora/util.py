@@ -103,7 +103,12 @@ def parse_device(device):
         pass
     device = torch.device(device)
     if device.type == "cuda" and not torch.cuda.is_available():
-        LOGGER.warning("Device option specified, but CUDA not available.")
+        LOGGER.error(
+            "Device option specified, but CUDA not available.\nEnsure torch "
+            "installation is compatible with CUDA driver "
+            "(https://pytorch.org/get-started/locally/)."
+        )
+        raise RemoraError("Invalid GPU/CUDA device")
     return device
 
 

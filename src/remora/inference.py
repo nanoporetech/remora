@@ -15,7 +15,7 @@ import numpy as np
 from tqdm import tqdm
 from pod5 import DatasetReader
 
-from remora import constants, log, RemoraError
+from remora import constants, log, RemoraError, __version__
 from remora.data_chunks import CoreRemoraDataset, DatasetMetadata
 from remora.io import (
     ReadIndexedBam,
@@ -60,7 +60,7 @@ def mods_tags_to_str(mm_tags, ml_arr):
     ]
 
 
-def prepare_reads(read_errs, models_metadata, ref_anchored):
+def prepare_reads(read_errs, models_metadata, ref_anchored, drop_move_tag=True):
     out_read_errs = []
 
     models_kwargs = []
@@ -81,23 +81,56 @@ def prepare_reads(read_errs, models_metadata, ref_anchored):
         )
     for io_read, err in read_errs:
         if err is not None:
-            io_read.prune(drop_move_tag=False)
+            io_read.prune(drop_move_tag=drop_move_tag)
             out_read_errs.append((io_read, None, err))
             continue
+        drop_tags = set((("MM", "ML", "MN")))
+        if drop_move_tag:
+            drop_tags.add("mv")
+        if ref_anchored:
+            # drop all minimap align tags
+            drop_tags.update(
+                (
+                    "NM",
+                    "MD",
+                    "tp",
+                    "cm",
+                    "s1",
+                    "s2",
+                    "AS",
+                    "SA",
+                    "ms",
+                    "nn",
+                    "cs",
+                    "dv",
+                    "de",
+                    "rl",
+                )
+            )
         try:
             remora_read = io_read.into_remora_read(ref_anchored)
         except RemoraError as e:
-            io_read.prune(drop_move_tag=False)
+            io_read.prune(drop_tags)
             LOGGER.debug(f"{io_read.child_read_id} Read prep error: {e}")
             out_read_errs.append((io_read, None, f"Read prep error: {e}"))
             continue
         except Exception as e:
-            io_read.prune(drop_move_tag=False)
+            io_read.prune(drop_tags)
             LOGGER.debug(f"{io_read.child_read_id} Unexpected error: {e}")
             out_read_errs.append((io_read, None, f"Unexpected error: {e}"))
             continue
         # after creating remora read strip IO read of large arrays
-        io_read.prune(drop_move_tag=False)
+        io_read.prune(drop_tags)
+        if ref_anchored:
+            io_read.full_align["tags"].extend(
+                (
+                    "NM:i:0",
+                    f"MN:i:{io_read.ref_seq_len}",
+                    f"MD:Z:{io_read.ref_seq_len}",
+                )
+            )
+        else:
+            io_read.full_align["tags"].append(f"MN:i:{io_read.seq_len}")
         datasets = {}
         for md, md_kwargs in zip(models_metadata, models_kwargs):
             mdl_remora_read = remora_read.copy()
@@ -396,7 +429,7 @@ def unbatch(called_batches_q, called_reads_q, models_metadata):
         )
         curr_reads[can_base] = cb_curr_read
         for comp_read in cb_comp_reads:
-            comp_reads[comp_read[0].read_id].append((can_base, comp_read))
+            comp_reads[comp_read[0].child_read_id].append((can_base, comp_read))
 
         # add reads which have completed through all canonical base model
         full_comp_read_ids = [
@@ -478,6 +511,7 @@ def infer_from_pod5_and_bam(
     batch_size=constants.DEFAULT_BATCH_SIZE,
     skip_non_primary=True,
     ref_anchored=False,
+    drop_move_tag=True,
 ):
     bam_idx = ReadIndexedBam(in_bam_path, skip_non_primary, req_tags={"mv"})
     if bam_idx.num_records == 0:
@@ -517,7 +551,7 @@ def infer_from_pod5_and_bam(
         prepare_reads,
         reads,
         num_workers=num_prep_read_workers,
-        args=(models_metadata, ref_anchored),
+        args=(models_metadata, ref_anchored, drop_move_tag),
         name="PrepReadData",
         use_process=True,
         use_mp_queue=True,
@@ -594,7 +628,21 @@ def infer_from_pod5_and_bam(
     in_bam = out_bam = pbar = prev_rid = None
     try:
         in_bam = pysam.AlignmentFile(in_bam_path, "rb", check_sq=False)
-        out_bam = pysam.AlignmentFile(out_bam_path, "wb", template=in_bam)
+        header = in_bam.header.to_dict()
+        pg_recs = header.get("PG", [])
+        remora_pg = {
+            "PN": "remora",
+            "ID": "remora",
+            "CL": " ".join(sys.argv),
+            "VN": __version__,
+        }
+        if len(pg_recs) > 0:
+            num_remora = len([ln for ln in pg_recs if "remora" == ln["PN"]])
+            if num_remora > 0:
+                remora_pg["ID"] = f"remora.{num_remora}"
+            remora_pg["PP"] = pg_recs[-1]["ID"]
+        header["PG"] = pg_recs + [remora_pg]
+        out_bam = pysam.AlignmentFile(out_bam_path, "wb", header=header)
         pbar = tqdm(
             smoothing=0,
             total=num_reads,
