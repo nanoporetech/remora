@@ -168,6 +168,23 @@ def extract_chunk_dataset(
     LOGGER.info("Opening dataset for output")
     max_seq_len = sum(chunk_context) // min_samps_per_base
     LOGGER.debug(f"Maximum chunk sequence length set to {max_seq_len}")
+    extra_metadata_arrays = {
+        "modbase_label": ("int64", "Modified base label"),
+        "read_id": ("<U36", "Read identifier"),
+        "read_focus_base": (
+            "int64",
+            "Position within read training sequence",
+        ),
+        "percent_identity": (
+            "float32",
+            "Reference mapping percent identity",
+        ),
+        "start_time": (
+            "uint32",
+            "Read start time in seconds since first read in dataset",
+        ),
+        "duration": ("int64", "Number of samples in trimmed read"),
+    }
     dataset = CoreRemoraDataset(
         data_path=out_path,
         mode="w",
@@ -178,23 +195,7 @@ def extract_chunk_dataset(
             mod_long_names=[] if mod_base_control else [mod_base[1]],
             motif_sequences=[motif.raw_motif for motif in motifs],
             motif_offsets=[motif.focus_pos for motif in motifs],
-            extra_metadata_arrays={
-                "modbase_label": ("int64", "Modified base label"),
-                "read_id": ("<U36", "Read identifier"),
-                "read_focus_base": (
-                    "int64",
-                    "Position within read training sequence",
-                ),
-                "percent_identity": (
-                    "float32",
-                    "Reference mapping percent identity",
-                ),
-                "start_time": (
-                    "uint32",
-                    "Read start time in seconds since first read in dataset",
-                ),
-                "duration": ("int64", "Number of samples in trimmed read"),
-            },
+            extra_metadata_arrays=extra_metadata_arrays,
             chunk_context=chunk_context,
             kmer_context_bases=kmer_context_bases,
             reverse_signal=rev_sig,
@@ -203,6 +204,7 @@ def extract_chunk_dataset(
             base_start_justify=base_start_justify,
             offset=offset,
         ),
+        return_arrays=list(extra_metadata_arrays),
     )
 
     LOGGER.info("Processing reads")
@@ -406,6 +408,18 @@ def extract_basecall_chunk_dataset(
     LOGGER.info("Opening dataset for output")
     max_seq_len = sum(chunk_context) // min_samps_per_base
     LOGGER.debug(f"Maximum chunk sequence length set to {max_seq_len}")
+    extra_metadata_arrays = {
+        "read_id": ("<U36", "Read identifier"),
+        "percent_identity": (
+            "float32",
+            "Reference mapping percent identity",
+        ),
+        "start_time": (
+            "uint32",
+            "Read start time in seconds since first read in dataset",
+        ),
+        "duration": ("int64", "Number of samples in trimmed read"),
+    }
     # to add more extra metadata values see io.READ_METRICS
     dataset = CoreRemoraDataset(
         data_path=out_path,
@@ -414,24 +428,14 @@ def extract_basecall_chunk_dataset(
             allocate_size=max_chunks_per_read * num_reads,
             max_seq_len=max_seq_len,
             dataset_type=constants.DATASET_TYPE_SEQ,
-            extra_metadata_arrays={
-                "read_id": ("<U36", "Read identifier"),
-                "percent_identity": (
-                    "float32",
-                    "Reference mapping percent identity",
-                ),
-                "start_time": (
-                    "uint32",
-                    "Read start time in seconds since first read in dataset",
-                ),
-                "duration": ("int64", "Number of samples in trimmed read"),
-            },
+            extra_metadata_arrays=extra_metadata_arrays,
             chunk_context=chunk_context,
             kmer_context_bases=kmer_context_bases,
             reverse_signal=rev_sig,
             pa_scaling=pa_scaling,
             sig_map_refiner=sig_map_refiner,
         ),
+        return_arrays=list(extra_metadata_arrays),
     )
 
     LOGGER.info("Processing reads")

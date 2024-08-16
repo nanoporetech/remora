@@ -1430,16 +1430,22 @@ class CoreRemoraDataset:
         )
 
     @property
-    def super_batch_load_arrays(self):
-        """Convert sequence arrays to specified output names"""
+    def load_arrays(self):
+        """List of array names specified to be loaded"""
         core_arrays = self._core_arrays.copy() + list(
             constants.DATASET_SEQ_OUTPUTS
         )
         sb_load_arrs = self._core_arrays.copy()
-        for arr_name in self.return_arrays:
-            if arr_name in core_arrays:
-                continue
-            sb_load_arrs.append(arr_name)
+        if self.return_arrays is None:
+            for arr_name in self.array_names:
+                if arr_name in core_arrays:
+                    continue
+                sb_load_arrs.append(arr_name)
+        else:
+            for arr_name in self.return_arrays:
+                if arr_name in core_arrays:
+                    continue
+                sb_load_arrs.append(arr_name)
         # add filter columns to be loaded
         if self.filters is not None:
             for arr_name, _, _ in self.filters.storage_filters:
@@ -1476,34 +1482,6 @@ class CoreRemoraDataset:
         return arr_dict
 
     @property
-    def arrays_info(self):
-        arrays_info = []
-        for name, dtype in self._core_dtypes.items():
-            arrays_info.append(
-                (
-                    name,
-                    dtype,
-                    getattr(self.metadata, f"{name}_shape")(self.mode),
-                )
-            )
-        if self.metadata.extra_signal_arrays is not None:
-            for name, (dtype, _) in self.metadata.extra_signal_arrays.items():
-                arrays_info.append(
-                    (name, dtype, self.metadata.signal_shape(self.mode))
-                )
-        if self.metadata.extra_metadata_arrays is not None:
-            for name, (dtype, _) in self.metadata.extra_metadata_arrays.items():
-                arrays_info.append(
-                    (name, dtype, self.metadata.extras_shape(self.mode))
-                )
-        if self.metadata.extra_sequence_arrays is not None:
-            for name, (dtype, _) in self.metadata.extra_sequence_arrays.items():
-                arrays_info.append(
-                    (name, dtype, self.metadata.sequence_shape(self.mode))
-                )
-        return arrays_info
-
-    @property
     def summary(self):
         summ_txt = (
             f"                data_path : {self.data_path}\n"
@@ -1527,6 +1505,21 @@ class CoreRemoraDataset:
                 f"                   motifs : {self.metadata.motifs}\n"
             )
         return summ_txt
+
+    def get_array_dtype_and_shape(self, name):
+        dtype = self._core_dtypes.get(name)
+        if dtype is not None:
+            return dtype, getattr(self.metadata, f"{name}_shape")(self.mode)
+        dtype, _ = self.metadata.extra_metadata_arrays.get(name)
+        if dtype is not None:
+            return dtype, self.metadata.extras_shape(self.mode)
+        dtype, _ = self.metadata.extra_signal_arrays.get(name)
+        if dtype is not None:
+            return dtype, self.metadata.signal_shape(self.mode)
+        dtype, _ = self.metadata.extra_sequence_arrays.get(name)
+        if dtype is not None:
+            return dtype, self.metadata.sequence_shape(self.mode)
+        raise RemoraError(f"No array named: {name}")
 
     def load_filters(self):
         if self.filters_path_resolved is None:
@@ -1771,10 +1764,6 @@ class CoreRemoraDataset:
                 for md_key in (
                     "mod_bases",
                     "mod_long_names",
-                    # keep extra arrays from core dataset
-                    # "extra_signal_arrays",
-                    # "extra_metadata_arrays",
-                    # "extra_sequence_arrays",
                     "kmer_context_bases",
                     "chunk_context",
                 )
@@ -1813,14 +1802,16 @@ class CoreRemoraDataset:
             raise RemoraError("Cannot write when mode is not 'w'")
         if self.data_path is None:
             # load in memory numpy arrays
-            for arr_name, arr_dtype, arr_shape in self.arrays_info:
+            for arr_name in self.array_names:
+                arr_dtype, arr_shape = self.get_array_dtype_and_shape(arr_name)
                 setattr(
                     self,
                     arr_name,
                     np.empty(dtype=arr_dtype, shape=arr_shape),
                 )
             return
-        for arr_name, arr_dtype, arr_shape in self.arrays_info:
+        for arr_name in self.array_names:
+            arr_dtype, arr_shape = self.get_array_dtype_and_shape(arr_name)
             # Open with write mode only in this method
             setattr(
                 self,
@@ -1838,7 +1829,7 @@ class CoreRemoraDataset:
         if self.data_path is None:
             return
         mode = "r" if self.mode == "r" else "r+"
-        for arr_name, arr_dtype, arr_shape in self.arrays_info:
+        for arr_name in self.array_names:
             # close prev memmap to avoid mem leaks
             if hasattr(self, arr_name):
                 old_memmap = getattr(self, arr_name)
@@ -1848,6 +1839,8 @@ class CoreRemoraDataset:
                     except AttributeError:
                         pass
                 delattr(self, arr_name)
+        for arr_name in self.load_arrays:
+            arr_dtype, arr_shape = self.get_array_dtype_and_shape(arr_name)
             setattr(
                 self,
                 arr_name,
@@ -2159,14 +2152,14 @@ class CoreRemoraDataset:
             size = self.size
         sb_arr_en = sb_arr_st + size
         if sb_arr_en <= self.metadata.dataset_end:
-            for arr_name in self.super_batch_load_arrays:
+            for arr_name in self.load_arrays:
                 super_batch[arr_name] = np.array(
                     getattr(self, arr_name)[sb_arr_st:sb_arr_en]
                 )
         elif self.infinite_iter:
             # wrap super batch around end of dataset
             wrap_en = sb_arr_en - self.size
-            for arr_name in self.super_batch_load_arrays:
+            for arr_name in self.load_arrays:
                 super_batch[arr_name] = np.array(
                     np.concatenate(
                         [
@@ -2181,7 +2174,7 @@ class CoreRemoraDataset:
                 )
         else:
             # return last batch with smaller batch dim
-            for arr_name in self.super_batch_load_arrays:
+            for arr_name in self.load_arrays:
                 super_batch[arr_name] = np.array(
                     getattr(self, arr_name)[
                         sb_arr_st : self.metadata.dataset_end
@@ -2196,7 +2189,7 @@ class CoreRemoraDataset:
                 ),
                 replace=False,
             )
-            for arr_name in self.super_batch_load_arrays:
+            for arr_name in self.load_arrays:
                 super_batch[arr_name] = super_batch[arr_name][selected_indices]
         if (
             self.metadata.is_modbase_dataset
@@ -2948,9 +2941,6 @@ class RemoraDataset(IterableDataset):
         for md_key in (
             "mod_bases",
             "mod_long_names",
-            "extra_signal_arrays",
-            "extra_metadata_arrays",
-            "extra_sequence_arrays",
             "kmer_context_bases",
             "chunk_context",
         ):
