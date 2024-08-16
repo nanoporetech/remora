@@ -1770,9 +1770,10 @@ class CoreRemoraDataset:
                 for md_key in (
                     "mod_bases",
                     "mod_long_names",
-                    "extra_signal_arrays",
-                    "extra_metadata_arrays",
-                    "extra_sequence_arrays",
+                    # keep extra arrays from core dataset
+                    # "extra_signal_arrays",
+                    # "extra_metadata_arrays",
+                    # "extra_sequence_arrays",
                     "kmer_context_bases",
                     "chunk_context",
                 )
