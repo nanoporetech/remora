@@ -1695,6 +1695,7 @@ class CoreRemoraDataset:
                         f"Setting label conversion: {self.modbase_label_conv} "
                         f"{self.data_path}"
                     )
+                    self._modbase_label_counts = None
             elif md_key == "mod_long_names":
                 assert "mod_bases" in self.override_metadata
             elif md_key.startswith("extra_"):
