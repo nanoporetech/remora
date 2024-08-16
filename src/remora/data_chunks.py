@@ -1270,7 +1270,9 @@ class CoreRemoraDataset:
     _sb_iter = None
     _curr_sb = None
     _curr_sb_offset = None
+    # cache proportion of last super batch filtered
     _curr_sb_prop_filt = None
+    # cache label counts
     _modbase_label_counts = None
 
     _signal_core_array = "signal"
@@ -1902,6 +1904,7 @@ class CoreRemoraDataset:
         # TODO add explicit write buffer to this function
         if self.mode != "w":
             raise RemoraError("Cannot write when mode is not 'w'")
+        self._modbase_label_counts = None
         batch_size = next(iter(arrays.values())).shape[0]
         if any(arr.shape[0] != batch_size for arr in arrays.values()):
             raise RemoraError("All arrays in a batch must be the same size")
@@ -2959,7 +2962,9 @@ class RemoraDataset(IterableDataset):
             trn_md["dataset_end"] = ds.metadata.dataset_end
             LOGGER.debug(f"train split override metadata: {trn_md}")
             train_datasets.append(
-                CoreRemoraDataset(ds.data_path, override_metadata=trn_md)
+                CoreRemoraDataset(
+                    ds.data_path, override_metadata=trn_md, filters=self.filters
+                )
             )
             test_md = override_metadata.copy()
             test_md["dataset_start"] = ds.metadata.dataset_start
@@ -2970,6 +2975,7 @@ class RemoraDataset(IterableDataset):
                     ds.data_path,
                     infinite_iter=False,
                     override_metadata=test_md,
+                    filters=self.filters,
                 )
             )
         trn_ds = RemoraDataset(train_datasets, **self.init_kwargs)
@@ -2991,7 +2997,10 @@ class RemoraDataset(IterableDataset):
             head_md["dataset_end"] = ds.metadata.dataset_start + ds_size
             head_datasets.append(
                 CoreRemoraDataset(
-                    ds.data_path, infinite_iter=False, override_metadata=head_md
+                    ds.data_path,
+                    infinite_iter=False,
+                    override_metadata=head_md,
+                    filters=self.filters,
                 )
             )
         head_ds = RemoraDataset(head_datasets, **self.init_kwargs)
