@@ -2963,7 +2963,7 @@ class RemoraDataset(IterableDataset):
             LOGGER.debug(f"train split override metadata: {trn_md}")
             train_datasets.append(
                 CoreRemoraDataset(
-                    ds.data_path, override_metadata=trn_md, filters=self.filters
+                    ds.data_path, override_metadata=trn_md, filters=ds.filters
                 )
             )
             test_md = override_metadata.copy()
@@ -2975,7 +2975,7 @@ class RemoraDataset(IterableDataset):
                     ds.data_path,
                     infinite_iter=False,
                     override_metadata=test_md,
-                    filters=self.filters,
+                    filters=ds.filters,
                 )
             )
         trn_ds = RemoraDataset(train_datasets, **self.init_kwargs)
@@ -3000,7 +3000,7 @@ class RemoraDataset(IterableDataset):
                     ds.data_path,
                     infinite_iter=False,
                     override_metadata=head_md,
-                    filters=self.filters,
+                    filters=ds.filters,
                 )
             )
         head_ds = RemoraDataset(head_datasets, **self.init_kwargs)
