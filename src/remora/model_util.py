@@ -86,6 +86,12 @@ class TrainOpts:
     lr_cool_down_epochs: int = constants.DEFAULT_SCH_COOL_DOWN_EPOCHS
     lr_cool_down_lr: float = constants.DEFAULT_SCH_COOL_DOWN_LR
 
+    def __post_init__(self):
+        if self.opt_kwargs is None:
+            self.opt_kwargs = constants.DEFAULT_OPT_VALUES
+        if self.lr_scheduler_kwargs is None:
+            self.lr_scheduler_kwargs = constants.DEFAULT_SCH_VALUES
+
     def load_optimizer(self, model):
         return getattr(torch.optim, self.optimizer_str)(
             model.parameters(),

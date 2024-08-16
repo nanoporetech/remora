@@ -1236,9 +1236,13 @@ def register_model_train(parser):
         "--optimizer-kwargs",
         nargs=3,
         action="append",
-        default=constants.DEFAULT_OPT_VALUES,
         metavar=("NAME", "VALUE", "TYPE"),
-        help="Arguments to torch optimizer. TYPE should be str, int or float",
+        help="""Arguments to torch optimizer. TYPE should be str, int or float.
+        Default: """
+        + " ".join(
+            f"--optimizer-kwargs {n} {v} {t}"
+            for n, v, t in constants.DEFAULT_OPT_VALUES
+        ),
     )
     train_grp.add_argument(
         "--lr",
@@ -1256,9 +1260,13 @@ def register_model_train(parser):
         "--lr-scheduler-kwargs",
         nargs=3,
         action="append",
-        default=constants.DEFAULT_SCH_VALUES,
         metavar=("NAME", "VALUE", "TYPE"),
-        help="Arguments to torch scheduler. TYPE should be str, int or float",
+        help="""Arguments to torch scheduler. TYPE should be str, int or float,
+        Default: """
+        + " ".join(
+            f"--lr-scheduler-kwargs {n} {v} {t}"
+            for n, v, t in constants.DEFAULT_SCH_VALUES
+        ),
     )
     train_grp.add_argument(
         "--lr-cool-down-epochs",
