@@ -2141,7 +2141,7 @@ def run_validate_modbams(args):
     if args.explicit_mod_tag_used:
         LOGGER.warning(
             """
-            If implict modified tag types are included (from all-context
+            If implicit modified tag types are included (from all-context
             modified base models) results from this command will be invalid.
             Please see pysam issue here:
             https://github.com/pysam-developers/pysam/issues/1123"""
@@ -2149,7 +2149,7 @@ def run_validate_modbams(args):
     else:
         LOGGER.error(
             """
-            If implict modified tag types are included (from all-context
+            If implicit modified tag types are included (from all-context
             modified base models) results from this command will be inavlid.
             Please see pysam issue here:
             https://github.com/pysam-developers/pysam/issues/1123
